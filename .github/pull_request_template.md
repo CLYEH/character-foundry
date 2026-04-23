@@ -44,6 +44,21 @@ Ticket: `T-XXX`
 
 ---
 
+## Codex Review
+
+<!--
+合併前必跑。在 PR 或 local 用 /codex review 跑一次，把結果摘要貼這裡，
+並逐條說明採納 / 駁回 / defer。
+-->
+
+- [ ] Codex review 跑過
+- [ ] 所有 critical 發現已處理或明確 defer（defer 要附 ticket 編號）
+
+摘要：
+<!-- 例：Codex 提 3 個發現（2 採納、1 defer to T-XXX）。細節見 comment thread。 -->
+
+---
+
 ## Checklist
 
 - [ ] Ticket status 已更新（in_progress → done if 完成）
@@ -52,6 +67,7 @@ Ticket: `T-XXX`
 - [ ] Planning docs 有需要同步更新嗎？（通常不用，若 API shape / schema 改了才需要）
 - [ ] 沒有意外 commit `.env` 或其他 secret
 - [ ] CI 綠
+- [ ] Codex review 完成（見上方）
 - [ ] 命名遵循 `CONTRIBUTING.md` §1-2 的 branch / commit / PR title 規則
 
 ---
