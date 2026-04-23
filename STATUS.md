@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-23
-> **Phase:** Planning complete · Sprint 0 scheduled
+> **Phase:** Sprint 0 in progress（T-001 done）
 
 ---
 
@@ -19,7 +19,7 @@
 
 | # | Ticket | Status |
 |---|---|---|
-| T-001 | Repo scaffolding | TODO |
+| T-001 | Repo scaffolding | DONE |
 | T-002 | Alembic + initial migrations (teams, users) | TODO |
 | T-003 | Remaining migrations (characters → tasks) | TODO |
 | T-004 | CI workflow (PR checks) | TODO |
