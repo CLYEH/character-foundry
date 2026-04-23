@@ -19,8 +19,11 @@ class Character(Base):
             "char_length(name) BETWEEN 1 AND 50",
             name="chk_characters_name_length",
         ),
+        # PostgreSQL ARE does not support \p{...} unicode property escapes, so
+        # we use a literal CJK Unified Ideographs range (U+4E00–U+9FFF) plus
+        # ASCII alphanumerics, underscore and hyphen.
         CheckConstraint(
-            r"name ~ '^[\p{Han}a-zA-Z0-9_\-]+$'",
+            "name ~ '^[一-鿿a-zA-Z0-9_-]+$'",
             name="chk_characters_name_chars",
         ),
     )

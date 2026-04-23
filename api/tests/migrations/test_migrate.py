@@ -31,6 +31,15 @@ async def _fetch(database_url: str, sql: str) -> list[tuple]:
         await engine.dispose()
 
 
+async def _exec(database_url: str, sql: str, params: dict | None = None) -> None:
+    engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text(sql), params or {})
+    finally:
+        await engine.dispose()
+
+
 async def _reset(database_url: str) -> None:
     """Drop alembic_version + any tables left behind, so each test run is clean."""
     engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
@@ -102,3 +111,49 @@ def test_up_down_up_cycle(alembic_config, database_url, clean_db):
 
     teams = _run(_fetch(database_url, "SELECT name FROM teams"))
     assert ("default",) in teams
+
+
+def test_characters_name_check_constraint(alembic_config, database_url, clean_db):
+    """Guard against regressing to \\p{Han} (PostgreSQL ARE doesn't support it).
+
+    The CHECK constraint text is accepted at CREATE time regardless of whether
+    the regex is valid, so the only way to catch a bad pattern is to exercise
+    it with a real INSERT. We insert a Chinese-named row (must succeed) and a
+    row with an illegal character (must fail).
+    """
+    command.upgrade(alembic_config, "head")
+
+    # Insert fixtures: a team + user so characters has valid FKs.
+    team_id = _run(_fetch(database_url, "SELECT id FROM teams WHERE name='default'"))[0][0]
+    _run(
+        _exec(
+            database_url,
+            "INSERT INTO users (id, team_id, name, email, password_hash) "
+            "VALUES (gen_random_uuid(), :team_id, 'Tester', 'tester@example.com', 'x')",
+            {"team_id": team_id},
+        )
+    )
+    user_id = _run(_fetch(database_url, "SELECT id FROM users WHERE email='tester@example.com'"))[0][0]
+
+    # Chinese name must be accepted.
+    _run(
+        _exec(
+            database_url,
+            "INSERT INTO characters (team_id, owner_id, name, slug) "
+            "VALUES (:team_id, :owner_id, '小雅', 'xiao-ya')",
+            {"team_id": team_id, "owner_id": user_id},
+        )
+    )
+
+    # Illegal character must be rejected by the CHECK constraint.
+    with pytest.raises(Exception) as exc:
+        _run(
+            _exec(
+                database_url,
+                "INSERT INTO characters (team_id, owner_id, name, slug) "
+                "VALUES (:team_id, :owner_id, 'bad name!', 'bad-name')",
+                {"team_id": team_id, "owner_id": user_id},
+            )
+        )
+    # Either CheckViolation or a transport-wrapped version of it — both are fine.
+    assert "chk_characters_name_chars" in str(exc.value) or "check constraint" in str(exc.value).lower()
