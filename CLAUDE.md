@@ -80,6 +80,8 @@
 |---|---|
 | `DECISIONS.md` | 載入 80% context 的快查 |
 | `STATUS.md` | 當前進度與 backlog |
+| `CONTRIBUTING.md` | Git / PR / code review 規則 |
 | `tickets/README.md` | Ticket 工作流與慣例 |
 | `tickets/T-XXX-*.md` | 個別單的 scope + acceptance |
+| `.github/pull_request_template.md` | PR 模板（commit 前參考）|
 | `planning/*/` | 各 agent 的完整規格書 |
