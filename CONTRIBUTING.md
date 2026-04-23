@@ -152,7 +152,7 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 
 ### 4.1 Reviewer 要求
 
-**每個 PR 都會額外跑一次 Codex review（gstack `/codex` skill）** —— 獨立於人類 reviewer 之外的第二意見，專抓結構性問題、邊界條件、安全死角。Codex 的建議**不一定要全部採納**，但每條必須**有意識地回應**（採納、駁回、defer to ticket）。
+**每個 PR 會被 Codex App 自動 review**（Codex App 已連結 GitHub repo）—— PR 開出後 Codex 會**自動**在 PR 上留下 review comments，不需要作者手動觸發。Codex 的建議**不一定要全部採納**，但每條都必須**有意識地回應**（採納、駁回、defer to ticket）。
 
 人類 reviewer 要求：
 
@@ -164,7 +164,7 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 | **Schema migration** | **2 人** approve（至少 1 人熟 DB）| T-002, T-003 類 |
 | **Production deploy 流程改動** | **2 人** approve | |
 
-**Codex review 獨立於人類 approve 之外必跑。** 即使 1 人 approve 條件符合，Codex 找到 critical issue 仍會 block merge（作者要修或在 PR 裡 justify 為什麼 defer）。
+**Codex review 獨立於人類 approve 之外自動執行。** 即使 1 人 approve 條件符合，Codex 找到 critical issue 仍會 block merge（作者要修 code 推新 commit，或在 PR 裡 justify 為什麼 defer）。
 
 ### 4.2 Reviewer 責任
 
@@ -183,26 +183,26 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 
 ```
 1. 作者開 PR（含 PR template 填完）
-2. 作者或 CI 跑 /codex review（Codex 看整個 diff）
-3. Codex 回報：
-   - PASS / FAIL（overall gate）
-   - 關鍵發現列表（critical / high / medium / low）
-4. 作者逐條回應：
-   - 採納 → 改 code，push 新 commit
-   - 駁回 → 在 PR 留言說明理由
-   - Defer → 開新 ticket，標 PR 描述 "deferred to T-xxx"
-5. 人類 reviewer 看 diff + Codex review + 作者回應
-6. 人類 approve + 條件滿足 → Merge
+2. Codex App 自動觸發，在 PR 上留 review comments
+   （通常 PR 開出後幾分鐘內；Codex 已跟 GitHub 連好，無需手動啟動）
+3. 作者逐條回應 Codex 的每個 comment：
+   - 採納 → 改 code 推新 commit（Codex 看到新 commit 可能再 review 一次）
+   - 駁回 → 在該 comment thread 回覆說明理由
+   - Defer → 開新 ticket，在 comment 回覆 "deferred to T-xxx"
+4. 人類 reviewer 看 diff + Codex comments + 作者回應
+5. 人類 approve + Codex 無 unresolved critical + 其他條件滿足 → Merge
 ```
+
+**不是**作者手動跑 CLI command 再貼結果。Codex 是 GitHub-integrated 的自動 reviewer。
 
 ### 4.4 其他 AI agent 輔助（選用）
 
-除了強制的 Codex review，歡迎選用 `agency-agents` 的專家 agent 做領域 review：
+除了自動觸發的 Codex review，作者或 reviewer 可**主動**用 `agency-agents` 的專家 agent 做領域深度 review：
 - `security-engineer` — auth / secrets / attack surface
 - `db-optimizer` — schema / index / query 效能
 - `code-reviewer` — 通用 code smell / 可讀性
 
-這些是**選用**，不取代人類 approve 也不取代 Codex review。
+這些是**選用**，通常用在 push PR 前自己先過一輪、或人類 reviewer 想要第二意見時。不取代人類 approve 也不取代 Codex 自動 review。
 
 ### 4.4 Request changes vs Comment
 
@@ -229,7 +229,7 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 
 - ✅ CI 全綠
 - ✅ 至少 1 人 approve（或 2 人，按 PR 類型）
-- ✅ **Codex review 跑過**（critical issue 都處理或明確 defer）
+- ✅ **Codex 已自動 review 完成**，所有 critical comments 都處理（採納 / 駁回 / defer to ticket）
 - ✅ 無 conflict（有就先 rebase）
 - ✅ PR 作者已更新 STATUS.md
 - ✅ 若 ticket 完成 → `git mv tickets/T-xxx-*.md tickets/DONE/`（可在 PR 內做或 merge 後做）

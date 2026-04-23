@@ -44,18 +44,18 @@ Ticket: `T-XXX`
 
 ---
 
-## Codex Review
+## Codex Review 回應
 
 <!--
-合併前必跑。在 PR 或 local 用 /codex review 跑一次，把結果摘要貼這裡，
-並逐條說明採納 / 駁回 / defer。
+Codex App 會在 PR 開出後自動 review 並留 comments（無需手動觸發）。
+合併前所有 critical comments 必須處理：
+  - 採納 → 改 code 推新 commit
+  - 駁回 → 在該 comment thread 回覆理由
+  - Defer → 開新 ticket，在 comment 回覆 "deferred to T-xxx"
 -->
 
-- [ ] Codex review 跑過
-- [ ] 所有 critical 發現已處理或明確 defer（defer 要附 ticket 編號）
-
-摘要：
-<!-- 例：Codex 提 3 個發現（2 採納、1 defer to T-XXX）。細節見 comment thread。 -->
+- [ ] Codex 自動 review 完成
+- [ ] 所有 critical comments 已回應（採納 / 駁回 / defer）
 
 ---
 
@@ -67,7 +67,7 @@ Ticket: `T-XXX`
 - [ ] Planning docs 有需要同步更新嗎？（通常不用，若 API shape / schema 改了才需要）
 - [ ] 沒有意外 commit `.env` 或其他 secret
 - [ ] CI 綠
-- [ ] Codex review 完成（見上方）
+- [ ] Codex critical comments 都已處理（見上方）
 - [ ] 命名遵循 `CONTRIBUTING.md` §1-2 的 branch / commit / PR title 規則
 
 ---
