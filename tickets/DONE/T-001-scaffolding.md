@@ -1,6 +1,6 @@
 # T-001: Repo Scaffolding
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 0
 **Est:** M (2h)
 **Depends on:** none

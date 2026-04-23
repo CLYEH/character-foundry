@@ -1,0 +1,18 @@
+# Local dev overlay — automatically merged with docker-compose.yml when
+# running `docker compose up`. Bind-mounts source for hot-reload and exposes
+# internal service ports for direct access.
+
+services:
+  api:
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./api/app:/app/app
+    ports:
+      - "8000:8000"
+
+  web:
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
