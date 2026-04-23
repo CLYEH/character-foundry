@@ -166,6 +166,25 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 
 **Codex review 獨立於人類 approve 之外自動執行。** 即使 1 人 approve 條件符合，Codex 找到 critical issue 仍會 block merge（作者要修 code 推新 commit，或在 PR 裡 justify 為什麼 defer）。
 
+#### Phase 1 solo exception
+
+上表是**團隊 ≥ 2 人**的基準規則。現階段（Phase 1）實際只有一位活躍貢獻者，不可能湊到 2 人 approve，因此套用以下覆寫：
+
+| 原規則 | Phase 1 solo 覆寫 |
+|---|---|
+| **2 人** approve（Security-sensitive / Schema migration / Production deploy） | **Codex `+1`** + **1 人** approve（self OK）|
+| **1 人** approve（其餘類型） | 不變 |
+
+精神：2-人 rule 存在是為了「人 × 人」cross-check。Solo 時湊不到第二個人，改由 **Codex 自動 review** 當結構性把關 —— Codex 對該 commit 留 `+1` reaction + 零 unresolved critical comment，即視為第二層防線完成。
+
+**套用條件：** active contributor（過去 90 天有 commit 的 git author）數量 = 1 時自動生效。第二名貢獻者加入後**立即失效**，回到上表原規則。本條款應於達成時刪除。
+
+**不變的守門線：**
+- Codex 自動 review 仍然要跑完
+- Codex 若留 critical comment 必須處理（採納 / 駁回 / defer）才能 merge
+- Self-approve 的 PR 作者仍要勾完 `.github/pull_request_template.md` 的 checklist
+- `main` branch protection rule 不得為了這條款而放寬
+
 ### 4.2 Reviewer 責任
 
 檢查：
@@ -228,7 +247,7 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 ### 5.2 Merge 前必備
 
 - ✅ CI 全綠
-- ✅ 至少 1 人 approve（或 2 人，按 PR 類型）
+- ✅ 至少 1 人 approve（或 2 人，按 PR 類型；Phase 1 solo 覆寫見 §4.1）
 - ✅ **Codex 已自動 review 完成**，所有 critical comments 都處理（採納 / 駁回 / defer to ticket）
 - ✅ 無 conflict（有就先 rebase）
 - ✅ PR 作者已更新 STATUS.md
