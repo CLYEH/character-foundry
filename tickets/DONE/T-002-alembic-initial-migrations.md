@@ -1,6 +1,6 @@
 # T-002: Alembic + Initial Migrations (teams, users, characters skeleton)
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 0
 **Est:** S (1h)
 **Depends on:** T-001
