@@ -17,9 +17,9 @@
 - 角色圖存檔後，可透過 image generation model 改變造型
   （例如：換衣服、換髮型、換場景服裝等）
 
-### 動作素材庫生成
+### 動作素材庫生成（現階段 scope）
 - 以角色圖為基礎，使用 i2v（image-to-video）模型生成預錄影片片段
-- 每段影片包含特定動作 + 嘴型（lip sync）
+- 每段影片包含特定動作（**現階段不做嘴型 lip sync，暫緩**）
 - 預計涵蓋的情境動作類型：
   - 招手歡迎
   - 點頭說明
@@ -29,13 +29,17 @@
   - （可擴充）
 - 影片為**預錄**形式，非即時生成
 
-### 導覽員系統整合
+### 導覽員系統整合（未來）
 - 導覽員輸出文字 → TTS 生成語音
 - 根據情境選擇對應的影片片段
 - 播放影片 + 同步音檔
 - 不需要即時渲染或即時嘴型同步
 
-### 3D 化（長期目標）
+### Lip sync（暫緩 / 未來）
+- 在 i2v 產出的動作影片上加嘴型同步
+- 現階段先不做，影片先不含說話嘴型
+
+### 3D 化（暫緩 / 長期目標）
 - 透過 image-to-3D 將角色圖轉為 3D 模型
 - 綁定骨架（rigging）
 - 套用動作，產生更豐富的動作庫
@@ -43,7 +47,13 @@
 ## 技術棧
 - Frontend: React
 - Backend: Python
-- AI 模型串接：image generation、i2v、lip sync、image-to-3D
+- AI 模型串接（現階段）：
+  - Image generation：gpt-image-2（角色 asset 生成，text-to-image）
+  - Image editing：gpt-image-2（asset → alias 造型編輯；image-to-image / text-to-image / inpaint 視情境選用）
+  - i2v：Seedance 2.0
+- AI 模型串接（暫緩 / 未來）：
+  - Lip sync
+  - Image-to-3D
 
 ## 產品定位
 > 「輸入一段描述或圖片，幾分鐘後得到一個可以說話、可以動的虛擬導覽員角色」

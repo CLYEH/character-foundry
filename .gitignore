@@ -52,3 +52,11 @@ Thumbs.db
 .vscode/
 *.suo
 *.sw?
+
+# ========================
+# Local tooling / MemPalace
+# ========================
+chroma.sqlite3
+entities.json
+mempalace.yaml
+.mempalace/
