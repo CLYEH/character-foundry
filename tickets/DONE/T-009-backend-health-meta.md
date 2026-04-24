@@ -1,6 +1,6 @@
 # T-009: Backend /health + /v1/meta
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 1
 **Est:** S (1h)
 **Depends on:** T-001, T-002
