@@ -255,6 +255,19 @@ async def stream_task(task_id: UUID):
 替代方案考慮：
 - Postgres `FOR UPDATE` 鎖 session row 後 COUNT — 可行但鎖粒度較大，且 in-flight job 期間鎖不能釋放
 - 預先建 placeholder checkpoint row — 違反 schema `output_image_key NOT NULL` 與 DTO 無 status 欄位的設計
+- DB-backed sequence allocator（新表或 tasks 加 UNIQUE 欄位）— 見下方殘餘 race 討論
+
+#### 殘餘 race（Phase 1 接受）
+
+Redis INCR 與 task row 在 DB commit 之間有極小窗口（<毫秒級）：若 Redis 在 INCR 之後、task row commit 之前重啟，且**同時**有並發 recovery 進來，兩個 task 可能拿到同 sequence，worker 寫 checkpoint 時其中一個撞 `(creation_session_id, sequence)` UNIQUE。
+
+**Phase 1 接受此 race**：
+- 觸發條件複合：Redis 必須死於毫秒窗口內 + 並發 recovery，內部單機工具實際發生機率近 0
+- 失敗模式 retryable：worker 的 INSERT 撞 UNIQUE → task `failed` with `CONFLICT_SEQUENCE_RACE`（retryable=true）→ 使用者點重試 → 走正常 flow
+- 無資料遺失、無系統毀損
+- 「正規」修法（DB-backed allocator 或 tasks 加 UNIQUE(session_id, sequence) 欄位）需新 schema + transaction 邏輯，對 Phase 1 ROI 不合算
+
+**Phase 2 升級 hook**：若部署 Redis HA / 多 instance / 對外服務，此 race 變相關，屆時改 DB-backed sequence allocator 或在 tasks 表加 UNIQUE 約束。
 
 ---
 
