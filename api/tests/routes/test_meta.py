@@ -129,3 +129,53 @@ async def test_meta_drops_unknown_fields_from_degraded_payload(
         "message": "down",
     }
     assert "leaked_internal_debug" not in entry
+
+
+async def test_meta_drops_non_string_field_values_without_500(
+    client: TestClient, fake_redis: FakeRedis
+) -> None:
+    """A payload whose `reason` is a nested object used to pass `isinstance(dict)`
+    and then 500 the endpoint at Pydantic validation time. The loader now
+    drops individual type-invalid fields and keeps the rest of the entry.
+    """
+    await fake_redis.set(
+        "degraded:gpt-image-2",
+        json.dumps(
+            {
+                "reason": {"code": "OPEN"},  # wrong type — must be dropped
+                "message": "down",
+            }
+        ),
+    )
+
+    resp = client.get("/v1/meta")
+    assert resp.status_code == 200
+    entry = resp.json()["degraded_services"][0]
+    assert entry["service"] == "gpt-image-2"
+    assert entry["reason"] is None  # dropped
+    assert entry["message"] == "down"
+
+
+async def test_meta_survives_redis_outage_returning_empty_degraded(
+    client: TestClient, fake_redis: FakeRedis
+) -> None:
+    """A Redis outage during the scan_iter must not 500 /v1/meta — the
+    endpoint also serves static metadata (models, preset_motions, versions),
+    which the Frontend still needs during infra incidents.
+    """
+
+    # Monkey-patch scan_iter on the existing fake to raise.
+    async def _exploding_scan_iter(*_args: object, **_kwargs: object):
+        raise RuntimeError("redis connection refused")
+        yield  # pragma: no cover — unreachable; satisfies async-generator shape
+
+    fake_redis.scan_iter = _exploding_scan_iter  # type: ignore[method-assign]
+
+    resp = client.get("/v1/meta")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded_services"] == []
+    # Static metadata still served.
+    assert body["api_version"] == "v1"
+    assert len(body["preset_motions"]) == 5
+    assert body["models"]["image"] == "gpt-image-2"
