@@ -1,3 +1,5 @@
+import { useAuthStore } from '@/stores/authStore'
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
 export class ApiError extends Error {
@@ -14,23 +16,68 @@ export class ApiError extends Error {
   }
 }
 
+export interface ApiFetchOptions extends RequestInit {
+  /**
+   * Skip injecting `Authorization: Bearer` and skip the 401 → refresh → retry flow.
+   * Used by endpoints that don't accept JWT (login, refresh).
+   */
+  skipAuth?: boolean
+}
+
 /**
  * apiFetch returns parsed JSON when the response is JSON, `undefined` on 204,
  * and the raw `Response` object for other content types so callers can pick
  * `.blob()` / `.arrayBuffer()` / `.text()` themselves (used for ZIP download,
  * signed-URL proxy, etc). Errors always throw `ApiError`.
+ *
+ * On 401 for protected requests, a single-flight refresh is attempted. If it
+ * succeeds the original request is retried once with the new access token;
+ * otherwise the auth store is cleared and the browser is navigated to /login.
  */
-export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+export async function apiFetch<T = unknown>(
+  path: string,
+  options: ApiFetchOptions = {},
+): Promise<T> {
+  const { skipAuth = false, ...init } = options
+  return apiFetchInternal<T>(path, init, { skipAuth, isRetry: false })
+}
+
+async function apiFetchInternal<T>(
+  path: string,
+  options: RequestInit,
+  ctx: { skipAuth: boolean; isRetry: boolean },
+): Promise<T> {
   const headers = new Headers(options.headers)
 
   if (!headers.has('Content-Type') && shouldDefaultJsonContentType(options.body)) {
     headers.set('Content-Type', 'application/json')
   }
-  // Don't default Accept: let the browser send `*/*` so binary endpoints
-  // (ZIP download, signed-URL proxy) and content-negotiation servers aren't
-  // forced into JSON representation.
+
+  if (!ctx.skipAuth) {
+    const token = useAuthStore.getState().accessToken
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+  }
 
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
+
+  if (res.status === 401 && !ctx.skipAuth && !ctx.isRetry) {
+    // Remember which session produced the 401 so we can tell, after the
+    // refresh resolves, whether we're still acting on that same session.
+    const sessionAtStart = useAuthStore.getState().refreshToken
+    const refreshed = await attemptTokenRefresh()
+    if (refreshed) {
+      return apiFetchInternal<T>(path, options, { skipAuth: false, isRetry: true })
+    }
+    // Only tear down auth if the session that triggered the 401 is still the
+    // active one. Otherwise the user has already moved on (logout or re-login
+    // mid-flight); logging out again would wipe the new session and a stale
+    // 401 from the old session must not do that.
+    if (useAuthStore.getState().refreshToken === sessionAtStart) {
+      useAuthStore.getState().logout()
+      authFailureRedirect.toLogin()
+    }
+    // Fall through to throw below so the caller still sees the failure.
+  }
 
   if (!res.ok) {
     const body = await readErrorBody(res)
@@ -50,13 +97,72 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
 
   const contentType = res.headers.get('Content-Type') ?? ''
   if (contentType.includes('application/json')) {
-    // Handle valid-but-empty JSON success bodies (e.g. 200/202 with no payload,
-    // HEAD). res.json() on an empty body throws SyntaxError.
     const text = await res.text()
     if (!text) return undefined as T
     return JSON.parse(text) as T
   }
   return res as unknown as T
+}
+
+let refreshPromise: Promise<boolean> | null = null
+let refreshPromiseForToken: string | null = null
+
+export async function attemptTokenRefresh(): Promise<boolean> {
+  const currentRefreshToken = useAuthStore.getState().refreshToken
+  // Share an in-flight refresh only when it's refreshing the *current* session.
+  // Otherwise a request from a new session could end up awaiting (and trusting
+  // the failure result of) a refresh that belonged to an old session.
+  if (refreshPromise && refreshPromiseForToken === currentRefreshToken) {
+    return refreshPromise
+  }
+  const tokenForThisRefresh = currentRefreshToken
+  const p = doRefresh(tokenForThisRefresh).finally(() => {
+    // Only clear the slot if we're still the one parked in it (a newer
+    // refresh for a different session may have overwritten us already).
+    if (refreshPromise === p) {
+      refreshPromise = null
+      refreshPromiseForToken = null
+    }
+  })
+  refreshPromise = p
+  refreshPromiseForToken = tokenForThisRefresh
+  return p
+}
+
+async function doRefresh(refreshTokenToUse: string | null): Promise<boolean> {
+  if (!refreshTokenToUse) return false
+  try {
+    const res = await fetch(`${BASE_URL}/v1/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshTokenToUse }),
+    })
+    if (!res.ok) return false
+    const data = (await res.json()) as { access_token: string; expires_in: number }
+    // If the session changed while the refresh was in flight (logout, or
+    // re-login as a different user), discard the result so we don't silently
+    // re-authenticate the previous session.
+    if (useAuthStore.getState().refreshToken !== refreshTokenToUse) {
+      return false
+    }
+    useAuthStore.getState().updateAccessToken(data.access_token, data.expires_in)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Redirect seam exposed for tests: jsdom does not let us spy on
+ * `window.location.assign` directly.
+ */
+export const authFailureRedirect = {
+  toLogin(): void {
+    if (typeof window === 'undefined') return
+    if (window.location.pathname.startsWith('/login')) return
+    const redirectBack = encodeURIComponent(window.location.pathname + window.location.search)
+    window.location.assign(`/login?redirect_back=${redirectBack}`)
+  },
 }
 
 function shouldDefaultJsonContentType(body: RequestInit['body']): boolean {
