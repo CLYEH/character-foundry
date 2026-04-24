@@ -14,9 +14,12 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     proxy: {
+      // Mirror prod nginx: strip the /api prefix before forwarding so that
+      // VITE_API_BASE_URL=/api + backend routes /v1/* + /health lines up.
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api/, ''),
       },
     },
   },
