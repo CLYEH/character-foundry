@@ -148,10 +148,53 @@ describe('apiFetch — 401 refresh flow', () => {
 
     await pending
 
+    // Store stays cleared — the in-flight refresh did not re-seat a token.
     expect(useAuthStore.getState().accessToken).toBeNull()
     expect(useAuthStore.getState().refreshToken).toBeNull()
-    // Original caller is told the request failed and user is redirected to /login.
-    expect(redirectSpy).toHaveBeenCalled()
+    // AND the stale 401 path must not force an extra logout/redirect; the
+    // user's own logout already cleared state and AppLayout will navigate.
+    expect(redirectSpy).not.toHaveBeenCalled()
+  })
+
+  it('does not tear down a new session when a stale 401 resolves after re-login', async () => {
+    let releaseRefresh: ((value: Response) => void) | null = null
+    const refreshGate = new Promise<Response>((resolve) => {
+      releaseRefresh = resolve
+    })
+
+    installFetchMock(async ({ url, auth }) => {
+      if (url.endsWith('/v1/auth/refresh')) {
+        return refreshGate
+      }
+      if (auth === 'Bearer expired') return new Response(null, { status: 401 })
+      return new Response('unexpected', { status: 500 })
+    })
+
+    const redirectSpy = vi.spyOn(authFailureRedirect, 'toLogin').mockImplementation(() => {})
+
+    const pending = apiFetch('/v1/auth/me').catch((e) => e)
+    await new Promise((r) => setTimeout(r, 0))
+
+    // User logs out and then logs in again as a fresh session while the old
+    // refresh is still parked on the gate.
+    useAuthStore.getState().logout()
+    useAuthStore.setState({
+      accessToken: 'a2',
+      refreshToken: 'r2',
+      user: null,
+      expiresAt: Date.now() + 60_000,
+    })
+
+    // Release the old refresh with a 401 so doRefresh returns false.
+    releaseRefresh!(new Response(null, { status: 401 }))
+
+    await pending
+
+    // New session must survive — the stale 401 from the old session must not
+    // call logout() or redirect.
+    expect(useAuthStore.getState().accessToken).toBe('a2')
+    expect(useAuthStore.getState().refreshToken).toBe('r2')
+    expect(redirectSpy).not.toHaveBeenCalled()
   })
 
   it('logs out and redirects to /login when refresh also fails', async () => {

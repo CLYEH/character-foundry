@@ -61,12 +61,21 @@ async function apiFetchInternal<T>(
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
 
   if (res.status === 401 && !ctx.skipAuth && !ctx.isRetry) {
+    // Remember which session produced the 401 so we can tell, after the
+    // refresh resolves, whether we're still acting on that same session.
+    const sessionAtStart = useAuthStore.getState().refreshToken
     const refreshed = await attemptTokenRefresh()
     if (refreshed) {
       return apiFetchInternal<T>(path, options, { skipAuth: false, isRetry: true })
     }
-    useAuthStore.getState().logout()
-    authFailureRedirect.toLogin()
+    // Only tear down auth if the session that triggered the 401 is still the
+    // active one. Otherwise the user has already moved on (logout or re-login
+    // mid-flight); logging out again would wipe the new session and a stale
+    // 401 from the old session must not do that.
+    if (useAuthStore.getState().refreshToken === sessionAtStart) {
+      useAuthStore.getState().logout()
+      authFailureRedirect.toLogin()
+    }
     // Fall through to throw below so the caller still sees the failure.
   }
 
