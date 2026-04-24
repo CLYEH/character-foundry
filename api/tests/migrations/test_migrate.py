@@ -272,6 +272,19 @@ def test_motions_exactly_one_parent_check(alembic_config, database_url, clean_db
     )
 
 
+def test_month_ranges_emits_utc_qualified_bounds():
+    """Regression: partition bounds must carry explicit `+00` so they're
+    interpreted as UTC instants regardless of the DB server's session
+    TimeZone. Bare-date bounds on a non-UTC DB would shift month
+    boundaries and route edge rows to the wrong partition.
+    """
+    ranges = _gen_log_ranges(datetime(2026, 4, 24, tzinfo=timezone.utc), count=2)
+    assert ranges == [
+        ("2026_04", "2026-04-01 00:00:00+00", "2026-05-01 00:00:00+00"),
+        ("2026_05", "2026-05-01 00:00:00+00", "2026-06-01 00:00:00+00"),
+    ]
+
+
 def test_generation_log_partitions_exist(alembic_config, database_url, clean_db):
     """Bootstrap migration 010 creates the current month + next two named
     partitions (derived from execution time) plus a DEFAULT partition.

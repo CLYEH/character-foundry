@@ -29,8 +29,15 @@ depends_on: str | Sequence[str] | None = None
 
 
 def _month_ranges(anchor: datetime, count: int = 3) -> list[tuple[str, str, str]]:
-    """Return (suffix, start_iso, end_iso) for `count` consecutive months
+    """Return (suffix, start_utc, end_utc) for `count` consecutive months
     beginning with the month containing `anchor`.
+
+    `start_utc` and `end_utc` are rendered as UTC-qualified literals
+    (`YYYY-MM-01 00:00:00+00`). Bare-date literals in a `FOR VALUES FROM ...
+    TO ...` clause would be interpreted in the server's session TimeZone,
+    so on a non-UTC DB month boundaries drift and rows near month edges can
+    route to the wrong partition. Fixing the offset explicitly keeps
+    partition pruning and month-based analytics consistent.
 
     Pure function so it's testable from the migration-tests side without
     going through Alembic.
@@ -41,8 +48,8 @@ def _month_ranges(anchor: datetime, count: int = 3) -> list[tuple[str, str, str]
         next_year = year + 1 if month == 12 else year
         next_month = 1 if month == 12 else month + 1
         suffix = f"{year:04d}_{month:02d}"
-        start = f"{year:04d}-{month:02d}-01"
-        end = f"{next_year:04d}-{next_month:02d}-01"
+        start = f"{year:04d}-{month:02d}-01 00:00:00+00"
+        end = f"{next_year:04d}-{next_month:02d}-01 00:00:00+00"
         out.append((suffix, start, end))
         year, month = next_year, next_month
     return out
