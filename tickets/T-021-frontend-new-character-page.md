@@ -15,7 +15,7 @@ P-03：使用者填名 + 選輸入模式（Template / Reference）→ `POST /v1/
 **In scope:**
 - Route `/characters/new` (protected)
 - `NewCharacterPage` — 1 個 form：
-  - `name` 必填，1–40 字，即時字數顯示
+  - `name` 必填，1–50 字（對齊 `planning/data/db-schema.md` line 103 與 T-016 backend validation），即時字數顯示
   - `input_mode` 單選：Template vs Reference（兩張大卡，Template 寫「選單式」、Reference 寫「參考圖」）
   - `[建立]` submit 按鈕，disabled 直到兩欄都填
 - React Hook Form + Zod validation
@@ -42,7 +42,7 @@ P-03：使用者填名 + 選輸入模式（Template / Reference）→ `POST /v1/
 ## Acceptance criteria
 
 - [ ] 未登入 → guard 跳 `/login`
-- [ ] Name 空白或 > 40 字 → submit disabled
+- [ ] Name 空白或 > 50 字 → submit disabled
 - [ ] 未選 mode → submit disabled
 - [ ] 送出 → 呼 API、成功後跳 session 頁
 - [ ] 重名 → inline 錯誤

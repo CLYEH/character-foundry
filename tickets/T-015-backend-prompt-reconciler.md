@@ -13,14 +13,16 @@
 Pure Python 模組：吃使用者輸入（中文選單選項 + 自由補述）與平台固定 constraints，呼 gpt-5-mini 翻譯 + 衝突解決 + 組合，吐最終英文 prompt。獨立可測試，無 HTTP / DB 依賴。
 
 **In scope:**
-- `PromptReconciler.reconcile(input: ReconcilerInput) -> ReconcilerOutput`
+- 兩個方法（對齊 `planning/backend/prompt-reconciler.md` line 62–63, 240）：
+  - `PromptReconciler.reconcile(input) -> ReconcilerOutput` — cache miss 時寫 cache（供 worker 生成使用）
+  - `PromptReconciler.preview(input) -> ReconcilerOutput` — 同邏輯但**不寫 cache、不 log**（供 T-019 的「進階檢視」用，避免 preview 污染正式 cache）
   - Input：`menu_selections` dict、`freeform_note` 中文、`mode` (create_base / create_alias / create_motion)、`reference_image_count`
   - Output：`platform_constraints`、`reconciled_note_en`、`menu_fragments[]`、`final_prompt`
 - 平台固定 constraints（見 `functional-scope.md` §7）寫成 const 字串：transparent bg / centered / facing camera / full body / consistent lighting
 - Menu 選項 → English fragment mapping 表（性別 / 眼型 / 鼻型 / 髮型 / 膚色 / 體型 / 風格；每項若干 option）
 - gpt-5-mini prompt template：給模型吃中文補述 + 當前 constraints + 指定 JSON 輸出
 - JSON 輸出 validate（失敗時 raise `PROMPT_CONFLICT` with fix）
-- Redis cache：`(hash(input), constraints_version)` → output，TTL 7 天（相同輸入不重跑 LLM）
+- Redis cache：`(hash(input), constraints_version)` → output，**TTL 24h**（對齊 `planning/backend/prompt-reconciler.md` line 236）
 - 單元測試：衝突 case（「雜亂市場背景」）、純中翻英 case、menu-only case（無補述）、cache hit、LLM fail fallback（回結構化錯誤，不把中文當英文直送 gpt-image-2）
 
 **Not in scope:**

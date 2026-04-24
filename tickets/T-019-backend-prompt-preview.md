@@ -33,7 +33,7 @@
   }
   ```
 - Validation：mode 必填；至少一項輸入（menu / note / reference / mask）否則 400
-- 呼 `PromptReconciler.reconcile(...)`（含 Redis cache，不會每次打 LLM）
+- 呼 `PromptReconciler.preview(...)`（**不是** `reconcile()`）— preview 會讀 cache 但不寫 cache（見 `planning/backend/prompt-reconciler.md` line 62–63, 240；避免使用者「進階檢視」的輸入污染正式生成用的 cache）
 - 單元 + integration test
 
 **Not in scope:**
@@ -54,7 +54,8 @@
 - [ ] `POST /v1/prompt/preview` 回 4 個欄位，`final_prompt` 非空字串
 - [ ] 空 input → 400 `VALIDATION_EMPTY_INPUT`
 - [ ] Reconciler 失敗 → 400 `PROMPT_CONFLICT` 含 AgentError
-- [ ] 相同 input 連打兩次，第二次從 cache 回（log 可觀測）
+- [ ] Preview 呼叫後不應在 Redis 寫入 reconciler cache key（觀察 redis MONITOR 或 mock；preview 只讀不寫）
+- [ ] 先呼 `reconcile()` 寫 cache，再呼 `preview()` 相同 input → preview 讀到 cache 命中，但不會新增 key
 - [ ] OpenAPI 正確產出
 - [ ] `pytest api/tests/prompt_preview/` 全綠
 
@@ -74,3 +75,4 @@
 - Endpoint 不需要 task；純同步
 - 不在回應裡洩漏 LLM raw response（只給 reconciler 包好後的欄位）
 - Integration test 用 stub reconciler client；避免打外部 API
+- 關鍵契約：preview 不寫 cache。若 T-015 `preview()` 方法尚未實作，本單 blocked 在 T-015
