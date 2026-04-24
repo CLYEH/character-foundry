@@ -41,10 +41,16 @@ class LocalFilesystemBackend(StorageBackend):
     def _resolve(self, key: str) -> Path:
         if not key or key.startswith("/") or "\\" in key or "\x00" in key:
             raise StorageError(f"Invalid key: {key!r}")
+        # Reject "." / ".." / empty path segments. Without this, a key like
+        # "characters/c1/../c2/base.png" physically lands under characters/c2
+        # while callers still track the original string — two keys alias to
+        # one file and list_prefix / export enumeration become inconsistent
+        # with what upstream stored. Keys must be in canonical form.
+        if any(seg in ("", ".", "..") for seg in key.split("/")):
+            raise StorageError(f"Key contains invalid path segment: {key!r}")
         candidate = (self._root / key).resolve()
-        # Reject keys that resolve to the root itself (e.g. "." or "a/..") —
-        # file operations against the root directory would surface as
-        # IsADirectoryError 500s instead of a clean validation error.
+        # Defense in depth: even after segment validation, the resolved path
+        # must land strictly under the root (not at it).
         if candidate == self._root or self._root not in candidate.parents:
             raise StorageError(f"Key escapes storage root or targets root: {key!r}")
         return candidate
@@ -135,6 +141,11 @@ class LocalFilesystemBackend(StorageBackend):
     def list_prefix(self, prefix: str) -> list[StoredObject]:
         if prefix.startswith("/") or "\\" in prefix or "\x00" in prefix:
             raise StorageError(f"Invalid prefix: {prefix!r}")
+        # Same canonical-form requirement as _resolve: reject "." / ".." /
+        # empty segments. Empty prefix is the legitimate "list everything"
+        # sentinel and is handled below.
+        if prefix and any(seg in ("", ".", "..") for seg in prefix.split("/")):
+            raise StorageError(f"Prefix contains invalid path segment: {prefix!r}")
         prefix_path = (self._root / prefix).resolve() if prefix else self._root
         if prefix_path != self._root and self._root not in prefix_path.parents:
             raise StorageError(f"Prefix escapes storage root: {prefix!r}")

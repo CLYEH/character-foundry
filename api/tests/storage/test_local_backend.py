@@ -215,6 +215,41 @@ def test_resolve_rejects_keys_targeting_root(
         backend.put(root_key, b"x", "text/plain")
 
 
+@pytest.mark.parametrize(
+    "aliased_key",
+    [
+        "characters/c1/../c2/base.png",
+        "characters/./c1/base.png",
+        "characters//c1/base.png",
+        "a/b/../../c",
+        "characters/c1/",
+    ],
+)
+def test_resolve_rejects_dot_segments_in_key(
+    backend: LocalFilesystemBackend, aliased_key: str
+) -> None:
+    """Keys must be in canonical form — no '.' / '..' / empty segments.
+    Otherwise two different key strings can alias to the same physical
+    file, breaking list_prefix / export enumeration."""
+    with pytest.raises(StorageError):
+        backend.put(aliased_key, b"x", "image/png")
+
+
+@pytest.mark.parametrize(
+    "aliased_prefix",
+    [
+        "characters/c1/..",
+        "characters/./c1",
+        "characters//c1",
+    ],
+)
+def test_list_prefix_rejects_dot_segments(
+    backend: LocalFilesystemBackend, aliased_prefix: str
+) -> None:
+    with pytest.raises(StorageError):
+        backend.list_prefix(aliased_prefix)
+
+
 def test_copy_overwrite_is_atomic_on_failure(
     backend: LocalFilesystemBackend,
     tmp_path: Path,
