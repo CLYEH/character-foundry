@@ -17,7 +17,18 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import models so their metadata is registered on Base.metadata.
 from app.db.base import Base
-from app.models import Character, Team, User  # noqa: F401  (register metadata)
+from app.models import (  # noqa: F401  (register metadata)
+    Alias,
+    BaseAsset,
+    Character,
+    Checkpoint,
+    CreationSession,
+    GenerationLog,
+    Motion,
+    Task,
+    Team,
+    User,
+)
 
 config = context.config
 
@@ -37,6 +48,33 @@ def _resolve_url() -> str:
     return url
 
 
+def _autogenerate_filter(object, name, type_, reflected, compare_to):
+    """Autogenerate filter for objects that can't (or shouldn't) live in ORM
+    metadata.
+
+    Skipped:
+      - IVFFlat indexes created via raw SQL. SQLAlchemy's Index() can't
+        describe pgvector's access method with `vector_cosine_ops`, so these
+        indexes live only in migrations (created via op.execute). Without
+        this filter, autogenerate would emit drop_index diffs for them.
+      - `generation_logs` partition children and their per-partition indexes.
+        The parent table is modeled; individual monthly partitions are a
+        runtime concern (created by migration 010 and the scheduled rotation
+        job) and don't belong in ORM metadata.
+    """
+    if type_ == "index" and name and name.endswith("_embedding"):
+        return False
+    if type_ == "table" and name and name.startswith("generation_logs_"):
+        return False
+    if (
+        type_ == "index"
+        and name
+        and name.startswith("idx_gen_logs_")
+    ):
+        return False
+    return True
+
+
 def run_migrations_offline() -> None:
     """Emit SQL without a live DB connection (for `alembic upgrade --sql`)."""
     context.configure(
@@ -45,6 +83,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=_autogenerate_filter,
     )
 
     with context.begin_transaction():
@@ -56,6 +95,7 @@ def do_run_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
+        include_object=_autogenerate_filter,
     )
 
     with context.begin_transaction():

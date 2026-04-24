@@ -187,7 +187,8 @@ CREATE TABLE checkpoints (
     CONSTRAINT uq_session_sequence UNIQUE (creation_session_id, sequence)
 );
 
-CREATE INDEX idx_checkpoints_session ON checkpoints(creation_session_id, sequence);
+-- 不另建 (creation_session_id, sequence) 索引：UNIQUE 約束 `uq_session_sequence`
+-- 已自動建立對應的 btree 索引，對於以 `creation_session_id` 為 prefix 的查詢也能命中。
 
 -- Vector similarity search index（IVFFlat，適合 <1M 筆）
 CREATE INDEX idx_checkpoints_embedding
@@ -212,7 +213,7 @@ ALTER TABLE characters
     ADD CONSTRAINT fk_characters_base
     FOREIGN KEY (base_id) REFERENCES bases(id) ON DELETE SET NULL;
 
-CREATE INDEX idx_bases_character ON bases(character_id);
+-- 不另建 character_id 索引：欄位層 UNIQUE 已隱式建出可用的 btree 索引。
 CREATE INDEX idx_bases_embedding
     ON bases USING ivfflat (image_embedding vector_cosine_ops)
     WITH (lists = 100);
@@ -534,9 +535,9 @@ Implementation：Backend Agent 實作，Data Agent 負責測試 case。
 | `characters` | `(owner_id, slug)` UNIQUE partial | URL 唯一性 |
 | `characters` | `name` GIN + trgm | 模糊搜尋 |
 | `characters` | `team_id` partial | 團隊列表 |
-| `checkpoints` | `(session_id, sequence)` UNIQUE | 時序 |
+| `checkpoints` | `(creation_session_id, sequence)` UNIQUE | 時序（此 UNIQUE 自帶 btree 索引，不額外建 idx） |
 | `checkpoints` | `embedding` IVFFlat | 相似搜尋 |
-| `bases` | `character_id` UNIQUE | 1:1 保證 |
+| `bases` | `character_id` UNIQUE | 1:1 保證（此 UNIQUE 自帶 btree 索引，不額外建 idx） |
 | `aliases` | `(character_id, name)` UNIQUE partial | 命名唯一性 |
 | `motions` | `(base_id, name)` UNIQUE partial | Base motion 命名 |
 | `motions` | `(alias_id, name)` UNIQUE partial | Alias motion 命名 |

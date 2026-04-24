@@ -7,6 +7,9 @@ without a local DB still get a green `pytest` run.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from alembic import command
@@ -15,6 +18,61 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 
 REQUIRED_EXTENSIONS = {"uuid-ossp", "pgcrypto", "vector", "pg_trgm"}
+
+
+def _load_migration_010_helper():
+    """Re-use migration 010's _month_ranges helper so the test matches
+    whatever month the suite runs in. The migration file has a leading digit
+    in its name so it isn't importable as a module — load by path.
+    """
+    api_dir = Path(__file__).resolve().parents[2]
+    migration_path = api_dir / "alembic" / "versions" / "20260423_010_generation_logs.py"
+    spec = importlib.util.spec_from_file_location("migration_010", migration_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._month_ranges
+
+
+_gen_log_ranges = _load_migration_010_helper()
+
+EXPECTED_TABLES = {
+    "teams",
+    "users",
+    "characters",
+    "creation_sessions",
+    "checkpoints",
+    "bases",
+    "aliases",
+    "motions",
+    "generation_logs",
+    "tasks",
+}
+
+def _expected_gen_log_partitions() -> set[str]:
+    """Named + default partitions that migration 010 creates at runtime."""
+    named = {
+        f"generation_logs_{suffix}"
+        for suffix, _, _ in _gen_log_ranges(datetime.now(timezone.utc), count=3)
+    }
+    return named | {"generation_logs_default"}
+
+# Tables we DROP in _reset to force each test run back to a clean slate. Order
+# matters: drop leaves before roots so FK cascades don't block us. CASCADE on
+# each drop is belt-and-braces for when a prior failure leaves partial state.
+RESET_DROP_TABLES = (
+    "tasks",
+    "generation_logs",
+    "motions",
+    "aliases",
+    "bases",
+    "checkpoints",
+    "creation_sessions",
+    "characters",
+    "users",
+    "teams",
+    "alembic_version",
+)
 
 
 def _run(coro):
@@ -45,10 +103,8 @@ async def _reset(database_url: str) -> None:
     engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
-            await conn.execute(text("DROP TABLE IF EXISTS characters CASCADE"))
-            await conn.execute(text("DROP TABLE IF EXISTS users CASCADE"))
-            await conn.execute(text("DROP TABLE IF EXISTS teams CASCADE"))
-            await conn.execute(text("DROP TABLE IF EXISTS alembic_version CASCADE"))
+            for table in RESET_DROP_TABLES:
+                await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
             await conn.execute(
                 text("DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE")
             )
@@ -63,6 +119,28 @@ def clean_db(database_url: str):
     _run(_reset(database_url))
 
 
+def _insert_user(database_url: str) -> tuple[str, str]:
+    """Insert a team+user fixture and return (team_id, user_id)."""
+    team_id = _run(
+        _fetch(database_url, "SELECT id FROM teams WHERE name='default'")
+    )[0][0]
+    _run(
+        _exec(
+            database_url,
+            "INSERT INTO users (id, team_id, name, email, password_hash) "
+            "VALUES (gen_random_uuid(), :team_id, 'Tester', "
+            "'tester@example.com', 'x')",
+            {"team_id": team_id},
+        )
+    )
+    user_id = _run(
+        _fetch(
+            database_url, "SELECT id FROM users WHERE email='tester@example.com'"
+        )
+    )[0][0]
+    return team_id, user_id
+
+
 def test_upgrade_head_creates_schema(alembic_config, database_url, clean_db):
     command.upgrade(alembic_config, "head")
 
@@ -73,6 +151,28 @@ def test_upgrade_head_creates_schema(alembic_config, database_url, clean_db):
 
     teams = _run(_fetch(database_url, "SELECT name FROM teams"))
     assert ("default",) in teams, f"default team missing; got {teams}"
+
+    # Every expected table exists (either as a regular relation or as a
+    # partitioned parent — both show up in pg_tables, but partitioned parents
+    # only appear in pg_class, so check the catalog instead).
+    actual_tables = {
+        row[0]
+        for row in _run(
+            _fetch(
+                database_url,
+                """
+                SELECT c.relname
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relkind IN ('r', 'p')
+                """,
+            )
+        )
+    }
+    assert EXPECTED_TABLES.issubset(actual_tables), (
+        f"missing tables: {EXPECTED_TABLES - actual_tables}"
+    )
 
     # Smoke check schema exists — any column error would blow up here.
     _run(_fetch(database_url, "SELECT id, email, team_id FROM users WHERE 1=0"))
@@ -90,14 +190,18 @@ def test_downgrade_to_base_is_clean(alembic_config, database_url, clean_db):
     command.upgrade(alembic_config, "head")
     command.downgrade(alembic_config, "base")
 
-    # All user tables should be gone; alembic_version is kept but empty.
+    # All user tables (regular + partitioned) should be gone after downgrade.
+    names_literal = ", ".join(f"'{t}'" for t in EXPECTED_TABLES)
     remaining = _run(
         _fetch(
             database_url,
-            """
-            SELECT tablename FROM pg_tables
-            WHERE schemaname = 'public'
-              AND tablename IN ('teams', 'users', 'characters')
+            f"""
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relkind IN ('r', 'p')
+              AND c.relname IN ({names_literal})
             """,
         )
     )
@@ -123,17 +227,7 @@ def test_characters_name_check_constraint(alembic_config, database_url, clean_db
     """
     command.upgrade(alembic_config, "head")
 
-    # Insert fixtures: a team + user so characters has valid FKs.
-    team_id = _run(_fetch(database_url, "SELECT id FROM teams WHERE name='default'"))[0][0]
-    _run(
-        _exec(
-            database_url,
-            "INSERT INTO users (id, team_id, name, email, password_hash) "
-            "VALUES (gen_random_uuid(), :team_id, 'Tester', 'tester@example.com', 'x')",
-            {"team_id": team_id},
-        )
-    )
-    user_id = _run(_fetch(database_url, "SELECT id FROM users WHERE email='tester@example.com'"))[0][0]
+    team_id, user_id = _insert_user(database_url)
 
     # Chinese name must be accepted.
     _run(
@@ -157,3 +251,153 @@ def test_characters_name_check_constraint(alembic_config, database_url, clean_db
         )
     # Either CheckViolation or a transport-wrapped version of it — both are fine.
     assert "chk_characters_name_chars" in str(exc.value) or "check constraint" in str(exc.value).lower()
+
+
+def test_motions_exactly_one_parent_check(alembic_config, database_url, clean_db):
+    """A motion must hang off exactly one of base_id / alias_id — neither or both is an error."""
+    command.upgrade(alembic_config, "head")
+
+    # Both NULL — must fail.
+    with pytest.raises(Exception) as exc_none:
+        _run(
+            _exec(
+                database_url,
+                "INSERT INTO motions (base_id, alias_id, motion_type, name, video_key) "
+                "VALUES (NULL, NULL, 'preset_wave', 'hi', 'k')",
+            )
+        )
+    assert (
+        "chk_motions_exactly_one_parent" in str(exc_none.value)
+        or "check constraint" in str(exc_none.value).lower()
+    )
+
+
+def test_month_ranges_emits_utc_qualified_bounds():
+    """Regression: partition bounds must carry explicit `+00` so they're
+    interpreted as UTC instants regardless of the DB server's session
+    TimeZone. Bare-date bounds on a non-UTC DB would shift month
+    boundaries and route edge rows to the wrong partition.
+    """
+    ranges = _gen_log_ranges(datetime(2026, 4, 24, tzinfo=timezone.utc), count=2)
+    assert ranges == [
+        ("2026_04", "2026-04-01 00:00:00+00", "2026-05-01 00:00:00+00"),
+        ("2026_05", "2026-05-01 00:00:00+00", "2026-06-01 00:00:00+00"),
+    ]
+
+
+def test_generation_log_partitions_exist(alembic_config, database_url, clean_db):
+    """Bootstrap migration 010 creates the current month + next two named
+    partitions (derived from execution time) plus a DEFAULT partition.
+    """
+    command.upgrade(alembic_config, "head")
+
+    partitions = {
+        row[0]
+        for row in _run(
+            _fetch(
+                database_url,
+                """
+                SELECT c.relname
+                FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhrelid
+                JOIN pg_class parent ON parent.oid = i.inhparent
+                WHERE parent.relname = 'generation_logs'
+                """,
+            )
+        )
+    }
+    expected = _expected_gen_log_partitions()
+    assert expected.issubset(partitions), f"missing partitions: {expected - partitions}"
+
+
+def test_generation_log_default_partition_catches_far_future_row(
+    alembic_config, database_url, clean_db
+):
+    """The DEFAULT partition must absorb rows whose `started_at` falls outside
+    the three named monthly partitions — otherwise a fresh environment run
+    long after upgrade would fail to insert (the exact bug Codex flagged).
+    """
+    command.upgrade(alembic_config, "head")
+    _, user_id = _insert_user(database_url)
+
+    # Pick a date well past the 3-month bootstrap window.
+    _run(
+        _exec(
+            database_url,
+            """
+            INSERT INTO generation_logs
+                (user_id, entity_type, model_name, final_prompt,
+                 cost_units, status, started_at)
+            VALUES
+                (:user_id, 'checkpoint', 'gpt-image-2', 'x',
+                 0, 'success', '2030-01-15T00:00:00Z')
+            """,
+            {"user_id": user_id},
+        )
+    )
+
+    # Row must have landed in the default partition.
+    count_in_default = _run(
+        _fetch(database_url, "SELECT COUNT(*) FROM generation_logs_default")
+    )[0][0]
+    assert count_in_default == 1, (
+        f"expected far-future row to land in default partition; got count={count_in_default}"
+    )
+
+
+def test_tasks_indexes_and_constraints(alembic_config, database_url, clean_db):
+    """tasks must carry its 4 indexes and the terminal/mutex CHECKs must bite."""
+    command.upgrade(alembic_config, "head")
+
+    indexes = {
+        row[0]
+        for row in _run(
+            _fetch(
+                database_url,
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'tasks'",
+            )
+        )
+    }
+    required_tasks_indexes = {
+        "idx_tasks_user_status_created",
+        "idx_tasks_active",
+        "idx_tasks_entity",
+        "idx_tasks_cancel_pending",
+    }
+    assert required_tasks_indexes.issubset(indexes), (
+        f"missing indexes on tasks: {required_tasks_indexes - indexes}"
+    )
+
+    _, user_id = _insert_user(database_url)
+
+    # status='completed' with NULL completed_at must fail the terminal CHECK.
+    with pytest.raises(Exception) as exc_terminal:
+        _run(
+            _exec(
+                database_url,
+                "INSERT INTO tasks (user_id, task_type, status, input_payload) "
+                "VALUES (:user_id, 'create_checkpoint', 'completed', '{}'::jsonb)",
+                {"user_id": user_id},
+            )
+        )
+    assert (
+        "chk_tasks_terminal_completed_at" in str(exc_terminal.value)
+        or "check constraint" in str(exc_terminal.value).lower()
+    )
+
+    # result + error both non-null must fail the mutex CHECK.
+    with pytest.raises(Exception) as exc_mutex:
+        _run(
+            _exec(
+                database_url,
+                "INSERT INTO tasks (user_id, task_type, status, input_payload, "
+                "result, error, completed_at) "
+                "VALUES (:user_id, 'create_checkpoint', 'failed', '{}'::jsonb, "
+                "'{}'::jsonb, '{}'::jsonb, NOW())",
+                {"user_id": user_id},
+            )
+        )
+    assert (
+        "chk_tasks_result_error_mutex" in str(exc_mutex.value)
+        or "check constraint" in str(exc_mutex.value).lower()
+    )

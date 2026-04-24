@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +26,40 @@ class Character(Base):
             "name ~ '^[一-鿿a-zA-Z0-9_-]+$'",
             name="chk_characters_name_chars",
         ),
+        # Partial indexes — declared here so alembic autogenerate doesn't see
+        # them as DB-only and emit destructive drop_index diffs. Losing the
+        # UNIQUE ones would silently allow duplicate active names / slugs.
+        Index(
+            "uq_characters_owner_name",
+            "owner_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_characters_owner_slug",
+            "owner_id",
+            "slug",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_characters_team",
+            "team_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_characters_owner",
+            "owner_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_characters_name_trgm",
+            "name",
+            postgresql_using="gin",
+            postgresql_ops={"name": "gin_trgm_ops"},
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -45,11 +79,17 @@ class Character(Base):
     )
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     slug: Mapped[str] = mapped_column(String(60), nullable=False)
-    # FK added in T-003 after bases table exists.
-    base_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    # FK added in T-003 after creation_sessions table exists.
+    # FKs are added by T-003 migrations (007_bases, 005_creation_sessions) to
+    # work around the circular reference with characters.
+    base_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("bases.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+    )
     creation_session_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("creation_sessions.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
     )
     copied_from_character_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

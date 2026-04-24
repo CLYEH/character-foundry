@@ -1,10 +1,17 @@
 # T-003: Remaining Migrations (sessions, checkpoints, bases, aliases, motions, generation_logs, tasks)
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 0
 **Est:** M (2h)
 **Depends on:** T-002
 **Related:** T-005（storage 會寫 image_key 欄位）, T-006 起的 feature 單
+
+## Implementation notes (2026-04-24)
+
+- Skipped the **updated_at triggers migration**: per `planning/data/db-schema.md`, only `characters` carries an `updated_at` column and its trigger was already installed in `20260423_004_characters_skeleton.py`. No other Phase-1 table has `updated_at`, so there is nothing to wire up.
+- Skipped the **optional `user_usage_summary` materialized view** per db-schema §3.10's own guidance ("Phase 1 先直接 query"). Re-open when `generation_logs` rows cross 100k.
+- `generation_logs` bootstrap partitions: 2026-04 / 05 / 06. Subsequent months are the job of the scheduled partition-rotation task (see `planning/data/lifecycle.md` §4.2).
+- Fixed a pre-existing local-dev blocker: `api/alembic.ini` contained an em dash that broke `configparser` on cp950 Windows locales. Replaced with ASCII.
 
 ---
 
