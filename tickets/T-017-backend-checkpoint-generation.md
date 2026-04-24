@@ -26,7 +26,9 @@
   ```
   - Validate mode combinations（retry_same 必須有 `base_checkpoint_id`；remix 也是；fresh 禁帶 base）
   - **不先建** `checkpoints` row（`output_image_key TEXT NOT NULL` 強制先有產物；見 db-schema §3.5）；lifecycle state 由 `tasks.status` 承載，SSE 已覆蓋全流程
-  - 預先 reserve UUID v4 作為 `checkpoint_id`，並決定 `sequence = COUNT(checkpoints WHERE session_id=?) + 1`；兩者都塞進 `input_payload`（worker 成功時用同一個 UUID 寫 row；同 session 併發請求用 row lock 破 sequence tie）
+  - 預先 reserve UUID v4 作為 `checkpoint_id`
+  - 預先 reserve `sequence` 用 **Redis atomic INCR**（key：`seq:checkpoint:{session_id}`，初始值在 session 建立時設 0）— `COUNT(checkpoints) + 1` 在 no-row-until-success 下會 race（多個 in-flight task 拿同 sequence 最後撞 `uq_session_sequence`），Redis INCR 是原子且涵蓋 in-flight 的計數器
+  - 兩者都塞進 `input_payload`（worker 成功時用同一組值寫 row）
   - 透過 T-013 `TaskService.create_task('create_checkpoint', input_payload={session_id, checkpoint_id, mode, sequence, ...})` 排 arq job
   - 回 `{ task_id, checkpoint_id }`（對齊 `api-shape.md` §5.2 合約；checkpoint_id 在 worker 完成前查 `GET /checkpoints/{id}` 會 404，但 UI 走 task SSE 不會直接打那個 endpoint）
 - arq job handler `run_create_checkpoint(ctx, task_id)`：
@@ -85,6 +87,7 @@
 - `api/app/repositories/checkpoint_repo.py` (new)
 - `api/app/repositories/reference_image_repo.py` (new)
 - `api/app/repositories/generation_log_repo.py` (new) — 寫 generation_logs partitioned table
+- `api/app/services/sequence_service.py` (new) — Redis-backed atomic sequence allocator per session
 - `api/app/workers/jobs/create_checkpoint.py` (new)
 - `api/app/workers/arq_worker.py` (edit) — register job
 - `api/app/schemas/checkpoint.py` (new)
@@ -98,7 +101,7 @@
 ## Notes
 
 - Thumbnail 寫到 storage 的 `_thumb.png` 路徑（與 full image 相鄰）；DTO 在讀取時推導 signed URL，無需在 checkpoints 表存 thumbnail key。若 PIL fail 不阻斷 task（log warning；DTO 之後讀不到 thumbnail 檔會回 null thumbnail_url）
-- `sequence` 用 Postgres `SELECT COUNT + 1 FOR UPDATE` 或 `INSERT ... RETURNING sequence FROM generate_series`；避免 race 用 row lock
+- `sequence` 用 Redis `INCR seq:checkpoint:{session_id}`（原子 + 涵蓋 in-flight task）。Session 建立時 SET 初始值 0；session abandoned / completed 時 DEL key（避免長期佔用）。如果 session 跨重啟造成 key lost，需要 fallback：`MAX(checkpoints.sequence) + 1` 重建後再 INCR
 - Checkpoint row 只在 worker 成功產出 image 後才寫（schema 要求 `output_image_key NOT NULL`；api-shape §6.7 Checkpoint DTO 也無 status 欄位）。Enqueue 失敗 / worker 失敗 → 只有 task 記錄，前端從 `tasks.status` + `task.error` 得知
 - Storage key 不曝露給 client，client 拿的是 signed URL（由 `StorageBackend.signed_url()` 產）
 - Generation log JSON schema 對齊 `planning/data/db-schema.md §3.5`：`{ model, model_version, prompt, duration_ms, cost_units, seed? }`
