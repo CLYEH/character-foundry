@@ -181,6 +181,34 @@ async def test_meta_survives_redis_outage_returning_empty_degraded(
     assert body["models"]["image"] == "gpt-image-2"
 
 
+async def test_meta_deduplicates_scan_iter_repeated_keys(
+    client: TestClient, fake_redis: FakeRedis
+) -> None:
+    """Redis SCAN can yield the same key multiple times within a single
+    iteration (documented in https://redis.io/commands/scan/). The loader
+    must dedupe on service name so `/v1/meta.degraded_services` never shows
+    the same outage twice.
+    """
+    await fake_redis.set(
+        "degraded:gpt-image-2",
+        json.dumps({"reason": "CIRCUIT_OPEN", "message": "down"}),
+    )
+
+    # Force scan_iter to yield the same key twice — simulates SCAN's
+    # non-uniqueness guarantee without needing to exploit real Redis.
+    async def _duplicating_scan_iter(*_args: object, **kwargs: object):
+        for _ in range(2):
+            yield "degraded:gpt-image-2"
+
+    fake_redis.scan_iter = _duplicating_scan_iter  # type: ignore[method-assign]
+
+    resp = client.get("/v1/meta")
+    assert resp.status_code == 200
+    entries = resp.json()["degraded_services"]
+    assert len(entries) == 1
+    assert entries[0]["service"] == "gpt-image-2"
+
+
 def test_meta_survives_redis_dep_init_failure() -> None:
     """If `get_redis` itself raises at DI time (missing REDIS_URL etc.),
     FastAPI fails dep resolution before `meta()` runs. The route wrapper

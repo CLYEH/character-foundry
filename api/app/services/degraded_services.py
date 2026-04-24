@@ -38,6 +38,11 @@ async def get_degraded_services(redis: Redis) -> list[dict[str, Any]]:
     version) during infra incidents.
     """
     services: list[dict[str, Any]] = []
+    # Redis SCAN explicitly does NOT guarantee unique keys across a single
+    # iteration (https://redis.io/commands/scan/). Without this dedupe set a
+    # repeated key would surface as duplicate `degraded_services` entries and
+    # the Frontend banner would render the same outage twice.
+    seen: set[str] = set()
     try:
         async for key in redis.scan_iter(
             match=f"{DEGRADED_KEY_PREFIX}*",
@@ -46,6 +51,9 @@ async def get_degraded_services(redis: Redis) -> list[dict[str, Any]]:
             service_name = key.removeprefix(DEGRADED_KEY_PREFIX) if isinstance(key, str) else ""
             if not service_name:
                 continue
+            if service_name in seen:
+                continue
+            seen.add(service_name)
             raw = await redis.get(key)
             if raw is None:
                 # Race: key expired between scan and get. Skip.
