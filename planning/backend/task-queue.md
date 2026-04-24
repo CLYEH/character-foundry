@@ -236,6 +236,26 @@ async def stream_task(task_id: UUID):
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 ```
 
+### 3.5 Checkpoint sequence allocation（避開 race）
+
+`checkpoints.sequence` 在 `(creation_session_id, sequence)` 上有 UNIQUE 約束（見 `../data/db-schema.md` §3.5）。Phase 1 採 **no-row-until-success** 模型（worker 成功產出 image 才寫 row），因此**不能**用 `SELECT COUNT(*) + 1` 來預定 sequence — 多個 in-flight task 會讀到同樣的 count，全部塞同個 sequence，最後 worker 寫入時撞 UNIQUE。
+
+**選用：Redis atomic INCR**
+
+| 時機 | 動作 |
+|---|---|
+| `POST /v1/characters` 建出 session 時 | `SET seq:checkpoint:{session_id} = 0`（與 DB transaction 一起；Redis 失敗 log warning 但不擋）|
+| `POST /v1/creation-sessions/{id}/checkpoints` 排 task 時 | `INCR seq:checkpoint:{session_id}` 取得 sequence；連同 reserved `checkpoint_id` (UUID v4) 塞進 `task.input_payload` |
+| Worker 成功時 | 用 input_payload 帶來的 sequence 寫 checkpoint row |
+| Session 進 `completed` / `abandoned` | `DEL seq:checkpoint:{session_id}`（避免長期佔用）|
+| Redis key lost（重啟 etc.） | Fallback：`MAX(checkpoints.sequence WHERE session_id=?) + 1` 重建 INCR base，再繼續正常 INCR |
+
+優點：原子、涵蓋 in-flight job、不需新 schema。
+
+替代方案考慮：
+- Postgres `FOR UPDATE` 鎖 session row 後 COUNT — 可行但鎖粒度較大，且 in-flight job 期間鎖不能釋放
+- 預先建 placeholder checkpoint row — 違反 schema `output_image_key NOT NULL` 與 DTO 無 status 欄位的設計
+
 ---
 
 ## 4. U1 解：Estimated Duration

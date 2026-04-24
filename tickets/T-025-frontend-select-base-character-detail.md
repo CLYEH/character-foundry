@@ -26,7 +26,7 @@
   - Base 卡片：大圖 + prompt_summary inline + `[查看完整 prompt]`（開 T-024 modal 類似元件）
   - Aliases 區：empty state「Base 是基礎，來加些變體吧」+ `[+ 新增 Alias]`（按鈕 disabled with tooltip「Sprint 3 會開放」）
   - Motions 區：empty state「動作會在這裡出現」+ 5 個 preset placeholder 圖示（disabled）
-- 如果 Character.base_id 為 null（session 未 completed）→ 顯示 inline 錯誤頁「此角色尚未確立 Base，請從 Dashboard 開新角色完成建立」+ Back to Dashboard。**不 redirect** — 因 `CharacterDetail` DTO 沒 session_id 欄位（api-shape §6.2），前端無法推導目標 session 路徑；正規解（detail 頁恢復 in-progress session）需要 DTO schema 改動，留 backlog
+- 如果 Character.base_id 為 null（session 未 completed）→ 顯示 inline 錯誤頁「此角色尚未確立 Base」+ Back to Dashboard（fallback 行為）。**T-027 接著把這塊改成 resume CTA**（讀 `CharacterDetail.creation_session` 跳對應 session 頁），所以本單寫的 inline error 是過渡實作，T-027 完成後會被取代
 - Breadcrumb：Dashboard › Character
 - Vitest：detail page render、select-base 成功跳轉、confirm dialog、base 為 null 顯示 inline 錯誤頁（**非** redirect）
 
