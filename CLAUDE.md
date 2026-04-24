@@ -97,29 +97,28 @@
    - Push + 開 PR（模板見 `.github/pull_request_template.md`）
 6. **PR 開完後自動 loop 等 Codex review（必做；不要丟給使用者）：**
 
-   Codex App 的 documented 行為是每次新 commit 會**擇一**輸出：
-   - 有意見 → 在 `/pulls/N/comments` 留 inline review comment（通常伴隨 `/pulls/N/reviews` 的 `COMMENTED` review record）
-   - 無意見 → 在 PR body 留 `+1` reaction（`/issues/N/reactions`）
-
-   因此 `+1` 是 Codex 文件化的 pass 訊號，而 review record 多半只在「有意見」時出現。
+   Codex App 的行為（每次新 commit）：
+   - **對每個 review 過的 commit 都留 review record**（`/pulls/N/reviews` 有一筆 `commit_id == 該 commit`, `state=COMMENTED`）——這是 commit-scoped 的 pass/fail 證據
+   - 有意見時再留 inline review comment（`/pulls/N/comments` 的 `commit_id == 該 commit`）
+   - 可能在 PR body 留 `+1` / `eyes` reaction，但 reaction 是 **PR-scoped 不是 commit-scoped**，stale 的 reaction 會跨 commit 殘留，**不可當 mandatory gate**
 
    `/loop 10m <內容>`——每 10 分鐘 tick 一次，每 tick 要做的事：
      1. 抓當前最新 commit SHA：`gh pr view N --json commits --jq '.commits[-1].oid'`
      2. 查 4 個端點：
-        - `/pulls/N/reviews` — review records（含 `commit_id`）
+        - `/pulls/N/reviews` — review records（含 `commit_id`）← **主要 gate 依據**
         - `/pulls/N/comments` — inline review comments（含 `commit_id`）
         - `/issues/N/comments` — issue-level comments
-        - `/issues/N/reactions` — PR body reactions（Codex 的 `+1` / `eyes` / `-1`）
+        - `/issues/N/reactions` — PR body reactions（輔助訊號用，不是 gate）
      3. **Merge gate**（以下全部滿足 → `gh pr merge N --squash --delete-branch` 並停 loop）：
-        - `/issues/N/reactions` 裡有 Codex（`chatgpt-codex-connector[bot]`）的 `+1`，**且該 reaction 的 `created_at` 晚於 latest commit 的 `committedDate`**（避免 stale `+1`：reaction 是 PR-scoped 不是 commit-scoped，舊 commit 的 `+1` 若沒被清掉會誤判新 commit 已 pass）
-        - **最新 commit 上無 unresolved inline review comment**：`/pulls/N/comments` 裡 `commit_id == latest_sha` 的 top-level thread（`in_reply_to_id == null`）都已有我本人的後續 reply（採納 / 駁回 / defer 都算已處理；沒 reply 就是 unresolved blocker）
+        - **Codex 對 latest commit 送過 review record**：`/pulls/N/reviews` 有 entry 的 `commit_id == latest_sha`（commit-scoped 證據，Codex 實際看過這個 commit）
+        - **最新 commit 上無 unresolved inline review comment**：`/pulls/N/comments` 裡 `commit_id == latest_sha` 的 top-level thread（`in_reply_to_id == null`）都已有我本人的後續 reply（採納 / 駁回 / defer 都算已處理）
         - `mergeable=MERGEABLE && mergeStateStatus=CLEAN`
         - CI `statusCheckRollup` 全 SUCCESS
         - 符合 CONTRIBUTING §4.1（含 Phase 1 solo exception）+ §5.2 的 approve 要求
      4. **Codex 有新 inline comment on latest commit**（或 `-1`）→ 採納 / 駁回 / defer，推 fix commit + 回覆該 thread，繼續 loop。⚠ **採納前先 cross-check**：Codex 的意見可能和 Codex App 自己的文件、CONTRIBUTING、或 observable 行為衝突。第二意見不是自動更權威的意見；理由站不住就拒絕並在 thread 說明。
-     5. **`+1` 未出現且最新 commit 上無 inline comment**：
+     5. **Codex 對 latest commit 尚無 review record**：
         - 距離最新 commit push 時間 **< 15 分鐘** → Codex 還在審，繼續 loop
-        - **≥ 15 分鐘仍無訊號**（無 `+1` / `eyes` / comment）→ Codex 卡住了，主動戳一下：`gh pr comment N --body "@codex review"`，繼續 loop。Codex App 文件說「Mention @codex in your pull request to start a task or manually request a review」——這是 documented 觸發方式，不是 hack
+        - **≥ 15 分鐘仍無 review record**（也無 `eyes` reaction 等訊號）→ Codex 卡住了，主動戳一下：`gh pr comment N --body "@codex review"`，繼續 loop。Codex App 文件說「Mention @codex in your pull request to start a task or manually request a review」——這是 documented 觸發方式，不是 hack
    - 起首 tick 不要等 cron，當前 turn 也跑一次
    - Reaction semantics 細節見 `codex_reaction_semantics.md`（memory）；API 端點見 `reference_github_pr_comment_endpoints.md`（memory）
 
