@@ -8,7 +8,10 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install --upgrade pip && pip install .
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY tests ./tests
+RUN pip install --upgrade pip && pip install ".[dev]"
 
 EXPOSE 8000
 

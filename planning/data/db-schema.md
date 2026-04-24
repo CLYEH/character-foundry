@@ -101,8 +101,9 @@ CREATE TABLE characters (
 
     CONSTRAINT chk_characters_name_length
         CHECK (char_length(name) BETWEEN 1 AND 50),
+    -- PostgreSQL ARE does not support \p{...}; literal CJK range U+4E00–U+9FFF.
     CONSTRAINT chk_characters_name_chars
-        CHECK (name ~ '^[\p{Han}a-zA-Z0-9_\-]+$')  -- 中文、英數、底線、連字號
+        CHECK (name ~ '^[一-鿿a-zA-Z0-9_-]+$')  -- 中文、英數、底線、連字號
 );
 
 -- Soft-delete-aware UNIQUE：per-owner 唯一（不同 owner 可同名）
@@ -237,8 +238,9 @@ CREATE TABLE aliases (
 
     CONSTRAINT chk_aliases_name_length
         CHECK (char_length(name) BETWEEN 1 AND 50),
+    -- PostgreSQL ARE does not support \p{...}; literal CJK range U+4E00–U+9FFF.
     CONSTRAINT chk_aliases_name_chars
-        CHECK (name ~ '^[\p{Han}a-zA-Z0-9_\-]+$')
+        CHECK (name ~ '^[一-鿿a-zA-Z0-9_-]+$')
 );
 
 CREATE UNIQUE INDEX uq_aliases_character_name
@@ -284,8 +286,9 @@ CREATE TABLE motions (
 
     CONSTRAINT chk_motions_name_length
         CHECK (char_length(name) BETWEEN 1 AND 50),
+    -- PostgreSQL ARE does not support \p{...}; literal CJK range U+4E00–U+9FFF.
     CONSTRAINT chk_motions_name_chars
-        CHECK (name ~ '^[\p{Han}a-zA-Z0-9_\-]+$'),
+        CHECK (name ~ '^[一-鿿a-zA-Z0-9_-]+$'),
 
     -- Custom motion 必須有 description
     CONSTRAINT chk_motions_custom_has_description
