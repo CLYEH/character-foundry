@@ -97,11 +97,20 @@
    - Push + 開 PR（模板見 `.github/pull_request_template.md`）
 6. **PR 開完後自動 loop 等 Codex review（必做；不要丟給使用者）：**
    - `/loop 10m <內容>`——每 10 分鐘 tick 一次，每 tick 要做的事：
-     1. 查 4 個端點（`/pulls/N/reviews`、`/pulls/N/comments`、`/issues/N/comments`、`/issues/N/reactions`），判斷 Codex 狀態
-     2. 有 comment 或 `-1` → 採納 / 駁回 / defer，直接推 fix commit + 回覆該 thread，繼續 loop
-     3. `+1` reaction + 無新 comment + CI 綠 + `mergeable=MERGEABLE && mergeStateStatus=CLEAN` → 按 CONTRIBUTING §5.1 `gh pr merge N --squash --delete-branch`，停 loop
-     4. `eyes` reaction 或還沒 review → 繼續 loop
-   - Merge 規則按 CONTRIBUTING §4.1（含 Phase 1 solo exception）+ §5.2
+     1. 查 4 個端點 snapshot 最新 commit SHA 的 Codex 狀態：
+        - `/pulls/N/reviews` — 找 `commit_id == latest_sha` 的 review record
+        - `/pulls/N/comments` — inline review comments
+        - `/issues/N/comments` — issue-level comments
+        - `/issues/N/reactions` — reactions（輔助訊號用，不是 gate，詳下）
+     2. **Merge gate**（以下全部滿足 → `gh pr merge N --squash --delete-branch` 並停 loop）：
+        - **Codex 已對最新 commit 送出 review record**（`/pulls/N/reviews` 有 entry 的 `commit_id` 等於 latest SHA）
+        - **最新 commit 上無 unresolved critical comment**：`/pulls/N/comments` 裡屬於 latest commit 的 inline comment 為空（舊 commit 上已處理的 thread 不算 blocker）
+        - `mergeable=MERGEABLE && mergeStateStatus=CLEAN`
+        - CI statusCheckRollup 全 SUCCESS
+        - 符合 CONTRIBUTING §4.1（含 Phase 1 solo exception）+ §5.2 的 approve 要求
+     3. **Codex 有新 critical comment**（或 `-1` reaction）→ 採納 / 駁回 / defer，推 fix commit + 回覆該 thread，繼續 loop
+     4. **Codex 對最新 commit 尚無 review record** → 還沒審完，繼續 loop
+   - Reactions（`+1` / `eyes`）只是輔助可讀性訊號，**不是 mandatory gate**——CONTRIBUTING §4.1/§5.2 把 merge readiness 綁在「review 完成 + critical comment 處理完」，不是綁在特定 reaction。依賴 `+1` 會在 Codex 因任何原因沒 emit reaction 時讓 loop 永遠卡住。semantics 細節見 `codex_reaction_semantics.md`。
    - 起首 tick 不要等 cron，當前 turn 也跑一次
 
 ### 開新 ticket
