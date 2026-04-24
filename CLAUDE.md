@@ -62,14 +62,23 @@
 2. Claude **必讀順序：**
    - `CLAUDE.md`（專案定位）
    - `DECISIONS.md`（核心決策快查）
+   - `CONTRIBUTING.md` §1 branch 規則（若上次 session 已讀過可略，但切 branch 前務必確認）
    - `tickets/T-XXX-*.md`（本單完整內容）
    - 單裡列的 **Planning refs**（具體規格）
    - `STATUS.md`（看前後依賴）
-3. 實作 → 測試 → commit
-4. 完成時：
+3. **切 feature branch（必做；動手改檔之前）：**
+   ```bash
+   git branch --show-current            # 若不是 main，先確認目前 branch 是否對應此 ticket
+   git switch main && git pull
+   git switch -c feature/T-XXX-short-desc   # 命名慣例見 CONTRIBUTING §1.1
+   ```
+   ⚠ 若 `Current branch: main` 出現在 session 開場的 git status，**這不是可以直接動工的狀態**，要先切 branch。Auto mode 不例外——這是 pre-flight 不是 deliberation。
+4. 實作 → 測試 → commit（commit message 格式見 CONTRIBUTING §2）
+5. 完成時：
    - `git mv tickets/T-XXX-*.md tickets/DONE/`
    - 更新 `STATUS.md` 該單狀態與 milestone 進度
    - 若有發現新問題不在 scope：開新單（或記到 STATUS.md backlog）
+   - Push + 開 PR（模板見 `.github/pull_request_template.md`）
 
 ### 開新 ticket
 用 `tickets/_TEMPLATE.md` 複製改寫。編號接上次最大 + 1。
