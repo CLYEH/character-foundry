@@ -14,7 +14,7 @@
 
 **In scope:**
 - `AIClient` protocol（`generate_image_text2image`、`generate_image_image2image`、`generate_image_inpaint`；每個回 `AIGenerationResult { image_bytes, model_version, cost_units, duration_ms }`）
-- `GptImage2Client` 實作 — 包 OpenAI SDK；retry（指數退避 3 次）；timeout 60s；AgentError mapping（`MODEL_TIMEOUT` / `MODEL_RATE_LIMIT` / `MODEL_CONTENT_POLICY` / `MODEL_UNAVAILABLE`）
+- `GptImage2Client` 實作 — 包 OpenAI SDK；retry（指數退避 3 次）；timeout 60s；AgentError mapping（`MODEL_TIMEOUT` / `MODEL_RATE_LIMIT` / `PROMPT_CONTENT_POLICY` / `MODEL_UNAVAILABLE`，對齊 `api-shape.md` §4.1 — content policy 歸 `PROMPT_`）
 - `StubAIClient` — 固定回本機內建 sample PNG（存 `api/tests/fixtures/sample_*.png`），`AI_STUB_MODE=true` 時自動切換
 - Circuit breaker（per-model）：
   - 連續失敗 ≥ 5 次 → OPEN，retry_at = now + 60s

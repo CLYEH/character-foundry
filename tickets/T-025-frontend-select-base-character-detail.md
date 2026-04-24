@@ -17,12 +17,11 @@
 **In scope:**
 - 選作 Base 流程：
   - 點 `[選作 Base]` → 顯示確認對話框「確立 Base 後不可修改，確定？」
-  - 確認 → 呼 API → 成功後 `navigate('/characters/{slug}')`
+  - 確認 → 呼 API → 成功後 `navigate('/characters/{id}')`
   - 失敗（409 `CONFLICT_BASE_LOCKED` or checkpoint 非 completed）→ Toast 錯誤
-- Route `/characters/:slug` （protected）
+- Route `/characters/:id` （protected）
 - `CharacterDetailPage`：
-  - `GET /v1/characters/{id}`（slug → id 由 list resolve 或 route param 直接查 id——先接受 slug 並新增 backend endpoint 支援？為避免 backend 改動，本單先改 route 為 `/characters/:id`，由 Dashboard CharacterCard 傳 id）
-  - **實際：Route 用 `:slug`，backend T-016 GET endpoint 接受 id。補法：先用 id 當 URL 參數（暫不做 slug 路由），STATUS.md 記 backlog「slug 路由」**
+  - `GET /v1/characters/{id}`（Sprint 2 直接用 id；slug 路由留 backlog，對齊 T-026 E2E redirect 目標）
   - Top 區塊：Character 名字、owner、建立時間、`[刪除]`、`[下載 ZIP]`（disabled，Sprint 4）
   - Base 卡片：大圖 + prompt_summary inline + `[查看完整 prompt]`（開 T-024 modal 類似元件）
   - Aliases 區：empty state「Base 是基礎，來加些變體吧」+ `[+ 新增 Alias]`（按鈕 disabled with tooltip「Sprint 3 會開放」）
