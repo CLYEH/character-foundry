@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-24
-> **Phase:** Sprint 0 in progress（T-001, T-002, T-003, T-004 done）
+> **Phase:** Sprint 0 complete（T-001 ~ T-005 done）
 
 ---
 
@@ -23,7 +23,7 @@
 | T-002 | Alembic + initial migrations (teams, users) | DONE |
 | T-003 | Remaining migrations (characters → tasks) | DONE |
 | T-004 | CI workflow (PR checks) | DONE |
-| T-005 | StorageBackend interface + LocalFilesystemBackend | TODO |
+| T-005 | StorageBackend interface + LocalFilesystemBackend | DONE |
 
 ### Sprint 1 — Auth + App Shell
 **目標：** Login 能成功，看到空 Dashboard。
@@ -78,7 +78,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | M5 | Dropdown 選項實際內容 | 實作時平行填充 |
 | M7 | 錯誤 UX 細節訊息 | Frontend 實作時對照真 backend 回應 |
 | M8 | Lip sync 延後是未驗證的賭注 | Phase 1 demo 前做 5 人快速 check |
-| FB-3 | Storage URL expired 時 backend 要回對的 code | T-005 實作時注意 |
+| FB-3 | Storage URL expired 時 backend 要回對的 code | ✅ T-005 完成（`STORAGE_URL_EXPIRED` vs `AUTH_INVALID_TOKEN` 已分開） |
 | - | Visual design (Pencil mockup) | 之後需要再開 UX iteration 3 |
 
 ---
