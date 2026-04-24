@@ -66,25 +66,25 @@
    - `tickets/T-XXX-*.md`（本單完整內容）
    - 單裡列的 **Planning refs**（具體規格）
    - `STATUS.md`（看前後依賴）
-3. **切 feature branch（必做；動手改檔之前）：**
+3. **切 ticket branch（必做；動手改檔之前）：**
 
-   先判斷 branch 是否已存在：
+   Branch 命名是 `<type>/T-XXX-short-desc`，`<type>` 依 CONTRIBUTING §1.1 取 `feature` / `fix` / `chore` / `refactor`——**先根據 ticket 性質決定 type**，再用下面指令（把 `<type>` 換成實際值）：
 
    ```bash
    git branch --show-current
    git fetch origin
-   git branch --list feature/T-XXX-short-desc
-   git ls-remote --heads origin feature/T-XXX-short-desc
+   git branch --list '*/T-XXX-*'                 # 本地有沒有任何 type 的 T-XXX branch
+   git ls-remote --heads origin | grep '/T-XXX-' # 遠端有沒有
    ```
 
-   - **新 ticket**（branch 不存在）→ 從最新 main 切一條：
+   - **新 ticket**（都沒找到）→ 從最新 main 切一條：
      ```bash
      git switch main && git pull
-     git switch -c feature/T-XXX-short-desc   # 命名慣例見 CONTRIBUTING §1.1
+     git switch -c <type>/T-XXX-short-desc   # 命名慣例見 CONTRIBUTING §1.1
      ```
-   - **繼續做 ticket**（branch 已存在於本地 或 origin）→ 切到既有 branch，不要 `-c`：
+   - **繼續做 ticket**（已存在於本地或 origin）→ 切到既有 branch，不要 `-c`：
      ```bash
-     git switch feature/T-XXX-short-desc      # 本地已有就直接切
+     git switch <type>/T-XXX-short-desc      # 本地已有就直接切
      # 若只有 origin 有，git switch 會自動建立 tracking branch
      ```
 
@@ -117,7 +117,9 @@
         - CI `statusCheckRollup` 全 SUCCESS
         - 符合 CONTRIBUTING §4.1（含 Phase 1 solo exception）+ §5.2 的 approve 要求
      4. **Codex 有新 inline comment on latest commit**（或 `-1`）→ 採納 / 駁回 / defer，推 fix commit + 回覆該 thread，繼續 loop。⚠ **採納前先 cross-check**：Codex 的意見可能和 Codex App 自己的文件、CONTRIBUTING、或 observable 行為衝突。第二意見不是自動更權威的意見；理由站不住就拒絕並在 thread 說明。
-     5. **`+1` 未出現且最新 commit 上無 inline comment** → Codex 還沒審完或剛在審，繼續 loop
+     5. **`+1` 未出現且最新 commit 上無 inline comment**：
+        - 距離最新 commit push 時間 **< 15 分鐘** → Codex 還在審，繼續 loop
+        - **≥ 15 分鐘仍無訊號**（無 `+1` / `eyes` / comment）→ Codex 卡住了，主動戳一下：`gh pr comment N --body "@codex review"`，繼續 loop。Codex App 文件說「Mention @codex in your pull request to start a task or manually request a review」——這是 documented 觸發方式，不是 hack
    - 起首 tick 不要等 cron，當前 turn 也跑一次
    - Reaction semantics 細節見 `codex_reaction_semantics.md`（memory）；API 端點見 `reference_github_pr_comment_endpoints.md`（memory）
 
