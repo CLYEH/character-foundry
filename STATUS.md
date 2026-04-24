@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-04-24
-> **Phase:** Sprint 1 in progress（T-006, T-007, T-008, T-009, T-010 done）
+> **Last updated:** 2026-04-25
+> **Phase:** Sprint 1 in progress（T-006, T-007, T-008, T-009, T-010, T-011 done）
 
 ---
 
@@ -35,7 +35,7 @@
 | T-008 | Frontend auth (login page + store + guard) | DONE |
 | T-009 | Backend /health + /v1/meta | DONE |
 | T-010 | Frontend TopNav + DegradedBanner | DONE |
-| T-011 | Frontend Toast + ErrorBoundary | TODO |
+| T-011 | Frontend Toast + ErrorBoundary | DONE |
 | T-012 | E2E smoke test (login flow) | TODO |
 
 ### Sprint 2 — Character Creation（尚未開單）
