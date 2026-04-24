@@ -9,13 +9,15 @@ _API_DIR = Path(__file__).resolve().parent.parent
 
 
 def _test_database_url() -> str | None:
-    """Prefer TEST_DATABASE_URL; fall back to DATABASE_URL for local dev runs.
+    """Return the URL for tests, or None to signal "skip".
 
-    If neither is set we return None — individual tests skip themselves so the
-    test suite still imports and reports cleanly on a workstation without a
-    Postgres instance to hand.
+    Only `TEST_DATABASE_URL` is consulted — we intentionally do NOT fall back
+    to `DATABASE_URL`. The migration tests drop tables via AUTOCOMMIT DDL, and
+    `DATABASE_URL` commonly points at the primary dev/app database. Silently
+    honoring it would wipe developer data the first time someone ran `pytest`.
+    Require the developer to name a throwaway DB explicitly.
     """
-    return os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    return os.environ.get("TEST_DATABASE_URL")
 
 
 @pytest.fixture(scope="session")
@@ -23,7 +25,8 @@ def database_url() -> str:
     url = _test_database_url()
     if not url:
         pytest.skip(
-            "TEST_DATABASE_URL / DATABASE_URL not set; skipping DB-backed tests"
+            "TEST_DATABASE_URL not set; skipping destructive DB-backed tests. "
+            "Point it at a throwaway database — these tests DROP tables."
         )
     return url
 
