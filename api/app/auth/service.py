@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import sign_access_token
@@ -127,16 +127,28 @@ async def refresh(db: AsyncSession, *, raw_token: str) -> RefreshResult:
     return RefreshResult(access_token=access_token, expires_in=expires_in)
 
 
-async def logout(db: AsyncSession, *, raw_token: str) -> None:
-    """Idempotent: already-revoked / unknown tokens return silently.
+async def logout(db: AsyncSession, *, raw_token: str, user_id: uuid.UUID) -> None:
+    """Revoke a refresh token belonging to `user_id`. Idempotent.
 
-    Rationale: a logout endpoint that 401s on unknown/stale tokens gives
-    attackers a probe for token validity and surfaces stale-state noise to
-    legitimate clients. Success-on-unknown keeps the UX simple: "after you
-    call logout, that token cannot be refreshed" is true either way.
+    `user_id` is the authenticated caller. We match both `token_hash` AND
+    `user_id` so a caller cannot revoke someone else's refresh token even if
+    they somehow obtained its raw value (e.g. leaked client storage). Without
+    this scope, any authenticated user could log out any account whose
+    refresh token they know.
+
+    Already-revoked or unknown (to this caller) tokens return silently — a
+    401 on unknown tokens would give attackers a probe for token validity
+    and surface stale-state noise to legitimate clients.
     """
     token_hash = hash_refresh_token(raw_token)
-    result = await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+    result = await db.execute(
+        select(RefreshToken).where(
+            and_(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.user_id == user_id,
+            )
+        )
+    )
     row = result.scalar_one_or_none()
     if row is None or row.revoked_at is not None:
         return

@@ -66,16 +66,14 @@ async def refresh(
 async def logout(
     body: RefreshRequest,
     db: Annotated[AsyncSession, Depends(db_session)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> LogoutResponse:
-    """Revoke the supplied refresh token.
+    """Revoke the supplied refresh token for the authenticated user.
 
-    Access token is required (so random parties can't revoke someone else's
-    session by guessing refresh tokens), but the refresh token itself goes in
-    the request body — logout is an explicit action on a known token value,
-    not something to infer from the access-token subject.
+    The token is matched against (token_hash, user.id) so a caller cannot
+    revoke another account's session even if they know the raw refresh token.
     """
-    await service.logout(db, raw_token=body.refresh_token)
+    await service.logout(db, raw_token=body.refresh_token, user_id=user.id)
     return LogoutResponse(ok=True)
 
 

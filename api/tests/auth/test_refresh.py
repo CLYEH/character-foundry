@@ -87,3 +87,34 @@ def test_logout_without_access_token_returns_missing_token(
     resp = client.post("/v1/auth/logout", json={"refresh_token": tokens["refresh_token"]})
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "AUTH_MISSING_TOKEN"
+
+
+def test_logout_cannot_revoke_another_users_refresh_token(
+    client: TestClient,
+    seeded_user: dict[str, str],
+    second_user: dict[str, str],
+) -> None:
+    """Alice's access token must not revoke Bob's refresh token.
+
+    Regression guard for the P1 Codex finding on PR #7: without binding the
+    logout lookup to the caller's user_id, any authenticated user who knew
+    another account's raw refresh token could force-log out that account.
+    """
+    alice_tokens = _login(client, seeded_user)
+    bob_tokens = _login(client, second_user)
+
+    # Alice authenticates but submits Bob's refresh token — should be a no-op.
+    resp = client.post(
+        "/v1/auth/logout",
+        json={"refresh_token": bob_tokens["refresh_token"]},
+        headers={"Authorization": f"Bearer {alice_tokens['access_token']}"},
+    )
+    assert resp.status_code == 200  # idempotent success signal
+
+    # Bob's refresh token must still work.
+    bob_refresh = client.post(
+        "/v1/auth/refresh",
+        json={"refresh_token": bob_tokens["refresh_token"]},
+    )
+    assert bob_refresh.status_code == 200
+    assert bob_refresh.json()["access_token"]

@@ -48,6 +48,7 @@ EXPECTED_TABLES = {
     "motions",
     "generation_logs",
     "tasks",
+    "refresh_tokens",
 }
 
 
@@ -63,6 +64,7 @@ def _expected_gen_log_partitions() -> set[str]:
 # matters: drop leaves before roots so FK cascades don't block us. CASCADE on
 # each drop is belt-and-braces for when a prior failure leaves partial state.
 RESET_DROP_TABLES = (
+    "refresh_tokens",
     "tasks",
     "generation_logs",
     "motions",

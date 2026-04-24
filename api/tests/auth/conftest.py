@@ -74,6 +74,24 @@ def client(clean_auth_tables: None) -> Iterator[TestClient]:
         yield c
 
 
+async def _insert_user(database_url: str, *, email: str, name: str, password_hash: str) -> None:
+    engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            team_id = (
+                await conn.execute(text("SELECT id FROM teams WHERE name='default'"))
+            ).scalar_one()
+            await conn.execute(
+                text(
+                    "INSERT INTO users (team_id, name, email, password_hash) "
+                    "VALUES (:t, :n, :e, :h)"
+                ),
+                {"t": team_id, "n": name, "e": email, "h": password_hash},
+            )
+    finally:
+        await engine.dispose()
+
+
 @pytest.fixture
 def seeded_user(database_url: str, clean_auth_tables: None) -> dict[str, str]:
     """Insert one user into the default team and return its credentials."""
@@ -82,24 +100,21 @@ def seeded_user(database_url: str, clean_auth_tables: None) -> dict[str, str]:
     email = "alice@example.com"
     password = "correct-horse-battery-staple"
     name = "Alice"
-    password_hash = hash_password(password)
+    asyncio.run(
+        _insert_user(database_url, email=email, name=name, password_hash=hash_password(password))
+    )
+    return {"email": email, "password": password, "name": name}
 
-    async def _seed() -> None:
-        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
-        try:
-            async with engine.connect() as conn:
-                team_id = (
-                    await conn.execute(text("SELECT id FROM teams WHERE name='default'"))
-                ).scalar_one()
-                await conn.execute(
-                    text(
-                        "INSERT INTO users (team_id, name, email, password_hash) "
-                        "VALUES (:t, :n, :e, :h)"
-                    ),
-                    {"t": team_id, "n": name, "e": email, "h": password_hash},
-                )
-        finally:
-            await engine.dispose()
 
-    asyncio.run(_seed())
+@pytest.fixture
+def second_user(database_url: str, seeded_user: dict[str, str]) -> dict[str, str]:
+    """Insert a second user so tests can exercise cross-account isolation."""
+    from app.auth.passwords import hash_password
+
+    email = "bob@example.com"
+    password = "also-not-guessable"
+    name = "Bob"
+    asyncio.run(
+        _insert_user(database_url, email=email, name=name, password_hash=hash_password(password))
+    )
     return {"email": email, "password": password, "name": name}
