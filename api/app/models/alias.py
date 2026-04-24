@@ -9,9 +9,11 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -33,6 +35,20 @@ class Alias(Base):
         CheckConstraint(
             "name ~ '^[一-鿿a-zA-Z0-9_-]+$'",
             name="chk_aliases_name_chars",
+        ),
+        # Soft-delete-aware uniqueness: dropping this by autogenerate drift
+        # would silently allow duplicate active alias names per character.
+        Index(
+            "uq_aliases_character_name",
+            "character_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_aliases_character",
+            "character_id",
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 

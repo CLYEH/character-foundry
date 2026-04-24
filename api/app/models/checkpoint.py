@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -27,6 +28,7 @@ class Checkpoint(Base):
     __tablename__ = "checkpoints"
     __table_args__ = (
         UniqueConstraint("creation_session_id", "sequence", name="uq_session_sequence"),
+        Index("idx_checkpoints_session", "creation_session_id", "sequence"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

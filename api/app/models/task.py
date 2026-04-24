@@ -5,13 +5,15 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    REAL,
     Boolean,
     CheckConstraint,
     DateTime,
-    Float,
     ForeignKey,
+    Index,
     Integer,
     String,
+    desc,
     func,
     text,
 )
@@ -54,6 +56,30 @@ class Task(Base):
             "NOT (result IS NOT NULL AND error IS NOT NULL)",
             name="chk_tasks_result_error_mutex",
         ),
+        Index(
+            "idx_tasks_user_status_created",
+            "user_id",
+            "status",
+            desc("created_at"),
+        ),
+        Index(
+            "idx_tasks_active",
+            "queued_at",
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+        Index(
+            "idx_tasks_entity",
+            "entity_type",
+            "entity_id",
+            postgresql_where=text("entity_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_tasks_cancel_pending",
+            "id",
+            postgresql_where=text(
+                "cancel_requested = TRUE AND status = 'running'"
+            ),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -78,7 +104,9 @@ class Task(Base):
         UUID(as_uuid=True), nullable=True
     )
 
-    progress: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # REAL (float4) — matches migration 011 DDL. `Float` would map to
+    # DOUBLE PRECISION and drift-check would flag it every run.
+    progress: Mapped[float | None] = mapped_column(REAL, nullable=True)
     estimated_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     input_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

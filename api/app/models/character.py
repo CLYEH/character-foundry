@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,6 +25,40 @@ class Character(Base):
         CheckConstraint(
             "name ~ '^[一-鿿a-zA-Z0-9_-]+$'",
             name="chk_characters_name_chars",
+        ),
+        # Partial indexes — declared here so alembic autogenerate doesn't see
+        # them as DB-only and emit destructive drop_index diffs. Losing the
+        # UNIQUE ones would silently allow duplicate active names / slugs.
+        Index(
+            "uq_characters_owner_name",
+            "owner_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_characters_owner_slug",
+            "owner_id",
+            "slug",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_characters_team",
+            "team_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_characters_owner",
+            "owner_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_characters_name_trgm",
+            "name",
+            postgresql_using="gin",
+            postgresql_ops={"name": "gin_trgm_ops"},
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 

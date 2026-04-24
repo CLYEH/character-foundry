@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, func, text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,6 +20,17 @@ class CreationSession(Base):
         CheckConstraint(
             "status IN ('in_progress', 'completed', 'abandoned')",
             name="chk_creation_sessions_status",
+        ),
+        Index("idx_sessions_initiator", "initiator_id"),
+        Index(
+            "idx_sessions_character",
+            "character_id",
+            postgresql_where=text("character_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_sessions_in_progress",
+            "status",
+            postgresql_where=text("status = 'in_progress'"),
         ),
     )
 

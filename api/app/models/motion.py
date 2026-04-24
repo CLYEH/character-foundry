@@ -7,10 +7,12 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -44,6 +46,33 @@ class Motion(Base):
         CheckConstraint(
             "motion_type != 'custom' OR description IS NOT NULL",
             name="chk_motions_custom_has_description",
+        ),
+        # Same-parent name uniqueness (split per parent kind). Partial UNIQUE
+        # that would silently allow duplicate motion names if autogenerate
+        # dropped it.
+        Index(
+            "uq_motions_base_name",
+            "base_id",
+            "name",
+            unique=True,
+            postgresql_where=text("base_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
+        Index(
+            "uq_motions_alias_name",
+            "alias_id",
+            "name",
+            unique=True,
+            postgresql_where=text("alias_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_motions_base",
+            "base_id",
+            postgresql_where=text("base_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_motions_alias",
+            "alias_id",
+            postgresql_where=text("alias_id IS NOT NULL AND deleted_at IS NULL"),
         ),
     )
 
