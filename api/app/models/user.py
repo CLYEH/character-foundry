@@ -12,9 +12,7 @@ from app.db.base import Base
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (
-        Index("idx_users_team", "team_id"),
-    )
+    __table_args__ = (Index("idx_users_team", "team_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

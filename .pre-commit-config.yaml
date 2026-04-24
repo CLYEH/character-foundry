@@ -1,0 +1,52 @@
+# Pre-commit hooks for Character Foundry.
+#
+# Install once per clone:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Hooks run against the project's own tools (pip env + web/node_modules),
+# so pinned versions in pyproject.toml / package.json are the single source
+# of truth — no second dependency pin lives here.
+
+repos:
+  - repo: local
+    hooks:
+      # ---- Backend (api/) ----
+      - id: ruff-check
+        name: ruff check (api)
+        language: system
+        entry: ruff check --fix
+        files: ^api/.*\.py$
+        exclude: ^api/alembic/versions/
+
+      - id: ruff-format
+        name: ruff format (api)
+        language: system
+        entry: ruff format
+        files: ^api/.*\.py$
+        exclude: ^api/alembic/versions/
+
+      - id: mypy
+        name: mypy (api)
+        language: system
+        entry: bash -c 'cd api && mypy app/'
+        pass_filenames: false
+        files: ^api/app/.*\.py$
+
+      # ---- Frontend (web/) ----
+      # We invoke eslint / prettier on the whole web/ tree rather than the
+      # staged files — simpler and avoids the repo-root vs web/-root path
+      # translation gymnastics pre-commit would otherwise require.
+      - id: eslint-web
+        name: eslint (web)
+        language: system
+        entry: bash -c 'cd web && pnpm exec eslint --fix .'
+        pass_filenames: false
+        files: ^web/.*\.(ts|tsx|js|jsx)$
+
+      - id: prettier-web
+        name: prettier (web)
+        language: system
+        entry: bash -c 'cd web && pnpm exec prettier --write .'
+        pass_filenames: false
+        files: ^web/.*\.(ts|tsx|js|jsx|css|html|json|md|yml|yaml)$

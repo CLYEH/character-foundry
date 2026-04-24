@@ -4,18 +4,19 @@ Requires TEST_DATABASE_URL (or DATABASE_URL) to point at a Postgres instance
 with the necessary extensions available. Skipped otherwise so contributors
 without a local DB still get a green `pytest` run.
 """
+
 from __future__ import annotations
 
 import asyncio
 import importlib.util
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from alembic import command
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from alembic import command
 
 REQUIRED_EXTENSIONS = {"uuid-ossp", "pgcrypto", "vector", "pg_trgm"}
 
@@ -49,13 +50,14 @@ EXPECTED_TABLES = {
     "tasks",
 }
 
+
 def _expected_gen_log_partitions() -> set[str]:
     """Named + default partitions that migration 010 creates at runtime."""
     named = {
-        f"generation_logs_{suffix}"
-        for suffix, _, _ in _gen_log_ranges(datetime.now(timezone.utc), count=3)
+        f"generation_logs_{suffix}" for suffix, _, _ in _gen_log_ranges(datetime.now(UTC), count=3)
     }
     return named | {"generation_logs_default"}
+
 
 # Tables we DROP in _reset to force each test run back to a clean slate. Order
 # matters: drop leaves before roots so FK cascades don't block us. CASCADE on
@@ -105,9 +107,7 @@ async def _reset(database_url: str) -> None:
         async with engine.connect() as conn:
             for table in RESET_DROP_TABLES:
                 await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
-            await conn.execute(
-                text("DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE")
-            )
+            await conn.execute(text("DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE"))
     finally:
         await engine.dispose()
 
@@ -121,9 +121,7 @@ def clean_db(database_url: str):
 
 def _insert_user(database_url: str) -> tuple[str, str]:
     """Insert a team+user fixture and return (team_id, user_id)."""
-    team_id = _run(
-        _fetch(database_url, "SELECT id FROM teams WHERE name='default'")
-    )[0][0]
+    team_id = _run(_fetch(database_url, "SELECT id FROM teams WHERE name='default'"))[0][0]
     _run(
         _exec(
             database_url,
@@ -133,11 +131,9 @@ def _insert_user(database_url: str) -> tuple[str, str]:
             {"team_id": team_id},
         )
     )
-    user_id = _run(
-        _fetch(
-            database_url, "SELECT id FROM users WHERE email='tester@example.com'"
-        )
-    )[0][0]
+    user_id = _run(_fetch(database_url, "SELECT id FROM users WHERE email='tester@example.com'"))[
+        0
+    ][0]
     return team_id, user_id
 
 
@@ -250,7 +246,10 @@ def test_characters_name_check_constraint(alembic_config, database_url, clean_db
             )
         )
     # Either CheckViolation or a transport-wrapped version of it — both are fine.
-    assert "chk_characters_name_chars" in str(exc.value) or "check constraint" in str(exc.value).lower()
+    assert (
+        "chk_characters_name_chars" in str(exc.value)
+        or "check constraint" in str(exc.value).lower()
+    )
 
 
 def test_motions_exactly_one_parent_check(alembic_config, database_url, clean_db):
@@ -278,7 +277,7 @@ def test_month_ranges_emits_utc_qualified_bounds():
     TimeZone. Bare-date bounds on a non-UTC DB would shift month
     boundaries and route edge rows to the wrong partition.
     """
-    ranges = _gen_log_ranges(datetime(2026, 4, 24, tzinfo=timezone.utc), count=2)
+    ranges = _gen_log_ranges(datetime(2026, 4, 24, tzinfo=UTC), count=2)
     assert ranges == [
         ("2026_04", "2026-04-01 00:00:00+00", "2026-05-01 00:00:00+00"),
         ("2026_05", "2026-05-01 00:00:00+00", "2026-06-01 00:00:00+00"),
@@ -337,9 +336,9 @@ def test_generation_log_default_partition_catches_far_future_row(
     )
 
     # Row must have landed in the default partition.
-    count_in_default = _run(
-        _fetch(database_url, "SELECT COUNT(*) FROM generation_logs_default")
-    )[0][0]
+    count_in_default = _run(_fetch(database_url, "SELECT COUNT(*) FROM generation_logs_default"))[
+        0
+    ][0]
     assert count_in_default == 1, (
         f"expected far-future row to land in default partition; got count={count_in_default}"
     )
