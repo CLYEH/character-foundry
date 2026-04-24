@@ -11,6 +11,8 @@ COPY app ./app
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY tests ./tests
+# Loaded at runtime by app.core.platform_constraints — /v1/meta breaks without it.
+COPY platform_constraints.yaml ./
 RUN pip install --upgrade pip && pip install ".[dev]"
 
 EXPOSE 8000

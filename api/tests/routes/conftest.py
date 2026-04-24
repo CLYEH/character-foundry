@@ -76,15 +76,21 @@ class FakeRedis:
 
 
 class FakeStorage:
-    """StorageBackend-shaped fake. Only `exists` is needed for /health."""
+    """StorageBackend-shaped fake covering the put+exists round-trip."""
 
     def __init__(self, *, down: bool = False) -> None:
         self.down = down
+        self._written: set[str] = set()
 
-    def exists(self, _key: str) -> bool:
+    def put(self, key: str, _content: bytes, _content_type: str) -> None:
         if self.down:
             raise RuntimeError("storage down")
-        return False
+        self._written.add(key)
+
+    def exists(self, key: str) -> bool:
+        if self.down:
+            raise RuntimeError("storage down")
+        return key in self._written
 
 
 @pytest.fixture

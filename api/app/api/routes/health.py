@@ -58,10 +58,14 @@ async def _check_redis(redis: Redis) -> CheckStatus:
 
 
 def _check_storage(storage: StorageBackend) -> CheckStatus:
-    # `exists` round-trips to the backend without requiring the probe file to
-    # actually be present — we only care that the backend answers.
+    # Write-then-read round-trip. `exists()` alone would pass on a
+    # read-only / permission-broken backend where every user upload would
+    # fail; `put` + `exists` exercises the full write path cheaply so a
+    # masked failure mode can't sneak through as `ok`.
     try:
-        storage.exists(STORAGE_HEALTH_PROBE_KEY)
+        storage.put(STORAGE_HEALTH_PROBE_KEY, b"ok", "text/plain")
+        if not storage.exists(STORAGE_HEALTH_PROBE_KEY):
+            return "fail"
         return "ok"
     except Exception:  # noqa: BLE001
         _logger.exception("health: storage check failed")
