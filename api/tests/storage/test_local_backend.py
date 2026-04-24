@@ -131,6 +131,35 @@ def test_list_prefix_missing_returns_empty(backend: LocalFilesystemBackend) -> N
     assert backend.list_prefix("nothing/here") == []
 
 
+def test_list_prefix_includes_user_filenames_with_tmp_substring(
+    backend: LocalFilesystemBackend,
+) -> None:
+    """`.tmp.` alone in a filename must not hide a legitimate user key —
+    only the exact `.tmp.<32-hex>` sibling pattern is a backend temp artifact."""
+    backend.put("characters/c1/avatar.tmp.v2.png", b"user-file", "image/png")
+    backend.put("characters/c1/base.png", b"base", "image/png")
+
+    listed = sorted(o.key for o in backend.list_prefix("characters/c1"))
+    assert listed == [
+        "characters/c1/avatar.tmp.v2.png",
+        "characters/c1/base.png",
+    ]
+
+
+def test_list_prefix_excludes_real_tmp_uuid_siblings(
+    backend: LocalFilesystemBackend, tmp_path: Path
+) -> None:
+    """A real `.tmp.<32-hex>` sibling left over (e.g., from a crashed put on
+    another process) must NOT show up in list_prefix results."""
+    backend.put("characters/c1/base.png", b"x", "image/png")
+    # Simulate a leftover temp sibling matching the exact pattern.
+    leftover = tmp_path / "characters" / "c1" / ("base.png.tmp." + "a" * 32)
+    leftover.write_bytes(b"partial")
+
+    listed = sorted(o.key for o in backend.list_prefix("characters/c1"))
+    assert listed == ["characters/c1/base.png"]
+
+
 def test_copy_creates_hardlink_when_supported(
     backend: LocalFilesystemBackend, tmp_path: Path
 ) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,12 @@ from app.storage.errors import NotFoundError, StorageError
 from app.storage.signed_url import build_signed_url, sign_token
 
 _CHUNK_SIZE = 64 * 1024
+
+# Matches the exact temp-file suffix produced by `put` / `copy`:
+# `{name}.tmp.{uuid4().hex}` — 32 lowercase hex chars anchored to end of name.
+# Narrow pattern so list_prefix doesn't accidentally hide user keys like
+# `avatar.tmp.v2.png` that happen to contain `.tmp.`.
+_TMP_SUFFIX_RE = re.compile(r"\.tmp\.[0-9a-f]{32}$")
 
 
 class LocalFilesystemBackend(StorageBackend):
@@ -138,7 +145,7 @@ class LocalFilesystemBackend(StorageBackend):
         return [
             self._stat_to_object(p)
             for p in sorted(prefix_path.rglob("*"))
-            if p.is_file() and ".tmp." not in p.name
+            if p.is_file() and not _TMP_SUFFIX_RE.search(p.name)
         ]
 
     def copy(self, src_key: str, dst_key: str) -> StoredObject:
