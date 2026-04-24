@@ -248,7 +248,7 @@ async def stream_task(task_id: UUID):
 | `POST /v1/creation-sessions/{id}/checkpoints` 排 task 時 | `INCR seq:checkpoint:{session_id}` 取得 sequence；連同 reserved `checkpoint_id` (UUID v4) 塞進 `task.input_payload` |
 | Worker 成功時 | 用 input_payload 帶來的 sequence 寫 checkpoint row |
 | Session 進 `completed` / `abandoned` | `DEL seq:checkpoint:{session_id}`（避免長期佔用）|
-| Redis key lost（重啟 etc.） | Fallback：`SET seq:checkpoint:{session_id} = GREATEST(max_persisted, max_in_flight)` 後再繼續 INCR。<br/>`max_persisted` = `COALESCE((SELECT MAX(sequence) FROM checkpoints WHERE creation_session_id=?), 0)`<br/>`max_in_flight` = `COALESCE((SELECT MAX((input_payload->>'sequence')::int) FROM tasks WHERE input_payload->>'session_id'=? AND task_type='create_checkpoint' AND status NOT IN ('cancelled','failed','completed')), 0)`<br/>**必須包含 in-flight tasks** — 否則 queued/running task 已 reserved 的 sequence 會被新 task 重用，worker 寫入時撞 UNIQUE |
+| Redis key lost（重啟 etc.） | Fallback **必須原子**（避免並發 recovery race）：用 `SETNX seq:checkpoint:{session_id} <baseline>` 才不會 clobber 其他並發 recovery 已寫入的值，再 `INCR`。<br/>`baseline` = `GREATEST(max_persisted, max_in_flight)`<br/>`max_persisted` = `COALESCE((SELECT MAX(sequence) FROM checkpoints WHERE creation_session_id=?), 0)`<br/>`max_in_flight` = `COALESCE((SELECT MAX((input_payload->>'sequence')::int) FROM tasks WHERE input_payload->>'session_id'=? AND task_type='create_checkpoint' AND status NOT IN ('cancelled','failed','completed')), 0)`<br/>**必須包含 in-flight tasks** — 否則 queued/running task 已 reserved 的 sequence 會被新 task 重用，worker 寫入時撞 UNIQUE。<br/>**必須用 SETNX**（不是 SET）— 否則並發 recovery 兩個 request 都 SET=baseline 會把彼此的 INCR 結果蓋掉 |
 
 優點：原子、涵蓋 in-flight job、不需新 schema。
 
