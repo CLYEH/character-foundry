@@ -166,6 +166,36 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 
 **Codex review 獨立於人類 approve 之外自動執行。** 即使 1 人 approve 條件符合，Codex 找到 critical issue 仍會 block merge（作者要修 code 推新 commit，或在 PR 裡 justify 為什麼 defer）。
 
+#### Phase 1 solo exception
+
+上表是**團隊 ≥ 2 人**的基準規則。現階段（Phase 1）實際只有一位活躍貢獻者，不可能湊到 2 人 approve，因此套用以下覆寫：
+
+| 原規則 | Phase 1 solo 覆寫 |
+|---|---|
+| **2 人** approve（Security-sensitive / Schema migration / Production deploy） | **Codex 已完成 review 且無 unresolved critical comment** + **1 人** approve（self OK）|
+| **1 人** approve（其餘類型） | 不變 |
+
+精神：2-人 rule 存在是為了「人 × 人」cross-check。Solo 時湊不到第二個人，改由 **Codex 自動 review** 當結構性把關 —— 以 §4.3 描述的 review 完成 + critical comment 處理完成為判準（與此文件其他地方用的是同一個可驗證訊號），不綁定任何特定 reaction / bot API。
+
+**套用條件：** 以下方 **Active maintainers** 清單為準 —— 清單只有 1 個人類 handle 時本條款生效。
+
+**不用 git commit author 統計當判準**。Co-Authored-By trailer、GitHub `noreply` 隱私 email、同一個人的多組 git identity、bot / CI service account 都會讓 `git log --format=%ae` 的 distinct 數失真，進而在「實際上仍是 solo」的場景把這條條款誤判成失效。採用明確維護者清單可避免這類偽信號。
+
+**Active maintainers:**
+- @CLYEH — sole maintainer as of 2026-04-24
+
+**第二位人類維護者加入時的動作（請嚴格依序）：**
+1. 在上方 **Active maintainers** 清單新增其 GitHub handle
+2. **刪除整個「Phase 1 solo exception」子節**
+3. 同步更新 auto-merge loop 的對應 memory / 設定
+4. 走正常 PR 流程取得 approve 後 merge
+
+**不變的守門線：**
+- Codex 自動 review 仍然要跑完
+- Codex 若留 critical comment 必須處理（採納 / 駁回 / defer）才能 merge
+- Self-approve 的 PR 作者仍要勾完 `.github/pull_request_template.md` 的 checklist
+- `main` branch protection rule 不得為了這條款而放寬
+
 ### 4.2 Reviewer 責任
 
 檢查：
@@ -228,7 +258,7 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 ### 5.2 Merge 前必備
 
 - ✅ CI 全綠
-- ✅ 至少 1 人 approve（或 2 人，按 PR 類型）
+- ✅ 至少 1 人 approve（或 2 人，按 PR 類型；Phase 1 solo 覆寫見 §4.1）
 - ✅ **Codex 已自動 review 完成**，所有 critical comments 都處理（採納 / 駁回 / defer to ticket）
 - ✅ 無 conflict（有就先 rebase）
 - ✅ PR 作者已更新 STATUS.md
