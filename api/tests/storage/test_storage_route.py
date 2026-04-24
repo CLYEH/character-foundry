@@ -98,6 +98,19 @@ def test_serve_file_missing_key_returns_404(
     assert resp.json()["error"]["code"] == "STORAGE_NOT_FOUND"
 
 
+def test_serve_file_directory_key_returns_404_not_500(
+    client: TestClient, backend: LocalFilesystemBackend
+) -> None:
+    # Nested put creates characters/abc/ as a directory. A signed URL for
+    # that directory key must surface as STORAGE_NOT_FOUND, not an unstructured
+    # 500 from a leaked IsADirectoryError.
+    backend.put("characters/abc/base.png", b"x", "image/png")
+    token = sign_token(key="characters/abc", user_id=None, expires_in_seconds=60)
+    resp = client.get(f"/storage/characters/abc?token={token}")
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "STORAGE_NOT_FOUND"
+
+
 def test_get_signed_url_round_trip_through_route(
     client: TestClient, backend: LocalFilesystemBackend
 ) -> None:

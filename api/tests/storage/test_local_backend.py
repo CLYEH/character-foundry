@@ -62,6 +62,35 @@ def test_get_missing_raises_not_found(backend: LocalFilesystemBackend) -> None:
         backend.get("missing.png")
 
 
+def test_get_on_directory_key_raises_not_found(
+    backend: LocalFilesystemBackend,
+) -> None:
+    # Nested put creates characters/abc/ as a directory.
+    backend.put("characters/abc/base.png", b"x", "image/png")
+    # Key targeting the directory itself must surface as NotFoundError, not
+    # IsADirectoryError leaking past the storage exception contract.
+    with pytest.raises(NotFoundError):
+        backend.get("characters/abc")
+
+
+def test_get_stream_on_directory_key_raises_not_found(
+    backend: LocalFilesystemBackend,
+) -> None:
+    backend.put("characters/abc/base.png", b"x", "image/png")
+    with pytest.raises(NotFoundError):
+        backend.get_stream("characters/abc")
+
+
+def test_delete_on_directory_key_is_noop(
+    backend: LocalFilesystemBackend,
+) -> None:
+    backend.put("characters/abc/base.png", b"x", "image/png")
+    # Deleting a key that resolves to a directory must not raise and must not
+    # remove the directory or its contents.
+    backend.delete("characters/abc")
+    assert backend.get("characters/abc/base.png") == b"x"
+
+
 def test_get_stream_yields_bytes(backend: LocalFilesystemBackend) -> None:
     backend.put("a/b.txt", b"hello", "text/plain")
     with backend.get_stream("a/b.txt") as fh:

@@ -90,17 +90,18 @@ class LocalFilesystemBackend(StorageBackend):
 
     def get(self, key: str) -> bytes:
         path = self._resolve(key)
-        try:
-            return path.read_bytes()
-        except FileNotFoundError as exc:
-            raise NotFoundError(key) from exc
+        # Preflight is_file() so a key pointing at a directory surfaces as
+        # NotFoundError (inside the StorageError hierarchy) instead of leaking
+        # IsADirectoryError past the route's `except StorageError` mapping.
+        if not path.is_file():
+            raise NotFoundError(key)
+        return path.read_bytes()
 
     def get_stream(self, key: str) -> BinaryIO:
         path = self._resolve(key)
-        try:
-            return open(path, "rb")
-        except FileNotFoundError as exc:
-            raise NotFoundError(key) from exc
+        if not path.is_file():
+            raise NotFoundError(key)
+        return open(path, "rb")
 
     def get_signed_url(self, key: str, expires_in_seconds: int = 3600) -> str:
         token = sign_token(
@@ -112,10 +113,11 @@ class LocalFilesystemBackend(StorageBackend):
 
     def delete(self, key: str) -> None:
         path = self._resolve(key)
-        try:
-            path.unlink()
-        except FileNotFoundError:
+        # Delete is idempotent; a missing file or a non-file path (e.g. a
+        # nested directory created by earlier puts) is a no-op, not an error.
+        if not path.is_file():
             return
+        path.unlink()
 
     def exists(self, key: str) -> bool:
         try:
