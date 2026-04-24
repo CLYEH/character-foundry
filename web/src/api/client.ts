@@ -105,32 +105,44 @@ async function apiFetchInternal<T>(
 }
 
 let refreshPromise: Promise<boolean> | null = null
+let refreshPromiseForToken: string | null = null
 
 export async function attemptTokenRefresh(): Promise<boolean> {
-  if (refreshPromise) return refreshPromise
-  refreshPromise = doRefresh().finally(() => {
-    refreshPromise = null
+  const currentRefreshToken = useAuthStore.getState().refreshToken
+  // Share an in-flight refresh only when it's refreshing the *current* session.
+  // Otherwise a request from a new session could end up awaiting (and trusting
+  // the failure result of) a refresh that belonged to an old session.
+  if (refreshPromise && refreshPromiseForToken === currentRefreshToken) {
+    return refreshPromise
+  }
+  const tokenForThisRefresh = currentRefreshToken
+  const p = doRefresh(tokenForThisRefresh).finally(() => {
+    // Only clear the slot if we're still the one parked in it (a newer
+    // refresh for a different session may have overwritten us already).
+    if (refreshPromise === p) {
+      refreshPromise = null
+      refreshPromiseForToken = null
+    }
   })
-  return refreshPromise
+  refreshPromise = p
+  refreshPromiseForToken = tokenForThisRefresh
+  return p
 }
 
-async function doRefresh(): Promise<boolean> {
-  const refreshTokenAtStart = useAuthStore.getState().refreshToken
-  if (!refreshTokenAtStart) return false
+async function doRefresh(refreshTokenToUse: string | null): Promise<boolean> {
+  if (!refreshTokenToUse) return false
   try {
     const res = await fetch(`${BASE_URL}/v1/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshTokenAtStart }),
+      body: JSON.stringify({ refresh_token: refreshTokenToUse }),
     })
     if (!res.ok) return false
     const data = (await res.json()) as { access_token: string; expires_in: number }
     // If the session changed while the refresh was in flight (logout, or
     // re-login as a different user), discard the result so we don't silently
-    // re-authenticate the previous session. Callers treat `false` as a
-    // refresh failure → they will clear auth + redirect to /login, which is
-    // the right behaviour when the user has just logged out.
-    if (useAuthStore.getState().refreshToken !== refreshTokenAtStart) {
+    // re-authenticate the previous session.
+    if (useAuthStore.getState().refreshToken !== refreshTokenToUse) {
       return false
     }
     useAuthStore.getState().updateAccessToken(data.access_token, data.expires_in)

@@ -156,6 +156,82 @@ describe('apiFetch — 401 refresh flow', () => {
     expect(redirectSpy).not.toHaveBeenCalled()
   })
 
+  it('does not share an in-flight refresh across sessions', async () => {
+    // Session A starts a refresh that will resolve "false" (session mismatch).
+    let releaseA: ((value: Response) => void) | null = null
+    const refreshAGate = new Promise<Response>((resolve) => {
+      releaseA = resolve
+    })
+
+    const refreshUrls: string[] = []
+    let refreshCallCount = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      const auth = new Headers(init?.headers).get('Authorization')
+      if (url.endsWith('/v1/auth/refresh')) {
+        refreshCallCount += 1
+        refreshUrls.push(init?.body ? String(init.body) : '')
+        if (refreshCallCount === 1) return refreshAGate
+        // Second refresh (for session B) resolves immediately with a new token.
+        return new Response(JSON.stringify({ access_token: 'b_new', expires_in: 900 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (auth === 'Bearer a_expired') return new Response(null, { status: 401 })
+      if (auth === 'Bearer b_expired') return new Response(null, { status: 401 })
+      if (auth === 'Bearer b_new') {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('unexpected', { status: 500 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const redirectSpy = vi.spyOn(authFailureRedirect, 'toLogin').mockImplementation(() => {})
+
+    // --- Session A: request 401s and parks on the gated refresh.
+    seedAuth('a_expired', 'r_a')
+    const pendingA = apiFetch('/v1/session-a').catch((e) => e)
+    await new Promise((r) => setTimeout(r, 0))
+
+    // --- User logs out and logs back in as session B.
+    useAuthStore.setState({
+      accessToken: 'b_expired',
+      refreshToken: 'r_b',
+      user: null,
+      expiresAt: Date.now() + 60_000,
+    })
+
+    // --- Session B: fresh request 401s; must NOT adopt session A's refresh.
+    const pendingB = apiFetch<{ ok: boolean }>('/v1/session-b')
+
+    // Release session A's refresh with a 200 (server still thinks R_A is valid).
+    releaseA!(
+      new Response(JSON.stringify({ access_token: 'a_new', expires_in: 900 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const [resultA, resultB] = await Promise.all([pendingA, pendingB])
+
+    // Two distinct refresh calls fired — one per session.
+    expect(refreshCallCount).toBe(2)
+    expect(refreshUrls[0]).toContain('r_a')
+    expect(refreshUrls[1]).toContain('r_b')
+
+    // Session A's original request fails (its refresh came back while the
+    // session had moved on) but session B survives unharmed.
+    expect(resultA).toBeInstanceOf(ApiError)
+    expect(resultB).toEqual({ ok: true })
+    expect(useAuthStore.getState().accessToken).toBe('b_new')
+    expect(useAuthStore.getState().refreshToken).toBe('r_b')
+    expect(redirectSpy).not.toHaveBeenCalled()
+  })
+
   it('does not tear down a new session when a stale 401 resolves after re-login', async () => {
     let releaseRefresh: ((value: Response) => void) | null = null
     const refreshGate = new Promise<Response>((resolve) => {
