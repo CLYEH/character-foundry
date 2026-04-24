@@ -111,8 +111,8 @@
         - `/issues/N/comments` — issue-level comments
         - `/issues/N/reactions` — PR body reactions（Codex 的 `+1` / `eyes` / `-1`）
      3. **Merge gate**（以下全部滿足 → `gh pr merge N --squash --delete-branch` 並停 loop）：
-        - `/issues/N/reactions` 裡有 Codex（`chatgpt-codex-connector[bot]`）的 `+1`
-        - **最新 commit 上無 inline review comment**：`/pulls/N/comments` 裡 `commit_id == latest_sha` 的項目為空（舊 commit 上已處理的 thread 不算 blocker）
+        - `/issues/N/reactions` 裡有 Codex（`chatgpt-codex-connector[bot]`）的 `+1`，**且該 reaction 的 `created_at` 晚於 latest commit 的 `committedDate`**（避免 stale `+1`：reaction 是 PR-scoped 不是 commit-scoped，舊 commit 的 `+1` 若沒被清掉會誤判新 commit 已 pass）
+        - **最新 commit 上無 unresolved inline review comment**：`/pulls/N/comments` 裡 `commit_id == latest_sha` 的 top-level thread（`in_reply_to_id == null`）都已有我本人的後續 reply（採納 / 駁回 / defer 都算已處理；沒 reply 就是 unresolved blocker）
         - `mergeable=MERGEABLE && mergeStateStatus=CLEAN`
         - CI `statusCheckRollup` 全 SUCCESS
         - 符合 CONTRIBUTING §4.1（含 Phase 1 solo exception）+ §5.2 的 approve 要求
