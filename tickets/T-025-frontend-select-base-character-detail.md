@@ -28,7 +28,7 @@
   - Motions 區：empty state「動作會在這裡出現」+ 5 個 preset placeholder 圖示（disabled）
 - 如果 Character.base_id 為 null（session 未 completed）→ 顯示 inline 錯誤頁「此角色尚未確立 Base，請從 Dashboard 開新角色完成建立」+ Back to Dashboard。**不 redirect** — 因 `CharacterDetail` DTO 沒 session_id 欄位（api-shape §6.2），前端無法推導目標 session 路徑；正規解（detail 頁恢復 in-progress session）需要 DTO schema 改動，留 backlog
 - Breadcrumb：Dashboard › Character
-- Vitest：detail page render、select-base 成功跳轉、confirm dialog、base 為 null 的 redirect
+- Vitest：detail page render、select-base 成功跳轉、confirm dialog、base 為 null 顯示 inline 錯誤頁（**非** redirect）
 
 **Not in scope:**
 - Alias / Motion 實際功能（Sprint 3）
@@ -81,4 +81,4 @@
 - Confirm dialog 用 shadcn AlertDialog（destructive 語氣）
 - 「下載 ZIP」按鈕存在但 disabled；Sprint 4 打開
 - 從 session 跳到 detail 要 invalidate character list query（TanStack `queryClient.invalidateQueries`）讓 Dashboard 回去看得到
-- 防止 session 被拋棄：`base_id === null && session.status === 'in_progress'` 才 redirect；`abandoned` session 則顯示錯誤頁
+- `base_id === null` 一律顯示 inline 錯誤頁（無論 session 是 in_progress 還是 abandoned），不 redirect — 與 In Scope / Acceptance 一致；恢復 in-progress session 的 proper 解法是 STATUS.md backlog S2-2（`CharacterDetail` DTO 加 `creation_session` 欄位）
