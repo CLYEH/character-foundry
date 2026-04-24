@@ -17,7 +17,18 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import models so their metadata is registered on Base.metadata.
 from app.db.base import Base
-from app.models import Character, Team, User  # noqa: F401  (register metadata)
+from app.models import (  # noqa: F401  (register metadata)
+    Alias,
+    BaseAsset,
+    Character,
+    Checkpoint,
+    CreationSession,
+    GenerationLog,
+    Motion,
+    Task,
+    Team,
+    User,
+)
 
 config = context.config
 

@@ -45,11 +45,17 @@ class Character(Base):
     )
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     slug: Mapped[str] = mapped_column(String(60), nullable=False)
-    # FK added in T-003 after bases table exists.
-    base_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    # FK added in T-003 after creation_sessions table exists.
+    # FKs are added by T-003 migrations (007_bases, 005_creation_sessions) to
+    # work around the circular reference with characters.
+    base_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("bases.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+    )
     creation_session_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("creation_sessions.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
     )
     copied_from_character_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

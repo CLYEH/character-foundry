@@ -16,6 +16,42 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 REQUIRED_EXTENSIONS = {"uuid-ossp", "pgcrypto", "vector", "pg_trgm"}
 
+EXPECTED_TABLES = {
+    "teams",
+    "users",
+    "characters",
+    "creation_sessions",
+    "checkpoints",
+    "bases",
+    "aliases",
+    "motions",
+    "generation_logs",
+    "tasks",
+}
+
+EXPECTED_GEN_LOG_PARTITIONS = {
+    "generation_logs_2026_04",
+    "generation_logs_2026_05",
+    "generation_logs_2026_06",
+}
+
+# Tables we DROP in _reset to force each test run back to a clean slate. Order
+# matters: drop leaves before roots so FK cascades don't block us. CASCADE on
+# each drop is belt-and-braces for when a prior failure leaves partial state.
+RESET_DROP_TABLES = (
+    "tasks",
+    "generation_logs",
+    "motions",
+    "aliases",
+    "bases",
+    "checkpoints",
+    "creation_sessions",
+    "characters",
+    "users",
+    "teams",
+    "alembic_version",
+)
+
 
 def _run(coro):
     return asyncio.run(coro)
@@ -45,10 +81,8 @@ async def _reset(database_url: str) -> None:
     engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
-            await conn.execute(text("DROP TABLE IF EXISTS characters CASCADE"))
-            await conn.execute(text("DROP TABLE IF EXISTS users CASCADE"))
-            await conn.execute(text("DROP TABLE IF EXISTS teams CASCADE"))
-            await conn.execute(text("DROP TABLE IF EXISTS alembic_version CASCADE"))
+            for table in RESET_DROP_TABLES:
+                await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
             await conn.execute(
                 text("DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE")
             )
@@ -63,6 +97,28 @@ def clean_db(database_url: str):
     _run(_reset(database_url))
 
 
+def _insert_user(database_url: str) -> tuple[str, str]:
+    """Insert a team+user fixture and return (team_id, user_id)."""
+    team_id = _run(
+        _fetch(database_url, "SELECT id FROM teams WHERE name='default'")
+    )[0][0]
+    _run(
+        _exec(
+            database_url,
+            "INSERT INTO users (id, team_id, name, email, password_hash) "
+            "VALUES (gen_random_uuid(), :team_id, 'Tester', "
+            "'tester@example.com', 'x')",
+            {"team_id": team_id},
+        )
+    )
+    user_id = _run(
+        _fetch(
+            database_url, "SELECT id FROM users WHERE email='tester@example.com'"
+        )
+    )[0][0]
+    return team_id, user_id
+
+
 def test_upgrade_head_creates_schema(alembic_config, database_url, clean_db):
     command.upgrade(alembic_config, "head")
 
@@ -73,6 +129,28 @@ def test_upgrade_head_creates_schema(alembic_config, database_url, clean_db):
 
     teams = _run(_fetch(database_url, "SELECT name FROM teams"))
     assert ("default",) in teams, f"default team missing; got {teams}"
+
+    # Every expected table exists (either as a regular relation or as a
+    # partitioned parent — both show up in pg_tables, but partitioned parents
+    # only appear in pg_class, so check the catalog instead).
+    actual_tables = {
+        row[0]
+        for row in _run(
+            _fetch(
+                database_url,
+                """
+                SELECT c.relname
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relkind IN ('r', 'p')
+                """,
+            )
+        )
+    }
+    assert EXPECTED_TABLES.issubset(actual_tables), (
+        f"missing tables: {EXPECTED_TABLES - actual_tables}"
+    )
 
     # Smoke check schema exists — any column error would blow up here.
     _run(_fetch(database_url, "SELECT id, email, team_id FROM users WHERE 1=0"))
@@ -90,14 +168,18 @@ def test_downgrade_to_base_is_clean(alembic_config, database_url, clean_db):
     command.upgrade(alembic_config, "head")
     command.downgrade(alembic_config, "base")
 
-    # All user tables should be gone; alembic_version is kept but empty.
+    # All user tables (regular + partitioned) should be gone after downgrade.
+    names_literal = ", ".join(f"'{t}'" for t in EXPECTED_TABLES)
     remaining = _run(
         _fetch(
             database_url,
-            """
-            SELECT tablename FROM pg_tables
-            WHERE schemaname = 'public'
-              AND tablename IN ('teams', 'users', 'characters')
+            f"""
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relkind IN ('r', 'p')
+              AND c.relname IN ({names_literal})
             """,
         )
     )
@@ -123,17 +205,7 @@ def test_characters_name_check_constraint(alembic_config, database_url, clean_db
     """
     command.upgrade(alembic_config, "head")
 
-    # Insert fixtures: a team + user so characters has valid FKs.
-    team_id = _run(_fetch(database_url, "SELECT id FROM teams WHERE name='default'"))[0][0]
-    _run(
-        _exec(
-            database_url,
-            "INSERT INTO users (id, team_id, name, email, password_hash) "
-            "VALUES (gen_random_uuid(), :team_id, 'Tester', 'tester@example.com', 'x')",
-            {"team_id": team_id},
-        )
-    )
-    user_id = _run(_fetch(database_url, "SELECT id FROM users WHERE email='tester@example.com'"))[0][0]
+    team_id, user_id = _insert_user(database_url)
 
     # Chinese name must be accepted.
     _run(
@@ -157,3 +229,104 @@ def test_characters_name_check_constraint(alembic_config, database_url, clean_db
         )
     # Either CheckViolation or a transport-wrapped version of it — both are fine.
     assert "chk_characters_name_chars" in str(exc.value) or "check constraint" in str(exc.value).lower()
+
+
+def test_motions_exactly_one_parent_check(alembic_config, database_url, clean_db):
+    """A motion must hang off exactly one of base_id / alias_id — neither or both is an error."""
+    command.upgrade(alembic_config, "head")
+
+    # Both NULL — must fail.
+    with pytest.raises(Exception) as exc_none:
+        _run(
+            _exec(
+                database_url,
+                "INSERT INTO motions (base_id, alias_id, motion_type, name, video_key) "
+                "VALUES (NULL, NULL, 'preset_wave', 'hi', 'k')",
+            )
+        )
+    assert (
+        "chk_motions_exactly_one_parent" in str(exc_none.value)
+        or "check constraint" in str(exc_none.value).lower()
+    )
+
+
+def test_generation_log_partitions_exist(alembic_config, database_url, clean_db):
+    """Bootstrap migration 010 creates the current month + next two partitions."""
+    command.upgrade(alembic_config, "head")
+
+    partitions = {
+        row[0]
+        for row in _run(
+            _fetch(
+                database_url,
+                """
+                SELECT c.relname
+                FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhrelid
+                JOIN pg_class parent ON parent.oid = i.inhparent
+                WHERE parent.relname = 'generation_logs'
+                """,
+            )
+        )
+    }
+    assert EXPECTED_GEN_LOG_PARTITIONS.issubset(partitions), (
+        f"missing partitions: {EXPECTED_GEN_LOG_PARTITIONS - partitions}"
+    )
+
+
+def test_tasks_indexes_and_constraints(alembic_config, database_url, clean_db):
+    """tasks must carry its 4 indexes and the terminal/mutex CHECKs must bite."""
+    command.upgrade(alembic_config, "head")
+
+    indexes = {
+        row[0]
+        for row in _run(
+            _fetch(
+                database_url,
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'tasks'",
+            )
+        )
+    }
+    required_tasks_indexes = {
+        "idx_tasks_user_status_created",
+        "idx_tasks_active",
+        "idx_tasks_entity",
+        "idx_tasks_cancel_pending",
+    }
+    assert required_tasks_indexes.issubset(indexes), (
+        f"missing indexes on tasks: {required_tasks_indexes - indexes}"
+    )
+
+    _, user_id = _insert_user(database_url)
+
+    # status='completed' with NULL completed_at must fail the terminal CHECK.
+    with pytest.raises(Exception) as exc_terminal:
+        _run(
+            _exec(
+                database_url,
+                "INSERT INTO tasks (user_id, task_type, status, input_payload) "
+                "VALUES (:user_id, 'create_checkpoint', 'completed', '{}'::jsonb)",
+                {"user_id": user_id},
+            )
+        )
+    assert (
+        "chk_tasks_terminal_completed_at" in str(exc_terminal.value)
+        or "check constraint" in str(exc_terminal.value).lower()
+    )
+
+    # result + error both non-null must fail the mutex CHECK.
+    with pytest.raises(Exception) as exc_mutex:
+        _run(
+            _exec(
+                database_url,
+                "INSERT INTO tasks (user_id, task_type, status, input_payload, "
+                "result, error, completed_at) "
+                "VALUES (:user_id, 'create_checkpoint', 'failed', '{}'::jsonb, "
+                "'{}'::jsonb, '{}'::jsonb, NOW())",
+                {"user_id": user_id},
+            )
+        )
+    assert (
+        "chk_tasks_result_error_mutex" in str(exc_mutex.value)
+        or "check constraint" in str(exc_mutex.value).lower()
+    )
