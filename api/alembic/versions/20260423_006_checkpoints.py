@@ -12,9 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision: str = "20260423_006"
 down_revision: str | Sequence[str] | None = "20260423_005"
@@ -49,12 +47,11 @@ def upgrade() -> None:
         """
     )
 
-    op.create_index(
-        "idx_checkpoints_session",
-        "checkpoints",
-        ["creation_session_id", "sequence"],
-    )
-
+    # No separate index on (creation_session_id, sequence) — the
+    # `uq_session_sequence` UNIQUE constraint already materializes a btree
+    # index on that exact key tuple, which is usable for prefix lookups by
+    # creation_session_id as well.
+    #
     # IVFFlat index for cosine similarity search. Phase 1 has little data so
     # the index starts effectively empty; `REINDEX` once rows accumulate.
     op.execute(
@@ -69,5 +66,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_checkpoints_embedding")
-    op.drop_index("idx_checkpoints_session", table_name="checkpoints")
     op.drop_table("checkpoints")

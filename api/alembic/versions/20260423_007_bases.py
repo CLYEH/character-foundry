@@ -45,7 +45,8 @@ def upgrade() -> None:
         """
     )
 
-    op.create_index("idx_bases_character", "bases", ["character_id"])
+    # No explicit idx_bases_character — the column-level UNIQUE on
+    # character_id already materializes a btree index usable for lookups.
     op.execute(
         """
         CREATE INDEX idx_bases_embedding
@@ -58,6 +59,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_bases_embedding")
-    op.drop_index("idx_bases_character", table_name="bases")
     op.execute("ALTER TABLE characters DROP CONSTRAINT IF EXISTS fk_characters_base")
     op.drop_table("bases")

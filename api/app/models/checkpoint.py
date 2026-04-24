@@ -8,7 +8,6 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
-    Index,
     Integer,
     String,
     Text,
@@ -26,9 +25,11 @@ class Checkpoint(Base):
     """Immutable candidate image from a creation session."""
 
     __tablename__ = "checkpoints"
+    # uq_session_sequence's implicit btree index on (creation_session_id,
+    # sequence) is enough for session-scoped lookups — no separate Index()
+    # is declared.
     __table_args__ = (
         UniqueConstraint("creation_session_id", "sequence", name="uq_session_sequence"),
-        Index("idx_checkpoints_session", "creation_session_id", "sequence"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
