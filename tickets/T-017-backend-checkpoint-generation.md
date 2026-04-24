@@ -26,9 +26,9 @@
   ```
   - Validate mode combinations（retry_same 必須有 `base_checkpoint_id`；remix 也是；fresh 禁帶 base）
   - **不先建** `checkpoints` row（`output_image_key TEXT NOT NULL` 強制先有產物；見 db-schema §3.5）；lifecycle state 由 `tasks.status` 承載，SSE 已覆蓋全流程
-  - 預先決定 `sequence = COUNT(checkpoints WHERE session_id=?) + 1` 並塞進 `input_payload`（worker 用這個 sequence 寫入 row；同 session 併發請求用 row lock 破 tie）
-  - 透過 T-013 `TaskService.create_task('create_checkpoint', input_payload={session_id, mode, sequence, ...})` 排 arq job
-  - 回 `{ task_id }`（無 checkpoint_id — 成功後從 `task.result.checkpoint.id` 拿）
+  - 預先 reserve UUID v4 作為 `checkpoint_id`，並決定 `sequence = COUNT(checkpoints WHERE session_id=?) + 1`；兩者都塞進 `input_payload`（worker 成功時用同一個 UUID 寫 row；同 session 併發請求用 row lock 破 sequence tie）
+  - 透過 T-013 `TaskService.create_task('create_checkpoint', input_payload={session_id, checkpoint_id, mode, sequence, ...})` 排 arq job
+  - 回 `{ task_id, checkpoint_id }`（對齊 `api-shape.md` §5.2 合約；checkpoint_id 在 worker 完成前查 `GET /checkpoints/{id}` 會 404，但 UI 走 task SSE 不會直接打那個 endpoint）
 - arq job handler `run_create_checkpoint(ctx, task_id)`：
   1. Mark task running，開 `progress_publisher` loop
   2. 根據 `input_mode`（來自 session）決定 text2image 或 image2image
@@ -36,7 +36,7 @@
   4. 呼 `GptImage2Client.generate_*(prompt, reference_images=?)` 拿 bytes
   5. 寫 `StorageBackend`（key 格式：`creation-sessions/{session_id}/checkpoints/{ckpt_id}.png`）
   6. 寫 thumbnail（512w，PIL resize）存 `.../thumb.png`
-  7. 更新 checkpoint row（`output_image_url` 用 signed-url path、`prompt_summary`、`generation_log` JSON）
+  7. 寫 checkpoint row：`id`=預先 reserve 的 UUID、`output_image_key`=storage key（**不是** signed URL；signed URL 在讀取時由 `Checkpoint` DTO 動態產，見 db-schema §3.5、storage-layout.md）、`prompt`=完整英文 prompt、`generation_log` JSON
   8. 更新 task `completed`，result = Checkpoint DTO
   9. 全程錯誤包成 `AgentError` 寫進 `task.error`
 - `Checkpoint.prompt_summary` 組：menu 摘要（「女性・大眼・黑長髮・水墨風」）+ freeform 前 80 字 + `...`（UX 規則）
@@ -68,7 +68,7 @@
 - [ ] `fresh` mode 無參考圖 → text2image；有參考圖 → image2image
 - [ ] `remix` mode 會用 `base_checkpoint_id` 的輸出圖當 image conditioning
 - [ ] `retry_same` mode 重用同 prompt + 不同 seed，產新 checkpoint row
-- [ ] Worker 完成後：task=completed、checkpoint.output_image_url 有值、thumbnail 存在、prompt_summary ≤ 80+menu
+- [ ] Worker 完成後：task=completed、checkpoint row 寫入（`output_image_key` 是 storage path 不是 URL）、thumbnail 存在、Checkpoint DTO 經 signed-URL 轉換後可被前端讀取
 - [ ] AI stub mode 下整條 pipeline 可跑（CI 不需 OPENAI_API_KEY）
 - [ ] Cancel：queued / running 狀態 cancel → task=cancelled，**無 checkpoint row 被寫入**（lifecycle 全在 task 上）
 - [ ] 錯誤：reconciler fail / gpt-image-2 fail → task=failed + AgentError，**無 checkpoint row 被寫入**

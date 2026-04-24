@@ -97,6 +97,8 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | M8 | Lip sync 延後是未驗證的賭注 | Phase 1 demo 前做 5 人快速 check |
 | FB-3 | Storage URL expired 時 backend 要回對的 code | ✅ T-005 完成（`STORAGE_URL_EXPIRED` vs `AUTH_INVALID_TOKEN` 已分開） |
 | - | Visual design (Pencil mockup) | 之後需要再開 UX iteration 3 |
+| S2-1 | Slug-based URL（目前 `/characters/:id`）| Sprint 3/4 衡量 SEO/可分享性需求再做 |
+| S2-2 | CharacterDetail DTO 加 `creation_session: { id, status }` 讓 in-progress 角色可從 detail 頁恢復 session | 等真實使用情境出現再評估（現先在 detail 顯示 inline 錯誤）|
 
 ---
 

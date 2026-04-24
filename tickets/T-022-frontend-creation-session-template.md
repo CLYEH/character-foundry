@@ -26,11 +26,11 @@ P-04 Creation Session 頁（template 模式）：左欄輸入控制 + 右欄 Che
   - Failed checkpoint：顯示錯誤 message（從 `task.error.message`）+ `[重試]`
   - 點縮圖開 lightbox（最小版：fullscreen + prompt_summary）
 - Task 生命週期處理：
-  - Submit → `POST /creation-sessions/{id}/checkpoints` → 拿 `task_id`（**非** checkpoint_id；checkpoint row 要 worker 成功產出圖才會寫，見 T-017）
-  - Frontend 用 task_id 作為 UI list item 的 key，塞一張 placeholder 卡片（純前端 state，不是 DB 概念；卡片狀態源自 task.status）
+  - Submit → `POST /creation-sessions/{id}/checkpoints` → 拿 `{ task_id, checkpoint_id }`（對齊 api-shape §5.2；DB 上的 checkpoint row 還沒寫，要 worker 成功產出才會 INSERT，見 T-017）
+  - Frontend 用 `checkpoint_id` 作為 UI list item 的 key，塞一張 placeholder 卡片（純前端 state；DB row 在 task 完成前不存在）
   - 開 SSE `/v1/tasks/{task_id}/stream`（用 `@microsoft/fetch-event-source` with JWT header）
   - 狀態 / progress 更新同步到 placeholder 卡片
-  - Terminal：completed 時 `task.result.checkpoint` 是新 Checkpoint DTO，前端把 placeholder 替換為正式 checkpoint；failed / cancelled 時 placeholder 顯示錯誤或消失（見 §5.3 error state）+ 關 SSE
+  - Terminal：completed 時 `task.result.checkpoint` 是 Checkpoint DTO（id 同 placeholder 的 checkpoint_id），前端把 placeholder 替換為正式內容；failed / cancelled 時 placeholder 顯示錯誤或消失（見 §5.3 error state）+ 關 SSE
 - 同時支援多個 checkpoint 排隊（SSE 可以多個並存）
 - Cancel：running 中 checkpoint 卡片有 `[取消]` → `POST /tasks/{id}/cancel`，依 `cancel_outcome` 顯示 toast
 - Empty state（尚無 checkpoint）：「設定輸入條件，按生成開始」

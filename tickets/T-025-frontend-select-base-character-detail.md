@@ -26,7 +26,7 @@
   - Base 卡片：大圖 + prompt_summary inline + `[查看完整 prompt]`（開 T-024 modal 類似元件）
   - Aliases 區：empty state「Base 是基礎，來加些變體吧」+ `[+ 新增 Alias]`（按鈕 disabled with tooltip「Sprint 3 會開放」）
   - Motions 區：empty state「動作會在這裡出現」+ 5 個 preset placeholder 圖示（disabled）
-- 如果 Character.base_id 為 null（session 未 completed）→ redirect 回 `/characters/new/session/{session_id}` 繼續
+- 如果 Character.base_id 為 null（session 未 completed）→ 顯示 inline 錯誤頁「此角色尚未確立 Base，請從 Dashboard 開新角色完成建立」+ Back to Dashboard。**不 redirect** — 因 `CharacterDetail` DTO 沒 session_id 欄位（api-shape §6.2），前端無法推導目標 session 路徑；正規解（detail 頁恢復 in-progress session）需要 DTO schema 改動，留 backlog
 - Breadcrumb：Dashboard › Character
 - Vitest：detail page render、select-base 成功跳轉、confirm dialog、base 為 null 的 redirect
 
@@ -53,7 +53,7 @@
 - [ ] 若 session 已 completed 仍點 → 收到 409，Toast 顯示，不跳頁
 - [ ] Character detail 正確 render：name / base image / owner / created_at / alias count / motion count
 - [ ] Aliases 和 Motions 區顯示 empty state，按鈕 disabled with tooltip
-- [ ] `base_id === null` → 自動 redirect 回 session 頁
+- [ ] `base_id === null` → 顯示 inline 錯誤頁 + Back to Dashboard 連結（不 redirect 到 session 頁）
 - [ ] 點 `[查看完整 prompt]` → 開 preview 內容（可 reuse T-024 或 inline 一段 read-only view）
 - [ ] `pnpm -C web test -- character-detail` 全綠
 
