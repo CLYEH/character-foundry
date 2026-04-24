@@ -26,9 +26,9 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
   if (!headers.has('Content-Type') && shouldDefaultJsonContentType(options.body)) {
     headers.set('Content-Type', 'application/json')
   }
-  if (!headers.has('Accept')) {
-    headers.set('Accept', 'application/json')
-  }
+  // Don't default Accept: let the browser send `*/*` so binary endpoints
+  // (ZIP download, signed-URL proxy) and content-negotiation servers aren't
+  // forced into JSON representation.
 
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
 
@@ -46,11 +46,15 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
     )
   }
 
-  if (res.status === 204) return undefined as T
+  if (res.status === 204 || res.status === 205) return undefined as T
 
   const contentType = res.headers.get('Content-Type') ?? ''
   if (contentType.includes('application/json')) {
-    return (await res.json()) as T
+    // Handle valid-but-empty JSON success bodies (e.g. 200/202 with no payload,
+    // HEAD). res.json() on an empty body throws SyntaxError.
+    const text = await res.text()
+    if (!text) return undefined as T
+    return JSON.parse(text) as T
   }
   return res as unknown as T
 }
