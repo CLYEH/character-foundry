@@ -64,7 +64,7 @@ P-03：使用者填名 + 選輸入模式（Template / Reference）→ `POST /v1/
 
 ## Notes
 
-- Zod schema：`{ name: string.min(1).max(40), input_mode: z.enum(['template','reference']) }`
+- Zod schema：`{ name: string.min(1).max(50), input_mode: z.enum(['template','reference']) }`（對齊 db-schema §3.3 與 T-016）
 - Input mode 卡片：點擊時整張卡 highlight（tailwind `ring-2 ring-primary`）
 - Redirect 用 `useNavigate()` 而非 `<Navigate>`（避免 race）
 - Submit 期間按鈕顯示 loading spinner + disabled

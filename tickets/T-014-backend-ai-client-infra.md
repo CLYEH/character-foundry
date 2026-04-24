@@ -17,7 +17,7 @@
 - `GptImage2Client` 實作 — 包 OpenAI SDK；retry（指數退避 3 次）；timeout 60s；AgentError mapping（`MODEL_TIMEOUT` / `MODEL_RATE_LIMIT` / `PROMPT_CONTENT_POLICY` / `MODEL_UNAVAILABLE`，對齊 `api-shape.md` §4.1 — content policy 歸 `PROMPT_`）
 - `StubAIClient` — 固定回本機內建 sample PNG（存 `api/tests/fixtures/sample_*.png`），`AI_STUB_MODE=true` 時自動切換
 - Circuit breaker（per-model）：
-  - 連續失敗 ≥ 5 次 → OPEN，retry_at = now + 60s
+  - 連續失敗 ≥ 5 次（1 分鐘 window 內） → OPEN，retry_at = now + 300s（對齊 `planning/backend/ai-integration.md` §3.4 `open_duration_seconds = 300`）
   - OPEN 期間新呼叫直接 raise `MODEL_UNAVAILABLE`
   - 狀態存 Redis（`circuit:{model}`），讓 `/v1/meta` 能讀到
 - Update `/v1/meta.degraded_services`：聚合 Redis circuit 狀態（T-009 已定 schema，本單是填資料）

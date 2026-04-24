@@ -36,9 +36,10 @@
   4. 呼 `GptImage2Client.generate_*(prompt, reference_images=?)` 拿 bytes
   5. 寫 `StorageBackend`（key 格式：`creation-sessions/{session_id}/checkpoints/{ckpt_id}.png`）
   6. 寫 thumbnail（512w，PIL resize）存 `.../thumb.png`
-  7. 寫 checkpoint row：`id`=預先 reserve 的 UUID、`output_image_key`=storage key（**不是** signed URL；signed URL 在讀取時由 `Checkpoint` DTO 動態產，見 db-schema §3.5、storage-layout.md）、`prompt`=完整英文 prompt、`generation_log` JSON
-  8. 更新 task `completed`，result = Checkpoint DTO
-  9. 全程錯誤包成 `AgentError` 寫進 `task.error`
+  7. 先寫 `generation_logs` 表一筆（model_name、final_prompt、parameters、cost_units、duration_ms、status='success'、started_at、completed_at），拿回 `generation_log_id`
+  8. 寫 checkpoint row：`id`=預先 reserve 的 UUID、`output_image_key`=storage key（**不是** signed URL；signed URL 在讀取時由 `Checkpoint` DTO 動態產，見 db-schema §3.5、storage-layout.md）、`prompt`=完整英文 prompt、`generation_log_id`=步驟 7 的 UUID（**不是** JSON inline；db-schema §3.5 是 UUID soft FK，partitioned table 不支援硬 FK 所以由 application-level 維護）、`user_menu_selections`、`user_freeform_note`、`reference_image_keys`、`seed`
+  9. 更新 task `completed`，result = Checkpoint DTO
+  10. 全程錯誤包成 `AgentError` 寫進 `task.error`
 - `Checkpoint.prompt_summary` 組：menu 摘要（「女性・大眼・黑長髮・水墨風」）+ freeform 前 80 字 + `...`（UX 規則）
 - Cancel 支援：worker 每個階段結尾檢查 `task.cancel_requested`，若 true 則中止，**只更新 task.status=cancelled**，checkpoint row 根本不寫（沒 output_image_key 違反 NOT NULL）
 - Integration test：完整走 stub AI client → 確認 task 到 completed、checkpoint row 有 output、storage 檔案存在
@@ -83,6 +84,7 @@
 - `api/app/services/checkpoint_service.py` (new)
 - `api/app/repositories/checkpoint_repo.py` (new)
 - `api/app/repositories/reference_image_repo.py` (new)
+- `api/app/repositories/generation_log_repo.py` (new) — 寫 generation_logs partitioned table
 - `api/app/workers/jobs/create_checkpoint.py` (new)
 - `api/app/workers/arq_worker.py` (edit) — register job
 - `api/app/schemas/checkpoint.py` (new)
@@ -95,7 +97,7 @@
 
 ## Notes
 
-- Thumbnails 跟 full image 同步產；若 PIL fail 不阻斷 task（log warning，thumbnail_url=null）
+- Thumbnail 寫到 storage 的 `_thumb.png` 路徑（與 full image 相鄰）；DTO 在讀取時推導 signed URL，無需在 checkpoints 表存 thumbnail key。若 PIL fail 不阻斷 task（log warning；DTO 之後讀不到 thumbnail 檔會回 null thumbnail_url）
 - `sequence` 用 Postgres `SELECT COUNT + 1 FOR UPDATE` 或 `INSERT ... RETURNING sequence FROM generate_series`；避免 race 用 row lock
 - Checkpoint row 只在 worker 成功產出 image 後才寫（schema 要求 `output_image_key NOT NULL`；api-shape §6.7 Checkpoint DTO 也無 status 欄位）。Enqueue 失敗 / worker 失敗 → 只有 task 記錄，前端從 `tasks.status` + `task.error` 得知
 - Storage key 不曝露給 client，client 拿的是 signed URL（由 `StorageBackend.signed_url()` 產）
