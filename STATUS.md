@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-24
-> **Phase:** Sprint 1 in progress（T-006 done）
+> **Phase:** Sprint 1 in progress（T-006, T-007 done）
 
 ---
 
@@ -31,7 +31,7 @@
 | # | Ticket | Status |
 |---|---|---|
 | T-006 | Backend auth (JWT login/refresh/logout/me) | DONE |
-| T-007 | Frontend scaffolding (Vite + shadcn init) | TODO |
+| T-007 | Frontend scaffolding (Vite + shadcn init) | DONE |
 | T-008 | Frontend auth (login page + store + guard) | TODO |
 | T-009 | Backend /health + /v1/meta | TODO |
 | T-010 | Frontend TopNav + DegradedBanner | TODO |

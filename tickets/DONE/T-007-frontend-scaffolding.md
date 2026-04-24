@@ -1,6 +1,6 @@
 # T-007: Frontend Scaffolding (Vite + RR v7 + shadcn + Tailwind)
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 1
 **Est:** M (2h)
 **Depends on:** T-001
