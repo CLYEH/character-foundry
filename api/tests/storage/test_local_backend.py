@@ -147,3 +147,40 @@ def test_resolve_rejects_bad_keys(backend: LocalFilesystemBackend, bad_key: str)
 def test_resolve_blocks_path_traversal(backend: LocalFilesystemBackend) -> None:
     with pytest.raises(StorageError):
         backend.put("../escape.txt", b"x", "text/plain")
+
+
+@pytest.mark.parametrize("root_key", [".", "a/..", "./"])
+def test_resolve_rejects_keys_targeting_root(
+    backend: LocalFilesystemBackend, root_key: str
+) -> None:
+    with pytest.raises(StorageError):
+        backend.put(root_key, b"x", "text/plain")
+
+
+def test_copy_overwrite_is_atomic_on_failure(
+    backend: LocalFilesystemBackend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the fallback copy path fails mid-stage, the existing dst survives."""
+    backend.put("src.png", b"NEW_DATA", "image/png")
+    backend.put("dst.png", b"OLD_DATA", "image/png")
+
+    # Force the hardlink path to fail so we take the shutil.copy2 branch,
+    # and make copy2 blow up to simulate a mid-copy I/O failure.
+    def boom_link(_src: object, _dst: object) -> None:
+        raise OSError("hardlink not supported")
+
+    def boom_copy2(_src: object, _dst: object) -> None:
+        raise OSError("disk full mid-copy")
+
+    monkeypatch.setattr("app.storage.local.os.link", boom_link)
+    monkeypatch.setattr("app.storage.local.shutil.copy2", boom_copy2)
+
+    with pytest.raises(OSError, match="disk full"):
+        backend.copy("src.png", "dst.png")
+
+    # Original dst.png must still be intact; no leftover .tmp.* files.
+    assert backend.get("dst.png") == b"OLD_DATA"
+    leftover = [p for p in tmp_path.rglob("*.tmp.*") if p.is_file()]
+    assert leftover == [], f"unexpected leftover temp files: {leftover}"

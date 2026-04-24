@@ -35,8 +35,11 @@ class LocalFilesystemBackend(StorageBackend):
         if not key or key.startswith("/") or "\\" in key or "\x00" in key:
             raise StorageError(f"Invalid key: {key!r}")
         candidate = (self._root / key).resolve()
-        if candidate != self._root and self._root not in candidate.parents:
-            raise StorageError(f"Key escapes storage root: {key!r}")
+        # Reject keys that resolve to the root itself (e.g. "." or "a/..") —
+        # file operations against the root directory would surface as
+        # IsADirectoryError 500s instead of a clean validation error.
+        if candidate == self._root or self._root not in candidate.parents:
+            raise StorageError(f"Key escapes storage root or targets root: {key!r}")
         return candidate
 
     def put(
@@ -141,17 +144,27 @@ class LocalFilesystemBackend(StorageBackend):
         dst = self._resolve(dst_key)
         if not src.is_file():
             raise NotFoundError(src_key)
-        # If src and dst resolve to the same path, unlinking dst would delete
-        # the source — making copy destructive. Treat as a no-op round-trip.
+        # copy(k, k) would otherwise delete the source when we unlink dst.
         if src == dst:
             return self._stat_to_object(src, key_override=dst_key)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.exists():
-            dst.unlink()
+        # Stage into a .tmp sibling so an overwrite is atomic: on the
+        # shutil.copy2 fallback path a mid-copy failure would otherwise
+        # leave dst deleted or half-written. os.replace swaps the new
+        # content in only after it's fully staged.
+        tmp_path = dst.with_name(f"{dst.name}.tmp.{uuid4().hex}")
         try:
-            os.link(src, dst)
-        except OSError:
-            shutil.copy2(src, dst)
+            try:
+                os.link(src, tmp_path)
+            except OSError:
+                shutil.copy2(src, tmp_path)
+            os.replace(tmp_path, dst)
+        except BaseException:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
         return self._stat_to_object(dst, key_override=dst_key)
 
     def _stat_to_object(self, path: Path, *, key_override: str | None = None) -> StoredObject:
