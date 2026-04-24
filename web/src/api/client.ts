@@ -1,3 +1,5 @@
+import { useAuthStore } from '@/stores/authStore'
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
 export class ApiError extends Error {
@@ -14,23 +16,59 @@ export class ApiError extends Error {
   }
 }
 
+export interface ApiFetchOptions extends RequestInit {
+  /**
+   * Skip injecting `Authorization: Bearer` and skip the 401 → refresh → retry flow.
+   * Used by endpoints that don't accept JWT (login, refresh).
+   */
+  skipAuth?: boolean
+}
+
 /**
  * apiFetch returns parsed JSON when the response is JSON, `undefined` on 204,
  * and the raw `Response` object for other content types so callers can pick
  * `.blob()` / `.arrayBuffer()` / `.text()` themselves (used for ZIP download,
  * signed-URL proxy, etc). Errors always throw `ApiError`.
+ *
+ * On 401 for protected requests, a single-flight refresh is attempted. If it
+ * succeeds the original request is retried once with the new access token;
+ * otherwise the auth store is cleared and the browser is navigated to /login.
  */
-export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+export async function apiFetch<T = unknown>(
+  path: string,
+  options: ApiFetchOptions = {},
+): Promise<T> {
+  const { skipAuth = false, ...init } = options
+  return apiFetchInternal<T>(path, init, { skipAuth, isRetry: false })
+}
+
+async function apiFetchInternal<T>(
+  path: string,
+  options: RequestInit,
+  ctx: { skipAuth: boolean; isRetry: boolean },
+): Promise<T> {
   const headers = new Headers(options.headers)
 
   if (!headers.has('Content-Type') && shouldDefaultJsonContentType(options.body)) {
     headers.set('Content-Type', 'application/json')
   }
-  // Don't default Accept: let the browser send `*/*` so binary endpoints
-  // (ZIP download, signed-URL proxy) and content-negotiation servers aren't
-  // forced into JSON representation.
+
+  if (!ctx.skipAuth) {
+    const token = useAuthStore.getState().accessToken
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+  }
 
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
+
+  if (res.status === 401 && !ctx.skipAuth && !ctx.isRetry) {
+    const refreshed = await attemptTokenRefresh()
+    if (refreshed) {
+      return apiFetchInternal<T>(path, options, { skipAuth: false, isRetry: true })
+    }
+    useAuthStore.getState().logout()
+    authFailureRedirect.toLogin()
+    // Fall through to throw below so the caller still sees the failure.
+  }
 
   if (!res.ok) {
     const body = await readErrorBody(res)
@@ -50,13 +88,52 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
 
   const contentType = res.headers.get('Content-Type') ?? ''
   if (contentType.includes('application/json')) {
-    // Handle valid-but-empty JSON success bodies (e.g. 200/202 with no payload,
-    // HEAD). res.json() on an empty body throws SyntaxError.
     const text = await res.text()
     if (!text) return undefined as T
     return JSON.parse(text) as T
   }
   return res as unknown as T
+}
+
+let refreshPromise: Promise<boolean> | null = null
+
+export async function attemptTokenRefresh(): Promise<boolean> {
+  if (refreshPromise) return refreshPromise
+  refreshPromise = doRefresh().finally(() => {
+    refreshPromise = null
+  })
+  return refreshPromise
+}
+
+async function doRefresh(): Promise<boolean> {
+  const refreshToken = useAuthStore.getState().refreshToken
+  if (!refreshToken) return false
+  try {
+    const res = await fetch(`${BASE_URL}/v1/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    })
+    if (!res.ok) return false
+    const data = (await res.json()) as { access_token: string; expires_in: number }
+    useAuthStore.getState().updateAccessToken(data.access_token, data.expires_in)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Redirect seam exposed for tests: jsdom does not let us spy on
+ * `window.location.assign` directly.
+ */
+export const authFailureRedirect = {
+  toLogin(): void {
+    if (typeof window === 'undefined') return
+    if (window.location.pathname.startsWith('/login')) return
+    const redirectBack = encodeURIComponent(window.location.pathname + window.location.search)
+    window.location.assign(`/login?redirect_back=${redirectBack}`)
+  },
 }
 
 function shouldDefaultJsonContentType(body: RequestInit['body']): boolean {
