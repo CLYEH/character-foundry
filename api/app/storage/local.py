@@ -141,6 +141,10 @@ class LocalFilesystemBackend(StorageBackend):
         dst = self._resolve(dst_key)
         if not src.is_file():
             raise NotFoundError(src_key)
+        # If src and dst resolve to the same path, unlinking dst would delete
+        # the source — making copy destructive. Treat as a no-op round-trip.
+        if src == dst:
+            return self._stat_to_object(src, key_override=dst_key)
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.exists():
             dst.unlink()

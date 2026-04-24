@@ -124,6 +124,17 @@ def test_copy_missing_source_raises_not_found(backend: LocalFilesystemBackend) -
         backend.copy("ghost.png", "anywhere.png")
 
 
+def test_copy_same_src_and_dst_is_nondestructive(
+    backend: LocalFilesystemBackend,
+) -> None:
+    backend.put("same.png", b"DATA", "image/png")
+    obj = backend.copy("same.png", "same.png")
+    # File must still exist with original content — copy(k, k) is a no-op.
+    assert backend.get("same.png") == b"DATA"
+    assert obj.key == "same.png"
+    assert obj.size_bytes == len(b"DATA")
+
+
 @pytest.mark.parametrize(
     "bad_key",
     ["", "/abs/path", "back\\slash", "ok\x00null"],
