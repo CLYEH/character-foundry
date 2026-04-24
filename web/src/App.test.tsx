@@ -3,8 +3,8 @@ import { describe, it, expect } from 'vitest'
 import App from './App'
 
 describe('App', () => {
-  it('renders the project heading', () => {
+  it('renders the index hello message on /', () => {
     render(<App />)
-    expect(screen.getByRole('heading', { name: /character foundry/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /hello/i })).toBeInTheDocument()
   })
 })
