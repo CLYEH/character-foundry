@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-25
-> **Phase:** Sprint 1 in progress（T-006, T-007, T-008, T-009, T-010, T-011 done）
+> **Phase:** Sprint 1 in progress（T-006, T-007, T-008, T-009, T-010, T-011 done）；Sprint 2 tickets 已開（T-013 ~ T-026）
 
 ---
 
@@ -38,8 +38,25 @@
 | T-011 | Frontend Toast + ErrorBoundary | DONE |
 | T-012 | E2E smoke test (login flow) | TODO |
 
-### Sprint 2 — Character Creation（尚未開單）
-建 Character、選單 / 參考圖模式、Checkpoints、確立 Base。
+### Sprint 2 — Character Creation
+**目標：** 建 Character、選單 / 參考圖模式、Checkpoints、確立 Base（M2）。
+
+| # | Ticket | Status |
+|---|---|---|
+| T-013 | Backend task queue (arq + Redis) + Task API | TODO |
+| T-014 | Backend AI client infra (gpt-image-2 + circuit breaker + stub) | TODO |
+| T-015 | Backend Prompt Reconciler module (gpt-5-mini) | TODO |
+| T-016 | Backend Character CRUD + CreationSession bootstrap | TODO |
+| T-017 | Backend Checkpoint generation flow | TODO |
+| T-018 | Backend Select Base / Fork / Abandon | TODO |
+| T-019 | Backend Prompt preview endpoint | TODO |
+| T-020 | Frontend Dashboard (grid + empty state) | TODO |
+| T-021 | Frontend New Character page (mode picker) | TODO |
+| T-022 | Frontend Creation Session — template mode | TODO |
+| T-023 | Frontend Creation Session — reference mode | TODO |
+| T-024 | Frontend Prompt preview modal (M-01) | TODO |
+| T-025 | Frontend Select Base + Character Detail (Base only) | TODO |
+| T-026 | E2E Character creation smoke test (template) | TODO |
 
 ### Sprint 3 — Aliases + Motions（尚未開單）
 三合一 Alias 輸入（含 Inpaint）、Preset + Custom motion。
