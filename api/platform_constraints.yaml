@@ -1,0 +1,28 @@
+# Platform-level fixed image / video constraints (backend/prompt-reconciler.md §3).
+#
+# Version bump rules:
+#   - change any constraint → minor (v1 → v1.1)
+#   - add a new constraint → major (v1 → v2)
+# GenerationLog records the version active at call time for traceability.
+version: v1
+updated_at: 2026-04-23
+
+base_creation:
+  - transparent background
+  - character centered in frame
+  - character facing camera directly (正面)
+  - full body shot unless specified otherwise
+  - consistent neutral lighting
+  - no watermarks or signatures
+
+alias_creation:
+  - inherits base_creation rules
+  - preserves character identity from base image
+
+motion_creation:
+  - transparent background (match base)
+  - camera remains stationary
+  - character stays centered
+  - smooth, realistic motion
+  - no sudden frame jumps or distortions
+  - duration 3-6 seconds for preset, 3-10 for custom
