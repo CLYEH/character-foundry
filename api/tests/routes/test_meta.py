@@ -179,3 +179,31 @@ async def test_meta_survives_redis_outage_returning_empty_degraded(
     assert body["api_version"] == "v1"
     assert len(body["preset_motions"]) == 5
     assert body["models"]["image"] == "gpt-image-2"
+
+
+def test_meta_survives_redis_dep_init_failure() -> None:
+    """If `get_redis` itself raises at DI time (missing REDIS_URL etc.),
+    FastAPI fails dep resolution before `meta()` runs. The route wrapper
+    must still return 200 + static metadata + empty degraded_services so
+    the Frontend keeps its models/preset_motions during config incidents.
+    Complements `test_meta_survives_redis_outage_*` which covers the
+    operational-outage path.
+    """
+    from app.core.redis_client import get_redis
+    from app.main import app
+
+    async def _broken_redis() -> None:
+        raise RuntimeError("REDIS_URL is not set")
+
+    app.dependency_overrides[get_redis] = _broken_redis
+    try:
+        with TestClient(app) as c:
+            resp = c.get("/v1/meta")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["degraded_services"] == []
+            assert body["api_version"] == "v1"
+            assert len(body["preset_motions"]) == 5
+            assert body["models"]["image"] == "gpt-image-2"
+    finally:
+        app.dependency_overrides.pop(get_redis, None)
