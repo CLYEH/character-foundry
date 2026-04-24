@@ -138,7 +138,12 @@ class LocalFilesystemBackend(StorageBackend):
         # nested directory created by earlier puts) is a no-op, not an error.
         if not path.is_file():
             return
-        path.unlink()
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            # TOCTOU: another request deleted the file between is_file() and
+            # unlink(). Still a valid idempotent outcome.
+            return
 
     def exists(self, key: str) -> bool:
         try:
@@ -184,8 +189,16 @@ class LocalFilesystemBackend(StorageBackend):
         try:
             try:
                 os.link(src, tmp_path)
+            except FileNotFoundError as exc:
+                # TOCTOU: src deleted between is_file() and os.link().
+                # Don't fall through to copy2 (it will just fail again);
+                # surface as NotFoundError to preserve the contract.
+                raise NotFoundError(src_key) from exc
             except OSError:
-                shutil.copy2(src, tmp_path)
+                try:
+                    shutil.copy2(src, tmp_path)
+                except FileNotFoundError as exc:
+                    raise NotFoundError(src_key) from exc
             os.replace(tmp_path, dst)
         except BaseException:
             try:

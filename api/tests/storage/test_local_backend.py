@@ -128,6 +128,55 @@ def test_get_toctou_race_raises_not_found(
         backend.get("k.png")
 
 
+def test_delete_toctou_race_is_idempotent(
+    backend: LocalFilesystemBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If another request deletes the file between is_file() and unlink(),
+    the second delete must still succeed (idempotent contract)."""
+    backend.put("k.png", b"x", "image/png")
+
+    def racing_unlink(self: Path, missing_ok: bool = False) -> None:
+        raise FileNotFoundError(self)
+
+    monkeypatch.setattr(Path, "unlink", racing_unlink)
+    # Must not raise.
+    backend.delete("k.png")
+
+
+def test_copy_src_deleted_before_link_raises_not_found(
+    backend: LocalFilesystemBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If src is deleted between is_file() and os.link(), raise NotFoundError,
+    not a raw filesystem exception."""
+    backend.put("src.png", b"x", "image/png")
+
+    def racing_link(_src: object, _dst: object) -> None:
+        raise FileNotFoundError("src gone")
+
+    monkeypatch.setattr("app.storage.local.os.link", racing_link)
+    with pytest.raises(NotFoundError):
+        backend.copy("src.png", "dst.png")
+
+
+def test_copy_src_deleted_before_copy2_fallback_raises_not_found(
+    backend: LocalFilesystemBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fallback path: os.link fails with generic OSError (e.g. cross-device),
+    then shutil.copy2 races with a concurrent delete."""
+    backend.put("src.png", b"x", "image/png")
+
+    def crossdev_link(_src: object, _dst: object) -> None:
+        raise OSError("cross-device link not permitted")
+
+    def racing_copy2(_src: object, _dst: object) -> None:
+        raise FileNotFoundError("src gone mid-copy")
+
+    monkeypatch.setattr("app.storage.local.os.link", crossdev_link)
+    monkeypatch.setattr("app.storage.local.shutil.copy2", racing_copy2)
+    with pytest.raises(NotFoundError):
+        backend.copy("src.png", "dst.png")
+
+
 def test_get_stream_yields_bytes(backend: LocalFilesystemBackend) -> None:
     backend.put("a/b.txt", b"hello", "text/plain")
     with backend.get_stream("a/b.txt") as fh:
