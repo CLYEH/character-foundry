@@ -104,22 +104,23 @@ motion_creation:
 
 ## 4. LLM 選型
 
-**Phase 1 選擇：Claude Sonnet 4.6**（via Anthropic API）
+**Phase 1 選擇：gpt-5-mini**（via OpenAI API）
 
 **理由：**
-- 指令遵從度高（JSON mode / tool use 穩定）
-- 中英翻譯品質強
-- 擅長結構化重寫
-- API 穩定、latency 可預期（1-3s 對這個任務）
+- 翻譯 + 結構化重寫任務對這個 size 已足夠，不需要大模型
+- 成本低（每次 < 0.01 unit，對比 gpt-image-2 10x 便宜）
+- 延遲短（1-2s），對使用者感受最重要
+- 共用 `OPENAI_API_KEY`，少一組 secret 要管
+- JSON mode 穩定
 
 **替代方案：**
-- GPT-4.1：品質類似，但成本較高
+- Claude Sonnet / gpt-5：品質略高但這任務用不到，成本與延遲都划不來
 - Local LLM（Qwen / DeepSeek）：省 API 成本，但 Phase 1 不值得架設
 
 **配置：**
 ```
-ANTHROPIC_API_KEY=<env>
-RECONCILER_MODEL=claude-sonnet-4-6
+OPENAI_API_KEY=<env>            # 與 gpt-image-2 共用
+RECONCILER_MODEL=gpt-5-mini
 RECONCILER_TIMEOUT_MS=30000
 RECONCILER_MAX_TOKENS=800
 ```
@@ -133,7 +134,7 @@ You are a prompt engineering assistant for an AI character generation platform.
 
 Your job: given (1) user menu selections, (2) user freeform note in Chinese, and
 (3) platform-level fixed constraints, produce a single coherent English prompt
-suitable for gpt-image-2 / Seedance 2.0.
+suitable for gpt-image-2 / Veo 3.1.
 
 RULES:
 1. Translate freeform Chinese note to natural English.
@@ -249,7 +250,7 @@ key = sha256(
 | LLM JSON 解析失敗 | 重試 2 次；仍失敗則 fallback | `PROMPT_RECONCILE_FAILED` |
 | 連續 5 次失敗（circuit open）| 暫時跳過 reconciler，直接拼 constraints + freeform_note（中文送模型）| Logged warning，UI 顯示「部分功能暫時不可用」 |
 
-**Degraded mode：** 如果 Anthropic API 掛掉，reconciler 降級為「只翻譯，不衝突解析」。使用者補述衝突 constraints 時，image model 通常 constraint 會贏（因為在 prompt 結尾重述）。品質下降但不 block 使用。
+**Degraded mode：** 如果 OpenAI API 掛掉（或 reconciler 連續失敗觸發 circuit breaker），reconciler 降級為「只翻譯，不衝突解析」。使用者補述衝突 constraints 時，image model 通常 constraint 會贏（因為在 prompt 結尾重述）。品質下降但不 block 使用。
 
 ---
 
@@ -296,5 +297,5 @@ def test_reconcile_removes_conflicting_background():
 
 - `api-shape.md` §5.6 Prompt Preview endpoint
 - `task-queue.md` reconciler 呼叫在 task worker 內
-- `ai-integration.md` reconciler 輸出被 gpt-image-2 / Seedance client 消費
+- `ai-integration.md` reconciler 輸出被 gpt-image-2 / Veo client 消費
 - `../product/functional-scope.md` F-04a、§8

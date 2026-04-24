@@ -40,12 +40,12 @@
 | `GPT_IMAGE_2_MODEL` |  | 預設 `gpt-image-2` | |
 | `GPT_IMAGE_2_TIMEOUT_MS` |  | 預設 `60000` | |
 | `GPT_IMAGE_2_MAX_RETRIES` |  | 預設 `4` | |
-| `SEEDANCE_API_KEY` | ✓ | Seedance 2.0 呼叫用 | 🔒 |
-| `SEEDANCE_API_URL` | ✓ | API endpoint（以 Seedance 實際為準）| |
-| `SEEDANCE_TIMEOUT_MS` |  | 預設 `180000` (3min) | |
-| `SEEDANCE_MAX_RETRIES` |  | 預設 `2` | |
-| `ANTHROPIC_API_KEY` | ✓ | Prompt Reconciler | 🔒 |
-| `RECONCILER_MODEL` |  | 預設 `claude-sonnet-4-6` | |
+| `VEO_API_KEY` | ✓ | Veo 3.1 呼叫用（Gemini API / Vertex AI key）| 🔒 |
+| `VEO_API_URL` | ✓ | API endpoint（Gemini API 或 Vertex AI endpoint）| |
+| `VEO_MODEL` |  | 預設 `veo-3.1` | |
+| `VEO_TIMEOUT_MS` |  | 預設 `180000` (3min) | |
+| `VEO_MAX_RETRIES` |  | 預設 `2` | |
+| `RECONCILER_MODEL` |  | 預設 `gpt-5-mini`（共用 `OPENAI_API_KEY`） | |
 | `RECONCILER_TIMEOUT_MS` |  | 預設 `30000` | |
 | `RECONCILER_MAX_TOKENS` |  | 預設 `800` | |
 
@@ -114,9 +114,9 @@ REDIS_PASSWORD=change_me
 JWT_SECRET=change_me_32_bytes_hex
 STORAGE_SIGNED_URL_SECRET=change_me_32_bytes_hex
 
-OPENAI_API_KEY=sk-...
-SEEDANCE_API_KEY=sd-...
-ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...              # gpt-image-2 + gpt-5-mini reconciler 共用
+VEO_API_KEY=...
+VEO_API_URL=https://generativelanguage.googleapis.com/v1beta
 
 # ── Infra URLs（docker compose 預設可用）────────────────
 DATABASE_URL=postgresql+asyncpg://cf_app:${POSTGRES_PASSWORD}@postgres:5432/character_foundry

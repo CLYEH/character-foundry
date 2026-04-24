@@ -173,6 +173,7 @@ Character 的變體（不同衣裝 / 配件 / 場景）。
 - Preset 類型有 5 種固定，`motion_type` enum 限定
 - Custom 類型 `motion_type = custom`，使用者可在 Phase 1 任何時候新增
 - 每個 Motion 只屬於一個 parent（Base 或 Alias），不共享
+- Source image 隱含為 parent 的圖（Base 或 Alias 的 `image_url`）；backend 呼叫 Veo 時把同一張圖同時當 first + last frame 送，藉由 Veo 3.1 多幀錨定強化 identity preservation（使用者不感知）
 
 ### 2.9 `GenerationLog`
 
@@ -185,7 +186,7 @@ Character 的變體（不同衣裝 / 配件 / 場景）。
 | `character_id` | UUID FK → Character, nullable | 關聯的 Character（checkpoints 可能還沒有）|
 | `entity_type` | enum | `checkpoint` / `alias` / `motion` |
 | `entity_id` | UUID | 對應實體 ID |
-| `model_name` | string | 例：`gpt-image-2`、`seedance-2.0` |
+| `model_name` | string | 例：`gpt-image-2`、`veo-3.1`、`gpt-5-mini` |
 | `model_version` | string | 具體版本號 |
 | `final_prompt` | text | 實際送到模型的 prompt（含所有 constraints）|
 | `input_images` | array of URLs | 若有輸入圖 |
@@ -316,7 +317,7 @@ Character 的變體（不同衣裝 / 配件 / 場景）。
 | `user_id` | UUID FK | 使用者 |
 | `period` | string | `month-2026-04` 等粒度 |
 | `image_gen_count` | int | gpt-image-2 呼叫次數 |
-| `video_gen_count` | int | Seedance 2.0 呼叫次數 |
+| `video_gen_count` | int | Veo 3.1 呼叫次數 |
 | `cost_units_total` | decimal | 累積成本 |
 | `updated_at` | timestamp | 最近更新 |
 

@@ -411,13 +411,13 @@ GET    /health
 
 GET    /v1/meta
   200:   {
-           models: { image: 'gpt-image-2', video: 'seedance-2.0' },
+           models: { image: 'gpt-image-2', video: 'veo-3.1' },
            preset_motions: [...],
            platform_constraints_version: 'v1',
            api_version: 'v1',
            degraded_services: [
              {
-               service: 'gpt-image-2',        // 'gpt-image-2' | 'seedance-2.0' | 'reconciler'
+               service: 'gpt-image-2',        // 'gpt-image-2' | 'veo-3.1' | 'reconciler'
                reason: 'CIRCUIT_OPEN',         // 'CIRCUIT_OPEN' | 'DEGRADED_FALLBACK' | 'RATE_LIMITED'
                retry_at: '2026-04-23T10:45:00Z' | null,  // 預計恢復時間（若可估）
                message: '模型暫時不可用，預計 5 分鐘後恢復'  // 給 UI 顯示
@@ -641,7 +641,7 @@ POST /characters/{id}/aliases { name, input_mode, freeform_note, reference_image
 **生成 Motion：**
 ```
 POST /bases/{id}/motions OR /aliases/{id}/motions
-→ Task（Seedance 2.0，可能 30-120s）→ 完成
+→ Task（Veo 3.1，可能 30-120s）→ 完成
 ```
 
 **下載 ZIP：**

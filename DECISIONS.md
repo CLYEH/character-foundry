@@ -42,8 +42,8 @@
 
 ### AI
 - **gpt-image-2** — Base 生成 (text2image)、Alias 編修 (image2image / inpaint)
-- **Seedance 2.0** — i2v
-- **Claude Sonnet 4.6** — Prompt Reconciler（中翻英 + 衝突解析）
+- **Veo 3.1** — i2v（backend 內部把 parent 圖同時送 first+last frame，強化 identity preservation；使用者不感知）
+- **gpt-5-mini** — Prompt Reconciler（中翻英 + 衝突解析）
 
 ### DevOps
 - Ubuntu 22.04 LTS

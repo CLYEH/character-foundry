@@ -64,7 +64,7 @@
 | CPU | 4 vCore | FastAPI + 2 worker + PG 同機 |
 | RAM | 16 GB | PG shared_buffers 4G + Redis 1G + Python 3G + buffer |
 | Disk | **250 GB SSD** | STORAGE_ROOT 200G + OS 30G + DB 20G（data-md §7）|
-| Network | 1 Gbps 內網 | 對外 API（OpenAI / Seedance / Anthropic）走這條 |
+| Network | 1 Gbps 內網 | 對外 API（OpenAI / Google Veo）走這條 |
 | GPU | **不需要** | Phase 1 AI 全走外部 API |
 
 ### 2.2 建議配置（運行順暢）
@@ -112,8 +112,8 @@ services:
       - JWT_SECRET
       - STORAGE_SIGNED_URL_SECRET
       - OPENAI_API_KEY
-      - SEEDANCE_API_KEY
-      - ANTHROPIC_API_KEY
+      - VEO_API_KEY
+      - VEO_API_URL
       # ... (see environment-variables.md)
     volumes:
       - storage:/storage
@@ -222,8 +222,8 @@ REDIS_PASSWORD=xxx
 JWT_SECRET=xxx
 STORAGE_SIGNED_URL_SECRET=xxx
 OPENAI_API_KEY=xxx
-SEEDANCE_API_KEY=xxx
-ANTHROPIC_API_KEY=xxx
+VEO_API_KEY=xxx
+VEO_API_URL=https://generativelanguage.googleapis.com/v1beta
 ```
 
 Docker compose 用 `env_file:` 載入，**不進 git**（repo 只保留 `.env.example`）。
@@ -243,8 +243,8 @@ openssl rand -base64 32
 ### 5.3 外部 API key 來源
 
 - OpenAI API key：自家帳號申請
-- Anthropic API key：自家帳號申請
-- Seedance API key：供應商申請
+- （Reconciler 走 `OPENAI_API_KEY`，同 gpt-image-2）
+- Google Veo API key：GCP / Gemini API 帳號申請
 
 **每個 key 限定用在 Character Foundry** 專用帳號，不跟其他專案共用（方便追蹤使用量 + 限額管理）。
 
@@ -392,9 +392,9 @@ docker compose up -d                   # 重啟所有服務（< 10s downtime）
 ## 9. GPU 需求說明
 
 **Phase 1：不需要 GPU。** 所有 AI 模型都透過外部 API：
-- OpenAI gpt-image-2
-- Seedance 2.0
-- Anthropic Claude
+- OpenAI gpt-image-2（image gen）
+- OpenAI gpt-5-mini（prompt reconciler）
+- Google Veo 3.1（i2v）
 
 Phase 2 若評估自架本地模型（例：本地 Flux / Hunyuan3D），屆時再規劃 GPU 機器（建議 A100 80G / H100 / L40S）。
 

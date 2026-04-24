@@ -133,7 +133,7 @@ Character（角色，最上層容器）
 **F-20. 預設動作清單（平台內建）**
 - Phase 1 固定 5 種：招手歡迎、點頭說明、手勢指引、開心回應、靜置待機
 - 每個 Base 和 Alias 都有這 5 個「可生成」按鈕
-- 按鈕被點擊時才呼叫 Seedance 2.0 生成
+- 按鈕被點擊時才呼叫 Veo 3.1 生成
 - 未點擊則不存在
 
 **F-21. 自訂動作**
@@ -141,8 +141,8 @@ Character（角色，最上層容器）
 - 輸入欄位（Phase 1）：
   - **動作名稱**（必填，例：「轉身揮手」、「鞠躬」）
   - **動作描述**（必填，文字 prompt，例：「慢慢轉身 180 度，然後揮手打招呼」）
-- 描述會同樣經 LLM reconciler 翻成英文並注入必要 constraints 後送 Seedance 2.0
-- 每個自訂 motion 也會消耗 Seedance 2.0 額度
+- 描述會同樣經 LLM reconciler 翻成英文並注入必要 constraints 後送 Veo 3.1
+- 每個自訂 motion 也會消耗 Veo 3.1 額度
 
 **F-22. Motion 隸屬**
 - 每個 Motion 綁定在一個 Base 或一個 Alias 底下

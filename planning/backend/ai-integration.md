@@ -2,7 +2,7 @@
 
 > **Status:** Draft v0.1 · 2026-04-23
 > **Owner:** Backend Agent
-> **Scope:** gpt-image-2 + Seedance 2.0 + Anthropic (reconciler) 的 client 設計
+> **Scope:** gpt-image-2 + Veo 3.1 + Reconciler 的 client 設計
 
 ---
 
@@ -46,7 +46,7 @@ class ImageGenerationResult:
 @dataclass
 class VideoGenerationInput:
     prompt: str
-    source_image: bytes  # PNG
+    source_image: bytes  # PNG — parent（Base/Alias）的圖；client 內部會同時當 first + last frame 送
     duration_seconds: float
     seed: int | None
 
@@ -189,7 +189,7 @@ class CircuitBreaker:
 # Value: JSON { reason, retry_at, message }
 
 async def get_degraded_services() -> list[dict]:
-    services = ['gpt-image-2', 'seedance-2.0', 'reconciler']
+    services = ['gpt-image-2', 'veo-3.1', 'reconciler']
     result = []
     for svc in services:
         state = await redis.get(f"degraded:{svc}")
@@ -214,44 +214,63 @@ Circuit breaker 關閉時刪除對應 Redis key，degraded_services 陣列自動
 
 ---
 
-## 4. Seedance2Client（實作 VideoProvider）
+## 4. Veo31Client（實作 VideoProvider）
 
 ### 4.1 Config
 
 ```
-SEEDANCE_API_KEY=<env>
-SEEDANCE_API_URL=https://api.seedance.example/v2
-SEEDANCE_TIMEOUT_MS=180000       # 3 分鐘
-SEEDANCE_MAX_RETRIES=2            # 影片重試很貴
+VEO_API_KEY=<env>                 # Gemini API key 或 Vertex AI service account
+VEO_API_URL=https://generativelanguage.googleapis.com/v1beta
+VEO_MODEL=veo-3.1
+VEO_TIMEOUT_MS=180000             # 3 分鐘
+VEO_MAX_RETRIES=2                 # 影片重試很貴
 ```
 
-### 4.2 Poll vs Webhook
+### 4.2 Poll 模式 + First/Last Frame 使用方式
 
-Seedance 2.0 實際 API 行為待確認。可能是：
-- **Sync**（等到影片生完才回）→ 用長 timeout
-- **Async**（回 job_id，我們自己 poll）→ 需要我們的 worker 內部 poll
-- **Webhook**（我們提供 callback URL）→ 需要 backend 有 public endpoint
+Veo 3.1 採 long-running operation 模式：
+1. POST `/models/veo-3.1:predictLongRunning` → 回 `operation_name`
+2. GET `/operations/{operation_name}` 定期 poll → 完成時含 `videoUri`
+3. 下載影片
 
-**Phase 1 假設 async poll 模式**（最常見）：
+**First/last frame 用法（backend 內部決定，不從 API 曝露）：**
+Veo 3.1 的 `image`（first frame）與 `lastFrame` 參數都填同一張 `source_image`。這樣利用 Veo 多幀錨定機制強化 identity preservation，動作開始與結束都鎖在 parent 的造型上，避免長影片中角色走樣。使用者 / UI / API 都不暴露 first/last frame 的概念。
 
 ```python
 async def generate(self, input: VideoGenerationInput) -> VideoGenerationResult:
-    # 1. 送 job
-    job_id = await self._submit_job(input)
+    # 1. 送 job — first frame 與 last frame 都用 parent 的圖
+    image_payload = {
+        "bytesBase64Encoded": base64(input.source_image),
+        "mimeType": "image/png",
+    }
+    payload = {
+        "instances": [{
+            "prompt": input.prompt,
+            "image": image_payload,
+            "lastFrame": image_payload,   # 故意同一張 — identity anchor
+        }],
+        "parameters": {
+            "durationSeconds": input.duration_seconds,
+            "seed": input.seed,
+            "aspectRatio": "9:16",  # 或依 parent 圖片推斷
+            "personGeneration": "allow_all",
+        },
+    }
+    operation_name = await self._submit_job(payload)
 
     # 2. Poll 狀態
     while True:
-        status = await self._poll_status(job_id)
-        if status.state == "completed":
-            video_bytes = await self._download(status.video_url)
+        op = await self._poll_operation(operation_name)
+        if op.done:
+            if op.error:
+                raise ProviderError(op.error)
+            video_bytes = await self._download(op.response.videoUri)
             return VideoGenerationResult(...)
-        elif status.state == "failed":
-            raise ProviderError(status.error)
 
-        # Push progress via Redis pubsub
-        await self._publish_progress(ctx, status.progress)
-
-        await asyncio.sleep(3)
+        # Push progress via Redis pubsub（Veo operation 不回 progress %，
+        # 這裡用 elapsed / estimated 推算；見 task-queue.md §5.2）
+        await self._publish_estimated_progress(ctx)
+        await asyncio.sleep(5)
 ```
 
 ### 4.3 Duration 選擇
@@ -269,53 +288,62 @@ PRESET_DURATIONS = {
 ```
 
 Custom 由使用者描述推斷（或固定 5s，Phase 1 先這樣）。
+Veo 3.1 官方支援的 duration 區間以實際 API spec 為準；超出範圍 clamp 到最接近的合法值。
 
 ### 4.4 Retry 規則
 
 同 gpt-image-2，但 `max_retries=2`（影片生成貴，失敗時成本高）。
+特別處理：
+- `INVALID_ARGUMENT` → 不 retry，回 `VALIDATION_ERROR`
+- `RESOURCE_EXHAUSTED`（quota）→ 回 `MODEL_QUOTA_EXCEEDED`，不 retry
 
 ---
 
-## 5. AnthropicClient（Prompt Reconciler 用）
+## 5. OpenAIReconcilerClient（Prompt Reconciler 用）
 
 ### 5.1 Config
 
 ```
-ANTHROPIC_API_KEY=<env>
-RECONCILER_MODEL=claude-sonnet-4-6
+OPENAI_API_KEY=<env>              # 與 gpt-image-2 共用同一把 key
+RECONCILER_MODEL=gpt-5-mini
 RECONCILER_TIMEOUT_MS=30000
 RECONCILER_MAX_RETRIES=3
+RECONCILER_MAX_TOKENS=800
 ```
 
 ### 5.2 主要 method
 
-使用 Anthropic Messages API 的 JSON mode：
+使用 OpenAI Chat Completions API 的 JSON mode：
 
 ```python
-class AnthropicReconcilerClient(AIClient):
+class OpenAIReconcilerClient(AIClient):
     async def reconcile(self, input: ReconcileInput) -> ReconcileOutput:
         system = self._load_system_prompt()
         user_message = self._render_user_message(input)
 
         response = await self.call_with_resilience(
-            self._client.messages.create,
+            self._client.chat.completions.create,
             model=self.model,
             max_tokens=800,
-            system=system,
-            messages=[{"role": "user", "content": user_message}],
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_message},
+            ],
             response_format={"type": "json_object"},
         )
 
-        data = json.loads(response.content[0].text)
+        data = json.loads(response.choices[0].message.content)
         return ReconcileOutput(**data, llm_latency_ms=response.latency_ms)
 ```
 
 ### 5.3 Degraded mode
 
-若 Anthropic API 全掛（5 連失敗）：
+若 OpenAI API 全掛（5 連失敗，與 gpt-image-2 circuit breaker 獨立計數）：
 - Reconciler 降級為「純翻譯 + constraints append」
 - 品質下降但不 block
 - UX 顯示 banner：「Prompt 最佳化暫時不可用」
+
+註：因 reconciler 與 gpt-image-2 共用 `OPENAI_API_KEY`，auth / rate-limit 錯誤可能連帶影響兩者；但業務邏輯分開，各自的 circuit breaker 獨立運作。
 
 ---
 
@@ -343,8 +371,8 @@ await db.insert_generation_log(
 
 **Cost units 換算：**
 - gpt-image-2: 1 call = 1.0 unit (hd) / 0.5 unit (standard)
-- Seedance 2.0: 1 call = 10.0 units (vs image gen 昂貴 10x)
-- Anthropic reconciler: 1 call ~ 0.01 unit（很便宜）
+- Veo 3.1: 1 call = 10.0 units (vs image gen 昂貴 10x；first/last frame 與單幀成本相近)
+- gpt-5-mini reconciler: 1 call ~ 0.01 unit（很便宜）
 
 **UI 顯示**：乘上參考匯率（例 1 unit = $0.01 USD）顯示累計成本。
 
@@ -356,9 +384,8 @@ await db.insert_generation_log(
 
 ```
 # 核心 AI
-OPENAI_API_KEY=<secret>
-SEEDANCE_API_KEY=<secret>
-ANTHROPIC_API_KEY=<secret>
+OPENAI_API_KEY=<secret>           # gpt-image-2 + gpt-5-mini reconciler 共用
+VEO_API_KEY=<secret>              # Google Veo 3.1
 
 # 應用層
 JWT_SECRET=<secret>
@@ -439,7 +466,7 @@ Mock provider 刻意回：
 
 ## 10. 關聯文件
 
-- `prompt-reconciler.md` — 使用 AnthropicClient
+- `prompt-reconciler.md` — 使用 OpenAIReconcilerClient（gpt-5-mini）
 - `task-queue.md` — Worker 內呼叫 image/video provider
 - `api-shape.md` §4 錯誤格式 — 所有 provider error wrap 成 `AgentError`
 - `../data/db-schema.md` GenerationLog — 成本追蹤寫入此表

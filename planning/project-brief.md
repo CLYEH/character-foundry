@@ -50,7 +50,7 @@
 - AI 模型串接（現階段）：
   - Image generation：gpt-image-2（角色 asset 生成，text-to-image）
   - Image editing：gpt-image-2（asset → alias 造型編輯；image-to-image / text-to-image / inpaint 視情境選用）
-  - i2v：Seedance 2.0
+  - i2v：Veo 3.1
 - AI 模型串接（暫緩 / 未來）：
   - Lip sync
   - Image-to-3D

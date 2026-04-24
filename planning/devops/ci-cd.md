@@ -342,9 +342,8 @@ jobs:
 | `DEPLOY_HOST` | internal server hostname |
 | `DEPLOY_USER` | SSH 使用者（應 create a dedicated `deploy` user with limited sudo）|
 | `DEPLOY_SSH_KEY` | SSH private key（ed25519 建議）|
-| `INTEGRATION_OPENAI_KEY` | Nightly integration test 用 |
-| `INTEGRATION_SEEDANCE_KEY` | 同上 |
-| `INTEGRATION_ANTHROPIC_KEY` | 同上 |
+| `INTEGRATION_OPENAI_KEY` | Nightly integration test 用（gpt-image-2 + gpt-5-mini reconciler）|
+| `INTEGRATION_VEO_KEY` | 同上（Veo 3.1 i2v）|
 
 **注意：** `INTEGRATION_*` key 跟正式部署 key **分開**，避免 CI 破壞 production 配額。
 

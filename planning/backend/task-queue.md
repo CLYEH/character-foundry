@@ -265,7 +265,7 @@ async def estimate_duration(task_type: str, input_payload: dict) -> int:
 |---|---|---|
 | `create_checkpoint` | 15000 | gpt-image-2 text2image |
 | `create_alias` | 20000 | gpt-image-2 image2image / inpaint |
-| `create_motion` | 60000 | Seedance 2.0 i2v |
+| `create_motion` | 60000 | Veo 3.1 i2v |
 | `export_zip` | 10000 + 2000 × motion_count | 多 motion 多等 |
 | `copy_character` | 3000 | 幾乎都在 DB + hardlink |
 
@@ -300,7 +300,7 @@ async def progress_estimator_loop(task_id, estimated_ms, started_at):
         await asyncio.sleep(2)
 ```
 
-### 5.2 Seedance 2.0
+### 5.2 Veo 3.1
 
 Video model 通常完全不 stream。同 gpt-image-2 處理。
 
@@ -522,7 +522,7 @@ Redis token bucket，per user：
 
 保護外部 API quota：
 - gpt-image-2 全局：50 req/min
-- Seedance 2.0 全局：20 req/min
+- Veo 3.1 全局：20 req/min
 
 超過 → backend 把 task 卡在 queue，等 token 放出來再執行（不立刻 reject）。
 

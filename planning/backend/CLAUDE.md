@@ -12,7 +12,7 @@ Character Foundry 不只給真人操作，**平台必須是 agent-friendly 的**
 - 規劃 AI 模型的串接方式（現階段 scope）：
   - Image generation（文字/圖片 → 角色 asset）：**gpt-image-2**（text-to-image）
   - Image editing（asset → alias，造型 / 配件 / 場景編修）：**gpt-image-2**（image-to-image / text-to-image / inpaint 視情境選用）
-  - i2v（asset 或 alias → 動作影片）：**Seedance 2.0**
+  - i2v（asset 或 alias → 動作影片）：**Veo 3.1**
 - 暫緩（不在現階段 scope，未來再做）：
   - Lip sync（影片 + 語音 → 嘴型同步影片）
   - Image-to-3D（角色圖 → 3D 模型）

@@ -16,7 +16,7 @@
 - AI 模型（現階段）：
   - Image generation（asset 生成）：gpt-image-2（text-to-image）
   - Image editing（asset → alias 造型編輯）：gpt-image-2（image-to-image / text-to-image / inpaint 視情境選用）
-  - i2v：Seedance 2.0
+  - i2v：Veo 3.1
 - AI 模型（暫緩）：lip sync、image-to-3D
 
 ## 規劃資料夾

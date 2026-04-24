@@ -26,6 +26,6 @@
 2. Asset → 編修外觀 → 產生 alias
    - 模型：**gpt-image-2**（image-to-image / text-to-image / inpaint 視編修情境選用）
 3. Asset 或 alias → i2v → 動作影片
-   - 模型：**Seedance 2.0**
+   - 模型：**Veo 3.1**
 4. Asset 或 alias → image-to-3D → 3D 模型
    - 模型：**待定**（候選：Trellis、Hunyuan）

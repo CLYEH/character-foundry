@@ -321,7 +321,7 @@ CREATE TABLE generation_logs (
     entity_type VARCHAR(20) NOT NULL
         CHECK (entity_type IN ('checkpoint', 'alias', 'motion')),
     entity_id UUID,
-    model_name VARCHAR(50) NOT NULL,     -- e.g. 'gpt-image-2', 'seedance-2.0'
+    model_name VARCHAR(50) NOT NULL,     -- e.g. 'gpt-image-2', 'veo-3.1'
     model_version VARCHAR(30),
     final_prompt TEXT NOT NULL,
     input_image_keys TEXT[],
@@ -373,7 +373,7 @@ SELECT
     user_id,
     to_char(started_at, 'YYYY-MM') AS period,
     COUNT(*) FILTER (WHERE model_name = 'gpt-image-2' AND status = 'success') AS image_gen_count,
-    COUNT(*) FILTER (WHERE model_name = 'seedance-2.0' AND status = 'success') AS video_gen_count,
+    COUNT(*) FILTER (WHERE model_name = 'veo-3.1' AND status = 'success') AS video_gen_count,
     COALESCE(SUM(cost_units) FILTER (WHERE status = 'success'), 0) AS cost_units_total,
     MAX(started_at) AS last_activity_at
 FROM generation_logs
@@ -391,7 +391,7 @@ CREATE UNIQUE INDEX idx_usage_user_period ON user_usage_summary(user_id, period)
 -- 等價查詢（直接在 API 層呼叫）
 SELECT
     COUNT(*) FILTER (WHERE model_name = 'gpt-image-2') AS image_gen_count,
-    COUNT(*) FILTER (WHERE model_name = 'seedance-2.0') AS video_gen_count,
+    COUNT(*) FILTER (WHERE model_name = 'veo-3.1') AS video_gen_count,
     COALESCE(SUM(cost_units), 0) AS cost_units_total
 FROM generation_logs
 WHERE user_id = :user_id
