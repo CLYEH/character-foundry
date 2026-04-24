@@ -1,7 +1,9 @@
 import { Navigate, Outlet, useLocation } from 'react-router'
 
 import { DegradedBanner } from '@/components/composite/DegradedBanner'
+import { ErrorBoundary } from '@/components/composite/ErrorBoundary'
 import { TopNav } from '@/components/composite/TopNav'
+import { Toaster } from '@/components/ui/sonner'
 import { useAuthStore } from '@/stores/authStore'
 
 export default function AppLayout() {
@@ -18,8 +20,11 @@ export default function AppLayout() {
       <TopNav />
       <DegradedBanner />
       <main className="flex-1 p-6">
-        <Outlet />
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
       </main>
+      <Toaster position="bottom-right" richColors closeButton />
     </div>
   )
 }
