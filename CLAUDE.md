@@ -62,14 +62,52 @@
 2. Claude **必讀順序：**
    - `CLAUDE.md`（專案定位）
    - `DECISIONS.md`（核心決策快查）
+   - `CONTRIBUTING.md` §1 branch 規則（若上次 session 已讀過可略，但切 branch 前務必確認）
    - `tickets/T-XXX-*.md`（本單完整內容）
    - 單裡列的 **Planning refs**（具體規格）
    - `STATUS.md`（看前後依賴）
-3. 實作 → 測試 → commit
-4. 完成時：
+3. **切 ticket branch（必做；動手改檔之前）：**
+
+   Branch 命名是 `<type>/T-XXX-short-desc`，`<type>` 依 CONTRIBUTING §1.1 取 `feature` / `fix` / `chore` / `refactor`——**先根據 ticket 性質決定 type**，再用下面指令（把 `<type>` 換成實際值）：
+
+   ```bash
+   git branch --show-current
+   git fetch origin
+   git branch --list '*/T-XXX-*'                 # 本地有沒有任何 type 的 T-XXX branch
+   git ls-remote --heads origin | grep '/T-XXX-' # 遠端有沒有
+   ```
+
+   - **新 ticket**（都沒找到）→ 從最新 main 切一條：
+     ```bash
+     git switch main && git pull
+     git switch -c <type>/T-XXX-short-desc   # 命名慣例見 CONTRIBUTING §1.1
+     ```
+   - **繼續做 ticket**（已存在於本地或 origin）→ 切到既有 branch，不要 `-c`：
+     ```bash
+     git switch <type>/T-XXX-short-desc      # 本地已有就直接切
+     # 若只有 origin 有，git switch 會自動建立 tracking branch
+     ```
+
+   ⚠ 若 `Current branch: main` 出現在 session 開場的 git status，**這不是可以直接動工的狀態**，要先切 branch。Auto mode 不例外——這是 pre-flight 不是 deliberation。
+4. 實作 → 測試 → commit（commit message 格式見 CONTRIBUTING §2）
+5. 完成時：
    - `git mv tickets/T-XXX-*.md tickets/DONE/`
    - 更新 `STATUS.md` 該單狀態與 milestone 進度
    - 若有發現新問題不在 scope：開新單（或記到 STATUS.md backlog）
+   - Push + 開 PR（模板見 `.github/pull_request_template.md`）
+6. **PR 開完後自動 loop 等 Codex review（必做；不要丟給使用者）：**
+
+   `/loop 10m <內容>`——每 10 分鐘 tick 一次，判讀**只看 PR body 上 Codex（`chatgpt-codex-connector[bot]`）的 reactions**（`/issues/N/reactions`）：
+
+   1. **`+1` reaction** → `gh pr merge N --squash --delete-branch`，停 loop
+   2. **`eyes` reaction** → 繼續 loop（Codex 還在審）
+   3. **無任何 reaction 且無 Codex comment（issue-level / inline / review record 都沒有）** → `gh pr comment N --body "@codex review"`，繼續 loop
+
+   **除此之外沒有其他 merge 條件。** 只有 `+1` 能觸發 merge；CI / mergeable / approval 由 GitHub branch protection 在 `gh pr merge` 當下自行把關，不是 loop 的判讀責任。
+
+   **Codex 留 critical comment / `-1`（但沒 `+1`）→ 不 merge**，採納 / 駁回 / defer + 推 fix commit + 回覆該 thread，繼續 loop。⚠ 採納前 cross-check：Codex 意見可能和 Codex App 文件 / CONTRIBUTING / observable 行為衝突；第二意見不自動更權威，理由站不住就駁回並在 thread 說明。
+
+   起首 tick 不要等 cron，當前 turn 也跑一次。Reaction / API 端點細節見 `codex_reaction_semantics.md`、`reference_github_pr_comment_endpoints.md`（memory）。
 
 ### 開新 ticket
 用 `tickets/_TEMPLATE.md` 複製改寫。編號接上次最大 + 1。
