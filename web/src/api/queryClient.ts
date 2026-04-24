@@ -1,8 +1,8 @@
 import { createElement } from 'react'
-import { QueryCache, QueryClient } from '@tanstack/react-query'
+import { MutationCache, QueryCache, QueryClient } from '@tanstack/react-query'
 
 import { ApiError } from './client'
-import { AgentError, mapAgentErrorToUI } from '@/lib/agentError'
+import { AgentError, hasAgentErrorBody, mapAgentErrorToUI } from '@/lib/agentError'
 import { toast } from '@/stores/toastStore'
 import { ErrorToast } from '@/components/composite/ErrorToast'
 
@@ -15,7 +15,8 @@ import { ErrorToast } from '@/components/composite/ErrorToast'
  *   - `inline` → leave it to the form owner (no global toast)
  *   - `page`   → leave it to routing / ErrorBoundary
  */
-function handleQueryError(err: unknown) {
+function handleGlobalError(err: unknown, suppressed: boolean) {
+  if (suppressed) return
   const agentError = AgentError.from(err)
   const layer = mapAgentErrorToUI(agentError)
   if (layer !== 'toast') return
@@ -25,28 +26,40 @@ function handleQueryError(err: unknown) {
   })
 }
 
+function shouldRetry(failureCount: number, error: unknown): boolean {
+  const agentError = AgentError.from(error)
+  // If the backend gave us a structured AgentError, its `retryable` flag wins.
+  if (hasAgentErrorBody(error)) {
+    return agentError.retryable && failureCount < 2
+  }
+  // No structured body → fall back to HTTP-status heuristic (don't retry 4xx).
+  if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+    return false
+  }
+  return failureCount < 2
+}
+
 export const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: (err, query) => {
       // Respect per-query `meta.suppressGlobalError` so forms can handle
       // AUTH_INVALID_CREDENTIALS / VALIDATION_* without a duplicate toast.
-      if (query.meta?.suppressGlobalError) return
-      handleQueryError(err)
+      handleGlobalError(err, Boolean(query.meta?.suppressGlobalError))
+    },
+  }),
+  mutationCache: new MutationCache({
+    // TanStack Query v5: signature is (error, variables, onMutateResult, mutation, context).
+    onError: (err, _vars, _onMutateResult, mutation) => {
+      // Same opt-out for write-path errors: a mutation that handles its own
+      // validation (e.g. login form) sets `meta: { suppressGlobalError: true }`.
+      handleGlobalError(err, Boolean(mutation.meta?.suppressGlobalError))
     },
   }),
   defaultOptions: {
     queries: {
       staleTime: 30_000,
       gcTime: 5 * 60_000,
-      retry: (failureCount, error) => {
-        if (error instanceof AgentError) {
-          return error.retryable && failureCount < 2
-        }
-        if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
-          return false
-        }
-        return failureCount < 2
-      },
+      retry: shouldRetry,
       refetchOnWindowFocus: false,
     },
     mutations: {

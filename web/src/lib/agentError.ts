@@ -76,6 +76,18 @@ function extractAgentErrorPayload(body: unknown): AgentErrorPayload | null {
 }
 
 /**
+ * True when the thrown error carries a server-emitted AgentError body (i.e.
+ * `retryable` and friends came from the backend). Used by retry predicates to
+ * decide whether to trust the backend-provided `retryable` flag over a generic
+ * HTTP-status heuristic.
+ */
+export function hasAgentErrorBody(err: unknown): boolean {
+  if (err instanceof AgentError) return true
+  if (err instanceof ApiError) return extractAgentErrorPayload(err.body) !== null
+  return false
+}
+
+/**
  * Decide which UI layer (inline / toast / page) should render a given error.
  * Rules come from T-011 notes in the ticket — keep them in sync.
  */
