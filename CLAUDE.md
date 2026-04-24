@@ -95,6 +95,14 @@
    - 更新 `STATUS.md` 該單狀態與 milestone 進度
    - 若有發現新問題不在 scope：開新單（或記到 STATUS.md backlog）
    - Push + 開 PR（模板見 `.github/pull_request_template.md`）
+6. **PR 開完後自動 loop 等 Codex review（必做；不要丟給使用者）：**
+   - `/loop 10m <內容>`——每 10 分鐘 tick 一次，每 tick 要做的事：
+     1. 查 4 個端點（`/pulls/N/reviews`、`/pulls/N/comments`、`/issues/N/comments`、`/issues/N/reactions`），判斷 Codex 狀態
+     2. 有 comment 或 `-1` → 採納 / 駁回 / defer，直接推 fix commit + 回覆該 thread，繼續 loop
+     3. `+1` reaction + 無新 comment + CI 綠 + `mergeable=MERGEABLE && mergeStateStatus=CLEAN` → 按 CONTRIBUTING §5.1 `gh pr merge N --squash --delete-branch`，停 loop
+     4. `eyes` reaction 或還沒 review → 繼續 loop
+   - Merge 規則按 CONTRIBUTING §4.1（含 Phase 1 solo exception）+ §5.2
+   - 起首 tick 不要等 cron，當前 turn 也跑一次
 
 ### 開新 ticket
 用 `tickets/_TEMPLATE.md` 複製改寫。編號接上次最大 + 1。
