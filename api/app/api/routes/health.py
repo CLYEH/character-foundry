@@ -8,13 +8,18 @@ any check fails. See planning/backend/api-shape.md §5.9.
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Literal
+from collections.abc import Callable, Coroutine
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Response
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
+from starlette.responses import Response as StarletteResponse
 
 from app.api.deps import db_session, get_storage
 from app.core.constants import STORAGE_HEALTH_PROBE_KEY
@@ -23,7 +28,42 @@ from app.storage.backend import StorageBackend
 
 _logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["health"])
+
+class _HealthSafeRoute(APIRoute):
+    """Convert dependency-resolution failures into the documented 503 shape.
+
+    FastAPI resolves `Depends(...)` *before* the handler runs. A misconfigured
+    `DATABASE_URL` / `REDIS_URL` would otherwise raise during DI and surface
+    as a 500, bypassing `_check_*` entirely and breaking the contract that
+    `/health` always returns `{status, db, redis, storage}`. Wrapping at the
+    route level keeps the response shape usable for monitoring even during
+    config incidents.
+    """
+
+    def get_route_handler(
+        self,
+    ) -> Callable[[Request], Coroutine[Any, Any, StarletteResponse]]:
+        original = super().get_route_handler()
+
+        async def _safe(request: Request) -> StarletteResponse:
+            try:
+                return await original(request)
+            except Exception:  # noqa: BLE001 — health must never 500 on dep init
+                _logger.exception("health: dependency resolution failed; reporting all-fail")
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "degraded",
+                        "db": "fail",
+                        "redis": "fail",
+                        "storage": "fail",
+                    },
+                )
+
+        return _safe
+
+
+router = APIRouter(tags=["health"], route_class=_HealthSafeRoute)
 
 
 CheckStatus = Literal["ok", "fail"]

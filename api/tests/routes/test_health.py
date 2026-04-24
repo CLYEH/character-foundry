@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from fastapi.testclient import TestClient
 
+from app.api.deps import db_session
+from app.main import app
 from tests.routes.conftest import FakeDBSession, FakeRedis, FakeStorage
 
 
@@ -48,3 +52,31 @@ def test_health_does_not_require_auth(client: TestClient) -> None:
     # Called without Authorization header — must still succeed.
     resp = client.get("/health")
     assert resp.status_code in (200, 503)
+
+
+def test_health_dep_resolution_failure_returns_503_all_fail() -> None:
+    """A misconfigured dep (e.g. missing DATABASE_URL) raises during FastAPI
+    dependency resolution, *before* the handler runs. Without the safety-net
+    route wrapper this would be a 500 and drop the per-component body that
+    monitoring depends on. Simulate by overriding `db_session` with a
+    dependency that raises at init, then assert the documented 503 shape.
+    """
+
+    async def _broken_db() -> AsyncIterator[None]:
+        raise RuntimeError("DATABASE_URL is not set")
+        yield  # pragma: no cover — unreachable; satisfies generator protocol
+
+    app.dependency_overrides[db_session] = _broken_db
+    try:
+        with TestClient(app) as c:
+            resp = c.get("/health")
+            assert resp.status_code == 503
+            body = resp.json()
+            assert body == {
+                "status": "degraded",
+                "db": "fail",
+                "redis": "fail",
+                "storage": "fail",
+            }
+    finally:
+        app.dependency_overrides.pop(db_session, None)
