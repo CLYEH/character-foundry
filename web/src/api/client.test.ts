@@ -114,6 +114,46 @@ describe('apiFetch — 401 refresh flow', () => {
     expect(refreshCalls).toHaveLength(1)
   })
 
+  it('discards in-flight refresh if the session is cleared before it resolves', async () => {
+    let releaseRefresh: ((value: Response) => void) | null = null
+    const refreshGate = new Promise<Response>((resolve) => {
+      releaseRefresh = resolve
+    })
+
+    installFetchMock(async ({ url, auth }) => {
+      if (url.endsWith('/v1/auth/refresh')) {
+        return refreshGate
+      }
+      if (auth === 'Bearer expired') return new Response(null, { status: 401 })
+      return new Response('unexpected', { status: 500 })
+    })
+
+    const redirectSpy = vi.spyOn(authFailureRedirect, 'toLogin').mockImplementation(() => {})
+
+    const pending = apiFetch('/v1/auth/me').catch((e) => e)
+
+    // Yield so the 401 triggers the refresh and it parks on the gate.
+    await new Promise((r) => setTimeout(r, 0))
+
+    // User clicks logout mid-refresh.
+    useAuthStore.getState().logout()
+
+    // Now let the refresh complete successfully.
+    releaseRefresh!(
+      new Response(JSON.stringify({ access_token: 'new', expires_in: 900 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    await pending
+
+    expect(useAuthStore.getState().accessToken).toBeNull()
+    expect(useAuthStore.getState().refreshToken).toBeNull()
+    // Original caller is told the request failed and user is redirected to /login.
+    expect(redirectSpy).toHaveBeenCalled()
+  })
+
   it('logs out and redirects to /login when refresh also fails', async () => {
     installFetchMock(async ({ url }) => {
       if (url.endsWith('/v1/auth/refresh')) return new Response(null, { status: 401 })

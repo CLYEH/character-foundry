@@ -106,16 +106,24 @@ export async function attemptTokenRefresh(): Promise<boolean> {
 }
 
 async function doRefresh(): Promise<boolean> {
-  const refreshToken = useAuthStore.getState().refreshToken
-  if (!refreshToken) return false
+  const refreshTokenAtStart = useAuthStore.getState().refreshToken
+  if (!refreshTokenAtStart) return false
   try {
     const res = await fetch(`${BASE_URL}/v1/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      body: JSON.stringify({ refresh_token: refreshTokenAtStart }),
     })
     if (!res.ok) return false
     const data = (await res.json()) as { access_token: string; expires_in: number }
+    // If the session changed while the refresh was in flight (logout, or
+    // re-login as a different user), discard the result so we don't silently
+    // re-authenticate the previous session. Callers treat `false` as a
+    // refresh failure → they will clear auth + redirect to /login, which is
+    // the right behaviour when the user has just logged out.
+    if (useAuthStore.getState().refreshToken !== refreshTokenAtStart) {
+      return false
+    }
     useAuthStore.getState().updateAccessToken(data.access_token, data.expires_in)
     return true
   } catch {
