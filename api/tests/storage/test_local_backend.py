@@ -91,6 +91,43 @@ def test_delete_on_directory_key_is_noop(
     assert backend.get("characters/abc/base.png") == b"x"
 
 
+def test_get_stream_toctou_race_raises_not_found(
+    backend: LocalFilesystemBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If another request deletes the file between is_file() and open(),
+    `open()` raises FileNotFoundError. Must be translated to NotFoundError
+    so the route returns STORAGE_NOT_FOUND, not an unstructured 500."""
+    backend.put("k.png", b"x", "image/png")
+
+    import builtins
+
+    real_open = builtins.open
+
+    def racing_open(file, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if hasattr(file, "name") and str(getattr(file, "name", file)).endswith("k.png"):
+            raise FileNotFoundError(file)
+        if isinstance(file, str | Path) and str(file).endswith("k.png"):
+            raise FileNotFoundError(file)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", racing_open)
+    with pytest.raises(NotFoundError):
+        backend.get_stream("k.png")
+
+
+def test_get_toctou_race_raises_not_found(
+    backend: LocalFilesystemBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend.put("k.png", b"x", "image/png")
+
+    def racing_read_bytes(self: Path) -> bytes:
+        raise FileNotFoundError(self)
+
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+    with pytest.raises(NotFoundError):
+        backend.get("k.png")
+
+
 def test_get_stream_yields_bytes(backend: LocalFilesystemBackend) -> None:
     backend.put("a/b.txt", b"hello", "text/plain")
     with backend.get_stream("a/b.txt") as fh:

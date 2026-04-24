@@ -108,13 +108,21 @@ class LocalFilesystemBackend(StorageBackend):
         # IsADirectoryError past the route's `except StorageError` mapping.
         if not path.is_file():
             raise NotFoundError(key)
-        return path.read_bytes()
+        try:
+            return path.read_bytes()
+        except FileNotFoundError as exc:
+            # TOCTOU: another request deleted the file between is_file() and
+            # read_bytes(). Preserve the storage error contract.
+            raise NotFoundError(key) from exc
 
     def get_stream(self, key: str) -> BinaryIO:
         path = self._resolve(key)
         if not path.is_file():
             raise NotFoundError(key)
-        return open(path, "rb")
+        try:
+            return open(path, "rb")
+        except FileNotFoundError as exc:
+            raise NotFoundError(key) from exc
 
     def get_signed_url(self, key: str, expires_in_seconds: int = 3600) -> str:
         token = sign_token(
