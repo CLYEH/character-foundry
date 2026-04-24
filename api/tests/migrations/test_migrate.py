@@ -7,6 +7,9 @@ without a local DB still get a green `pytest` run.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from alembic import command
@@ -15,6 +18,23 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 
 REQUIRED_EXTENSIONS = {"uuid-ossp", "pgcrypto", "vector", "pg_trgm"}
+
+
+def _load_migration_010_helper():
+    """Re-use migration 010's _month_ranges helper so the test matches
+    whatever month the suite runs in. The migration file has a leading digit
+    in its name so it isn't importable as a module — load by path.
+    """
+    api_dir = Path(__file__).resolve().parents[2]
+    migration_path = api_dir / "alembic" / "versions" / "20260423_010_generation_logs.py"
+    spec = importlib.util.spec_from_file_location("migration_010", migration_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._month_ranges
+
+
+_gen_log_ranges = _load_migration_010_helper()
 
 EXPECTED_TABLES = {
     "teams",
@@ -29,11 +49,13 @@ EXPECTED_TABLES = {
     "tasks",
 }
 
-EXPECTED_GEN_LOG_PARTITIONS = {
-    "generation_logs_2026_04",
-    "generation_logs_2026_05",
-    "generation_logs_2026_06",
-}
+def _expected_gen_log_partitions() -> set[str]:
+    """Named + default partitions that migration 010 creates at runtime."""
+    named = {
+        f"generation_logs_{suffix}"
+        for suffix, _, _ in _gen_log_ranges(datetime.now(timezone.utc), count=3)
+    }
+    return named | {"generation_logs_default"}
 
 # Tables we DROP in _reset to force each test run back to a clean slate. Order
 # matters: drop leaves before roots so FK cascades don't block us. CASCADE on
@@ -251,7 +273,9 @@ def test_motions_exactly_one_parent_check(alembic_config, database_url, clean_db
 
 
 def test_generation_log_partitions_exist(alembic_config, database_url, clean_db):
-    """Bootstrap migration 010 creates the current month + next two partitions."""
+    """Bootstrap migration 010 creates the current month + next two named
+    partitions (derived from execution time) plus a DEFAULT partition.
+    """
     command.upgrade(alembic_config, "head")
 
     partitions = {
@@ -269,8 +293,42 @@ def test_generation_log_partitions_exist(alembic_config, database_url, clean_db)
             )
         )
     }
-    assert EXPECTED_GEN_LOG_PARTITIONS.issubset(partitions), (
-        f"missing partitions: {EXPECTED_GEN_LOG_PARTITIONS - partitions}"
+    expected = _expected_gen_log_partitions()
+    assert expected.issubset(partitions), f"missing partitions: {expected - partitions}"
+
+
+def test_generation_log_default_partition_catches_far_future_row(
+    alembic_config, database_url, clean_db
+):
+    """The DEFAULT partition must absorb rows whose `started_at` falls outside
+    the three named monthly partitions — otherwise a fresh environment run
+    long after upgrade would fail to insert (the exact bug Codex flagged).
+    """
+    command.upgrade(alembic_config, "head")
+    _, user_id = _insert_user(database_url)
+
+    # Pick a date well past the 3-month bootstrap window.
+    _run(
+        _exec(
+            database_url,
+            """
+            INSERT INTO generation_logs
+                (user_id, entity_type, model_name, final_prompt,
+                 cost_units, status, started_at)
+            VALUES
+                (:user_id, 'checkpoint', 'gpt-image-2', 'x',
+                 0, 'success', '2030-01-15T00:00:00Z')
+            """,
+            {"user_id": user_id},
+        )
+    )
+
+    # Row must have landed in the default partition.
+    count_in_default = _run(
+        _fetch(database_url, "SELECT COUNT(*) FROM generation_logs_default")
+    )[0][0]
+    assert count_in_default == 1, (
+        f"expected far-future row to land in default partition; got count={count_in_default}"
     )
 
 

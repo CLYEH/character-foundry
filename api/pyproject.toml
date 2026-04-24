@@ -11,6 +11,9 @@ dependencies = [
     "asyncpg>=0.29",
     "psycopg2-binary>=2.9",
     "pydantic-settings>=2.5",
+    # pgvector column types are declared in ORM metadata so alembic
+    # autogenerate doesn't see DB-only vector columns and emit DROP-COLUMN diffs.
+    "pgvector>=0.3",
 ]
 
 [project.optional-dependencies]

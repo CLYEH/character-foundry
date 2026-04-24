@@ -14,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,13 +22,7 @@ from app.db.base import Base
 
 
 class Checkpoint(Base):
-    """Immutable candidate image from a creation session.
-
-    Note: `output_image_embedding` is a pgvector column but modeled here as
-    `object` / typeless — we don't need ORM-level operations on it yet, and
-    pulling in `sqlalchemy-pgvector` for schema-only usage is overkill while
-    the DDL lives in the migration.
-    """
+    """Immutable candidate image from a creation session."""
 
     __tablename__ = "checkpoints"
     __table_args__ = (
@@ -55,6 +50,11 @@ class Checkpoint(Base):
     )
     seed: Mapped[str | None] = mapped_column(String(100), nullable=True)
     output_image_key: Mapped[str] = mapped_column(Text, nullable=False)
+    # CLIP ViT-L/14 embedding. Modeled here so alembic autogenerate doesn't
+    # see a DB-only column and emit a destructive DROP-COLUMN diff.
+    output_image_embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(768), nullable=True
+    )
     # Soft reference: generation_logs is partitioned and cannot be FK'd.
     generation_log_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True

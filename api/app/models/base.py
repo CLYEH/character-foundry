@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -36,8 +37,9 @@ class BaseAsset(_DeclarativeBase):
         nullable=False,
     )
     image_key: Mapped[str] = mapped_column(Text, nullable=False)
-    # image_embedding vector(768) is created by the migration; no ORM access
-    # needed for it at the moment.
+    image_embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(768), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

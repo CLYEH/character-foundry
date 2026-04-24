@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -51,6 +52,9 @@ class Alias(Base):
     input_mode: Mapped[str] = mapped_column(String(30), nullable=False)
     mask_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     image_key: Mapped[str] = mapped_column(Text, nullable=False)
+    image_embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(768), nullable=True
+    )
     # Soft reference to partitioned generation_logs.
     generation_log_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
