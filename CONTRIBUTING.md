@@ -177,7 +177,18 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 
 精神：2-人 rule 存在是為了「人 × 人」cross-check。Solo 時湊不到第二個人，改由 **Codex 自動 review** 當結構性把關 —— 以 §4.3 描述的 review 完成 + critical comment 處理完成為判準（與此文件其他地方用的是同一個可驗證訊號），不綁定任何特定 reaction / bot API。
 
-**套用條件：** active contributor（過去 90 天有 commit 的 git author）數量 = 1 時自動生效。第二名貢獻者加入後**立即失效**，回到上表原規則。本條款應於達成時刪除。
+**套用條件：** 以下方 **Active maintainers** 清單為準 —— 清單只有 1 個人類 handle 時本條款生效。
+
+**不用 git commit author 統計當判準**。Co-Authored-By trailer、GitHub `noreply` 隱私 email、同一個人的多組 git identity、bot / CI service account 都會讓 `git log --format=%ae` 的 distinct 數失真，進而在「實際上仍是 solo」的場景把這條條款誤判成失效。採用明確維護者清單可避免這類偽信號。
+
+**Active maintainers:**
+- @CLYEH — sole maintainer as of 2026-04-24
+
+**第二位人類維護者加入時的動作（請嚴格依序）：**
+1. 在上方 **Active maintainers** 清單新增其 GitHub handle
+2. **刪除整個「Phase 1 solo exception」子節**
+3. 同步更新 auto-merge loop 的對應 memory / 設定
+4. 走正常 PR 流程取得 approve 後 merge
 
 **不變的守門線：**
 - Codex 自動 review 仍然要跑完
