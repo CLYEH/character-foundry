@@ -26,6 +26,7 @@ from app.models import (  # noqa: F401  (register metadata)
     CreationSession,
     GenerationLog,
     Motion,
+    RefreshToken,
     Task,
     Team,
     User,
