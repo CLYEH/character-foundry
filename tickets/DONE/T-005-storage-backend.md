@@ -1,6 +1,6 @@
 # T-005: StorageBackend Interface + LocalFilesystemBackend
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 0
 **Est:** M (2h)
 **Depends on:** T-001, T-002
