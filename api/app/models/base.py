@@ -40,9 +40,7 @@ class BaseAsset(_DeclarativeBase):
         nullable=False,
     )
     image_key: Mapped[str] = mapped_column(Text, nullable=False)
-    image_embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(768), nullable=True
-    )
+    image_embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

@@ -76,9 +76,7 @@ class Task(Base):
         Index(
             "idx_tasks_cancel_pending",
             "id",
-            postgresql_where=text(
-                "cancel_requested = TRUE AND status = 'running'"
-            ),
+            postgresql_where=text("cancel_requested = TRUE AND status = 'running'"),
         ),
     )
 
@@ -100,9 +98,7 @@ class Task(Base):
     )
 
     entity_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    entity_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     # REAL (float4) — matches migration 011 DDL. `Float` would map to
     # DOUBLE PRECISION and drift-check would flag it every run.
@@ -118,12 +114,8 @@ class Task(Base):
         nullable=False,
         server_default=func.now(),
     )
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     cancel_requested: Mapped[bool] = mapped_column(
         Boolean,

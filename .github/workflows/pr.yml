@@ -1,0 +1,108 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "planning/**"
+      - "**.md"
+      - "tickets/**"
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-lint-test:
+    name: backend (lint + typecheck + test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd=pg_isready
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/pyproject.toml
+
+      - name: Install api (dev extras)
+        working-directory: api
+        run: pip install -e ".[dev]"
+
+      - name: Ruff lint
+        working-directory: api
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Mypy
+        working-directory: api
+        run: mypy app/
+
+      - name: Pytest
+        working-directory: api
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/test
+          DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/test
+          REDIS_URL: redis://localhost:6379/0
+        run: pytest --cov=app --cov-report=term
+
+  frontend-lint-test:
+    name: frontend (lint + typecheck + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Prettier
+        working-directory: web
+        run: pnpm format:check
+
+      - name: ESLint
+        working-directory: web
+        run: pnpm lint
+
+      - name: Typecheck
+        working-directory: web
+        run: pnpm tsc --noEmit
+
+      - name: Vitest
+        working-directory: web
+        run: pnpm test

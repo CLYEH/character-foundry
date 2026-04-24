@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -14,7 +15,6 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,24 +44,16 @@ class Checkpoint(Base):
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    user_menu_selections: Mapped[dict[str, Any] | None] = mapped_column(
-        JSONB, nullable=True
-    )
+    user_menu_selections: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     user_freeform_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    reference_image_keys: Mapped[list[str] | None] = mapped_column(
-        ARRAY(Text), nullable=True
-    )
+    reference_image_keys: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     seed: Mapped[str | None] = mapped_column(String(100), nullable=True)
     output_image_key: Mapped[str] = mapped_column(Text, nullable=False)
     # CLIP ViT-L/14 embedding. Modeled here so alembic autogenerate doesn't
     # see a DB-only column and emit a destructive DROP-COLUMN diff.
-    output_image_embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(768), nullable=True
-    )
+    output_image_embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
     # Soft reference: generation_logs is partitioned and cannot be FK'd.
-    generation_log_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
+    generation_log_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     selected_as_base: Mapped[bool | None] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

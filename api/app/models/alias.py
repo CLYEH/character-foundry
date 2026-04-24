@@ -68,13 +68,9 @@ class Alias(Base):
     input_mode: Mapped[str] = mapped_column(String(30), nullable=False)
     mask_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     image_key: Mapped[str] = mapped_column(Text, nullable=False)
-    image_embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(768), nullable=True
-    )
+    image_embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
     # Soft reference to partitioned generation_logs.
-    generation_log_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
+    generation_log_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

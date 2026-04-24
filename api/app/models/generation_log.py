@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -59,20 +60,16 @@ class GenerationLog(Base):
         nullable=True,
     )
     entity_type: Mapped[str] = mapped_column(String(20), nullable=False)
-    entity_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     model_name: Mapped[str] = mapped_column(String(50), nullable=False)
     model_version: Mapped[str | None] = mapped_column(String(30), nullable=True)
     final_prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    input_image_keys: Mapped[list[str] | None] = mapped_column(
-        ARRAY(Text), nullable=True
-    )
+    input_image_keys: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     parameters: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     cost_units: Mapped[Decimal] = mapped_column(
         Numeric(10, 4),
         nullable=False,
-        server_default=func.cast(0, Numeric(10, 4)),
+        server_default=text("0"),
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -81,6 +78,4 @@ class GenerationLog(Base):
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), primary_key=True, nullable=False
     )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

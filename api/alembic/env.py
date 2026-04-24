@@ -10,10 +10,11 @@ import asyncio
 import os
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
 
 # Import models so their metadata is registered on Base.metadata.
 from app.db.base import Base
@@ -42,8 +43,7 @@ def _resolve_url() -> str:
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError(
-            "DATABASE_URL is not set. Set it in your .env or environment before "
-            "running alembic."
+            "DATABASE_URL is not set. Set it in your .env or environment before running alembic."
         )
     return url
 
@@ -66,11 +66,7 @@ def _autogenerate_filter(object, name, type_, reflected, compare_to):
         return False
     if type_ == "table" and name and name.startswith("generation_logs_"):
         return False
-    if (
-        type_ == "index"
-        and name
-        and name.startswith("idx_gen_logs_")
-    ):
+    if type_ == "index" and name and name.startswith("idx_gen_logs_"):
         return False
     return True
 
