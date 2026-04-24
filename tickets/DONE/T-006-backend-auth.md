@@ -1,6 +1,6 @@
 # T-006: Backend Auth (JWT login / refresh / logout / me)
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 1
 **Est:** M (2h)
 **Depends on:** T-001, T-002
