@@ -67,11 +67,27 @@
    - 單裡列的 **Planning refs**（具體規格）
    - `STATUS.md`（看前後依賴）
 3. **切 feature branch（必做；動手改檔之前）：**
+
+   先判斷 branch 是否已存在：
+
    ```bash
-   git branch --show-current            # 若不是 main，先確認目前 branch 是否對應此 ticket
-   git switch main && git pull
-   git switch -c feature/T-XXX-short-desc   # 命名慣例見 CONTRIBUTING §1.1
+   git branch --show-current
+   git fetch origin
+   git branch --list feature/T-XXX-short-desc
+   git ls-remote --heads origin feature/T-XXX-short-desc
    ```
+
+   - **新 ticket**（branch 不存在）→ 從最新 main 切一條：
+     ```bash
+     git switch main && git pull
+     git switch -c feature/T-XXX-short-desc   # 命名慣例見 CONTRIBUTING §1.1
+     ```
+   - **繼續做 ticket**（branch 已存在於本地 或 origin）→ 切到既有 branch，不要 `-c`：
+     ```bash
+     git switch feature/T-XXX-short-desc      # 本地已有就直接切
+     # 若只有 origin 有，git switch 會自動建立 tracking branch
+     ```
+
    ⚠ 若 `Current branch: main` 出現在 session 開場的 git status，**這不是可以直接動工的狀態**，要先切 branch。Auto mode 不例外——這是 pre-flight 不是 deliberation。
 4. 實作 → 測試 → commit（commit message 格式見 CONTRIBUTING §2）
 5. 完成時：
