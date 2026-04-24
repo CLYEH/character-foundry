@@ -172,10 +172,10 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 
 | 原規則 | Phase 1 solo 覆寫 |
 |---|---|
-| **2 人** approve（Security-sensitive / Schema migration / Production deploy） | **Codex `+1`** + **1 人** approve（self OK）|
+| **2 人** approve（Security-sensitive / Schema migration / Production deploy） | **Codex 已完成 review 且無 unresolved critical comment** + **1 人** approve（self OK）|
 | **1 人** approve（其餘類型） | 不變 |
 
-精神：2-人 rule 存在是為了「人 × 人」cross-check。Solo 時湊不到第二個人，改由 **Codex 自動 review** 當結構性把關 —— Codex 對該 commit 留 `+1` reaction + 零 unresolved critical comment，即視為第二層防線完成。
+精神：2-人 rule 存在是為了「人 × 人」cross-check。Solo 時湊不到第二個人，改由 **Codex 自動 review** 當結構性把關 —— 以 §4.3 描述的 review 完成 + critical comment 處理完成為判準（與此文件其他地方用的是同一個可驗證訊號），不綁定任何特定 reaction / bot API。
 
 **套用條件：** active contributor（過去 90 天有 commit 的 git author）數量 = 1 時自動生效。第二名貢獻者加入後**立即失效**，回到上表原規則。本條款應於達成時刪除。
 
