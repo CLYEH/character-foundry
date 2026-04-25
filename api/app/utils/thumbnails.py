@@ -38,6 +38,13 @@ def ensure_png_bytes(source: bytes) -> bytes:
     try:
         with Image.open(io.BytesIO(source)) as im:
             if im.format == "PNG":
+                # PIL.Image.open is lazy — `im.format` reads only the
+                # header, so a truncated PNG passes this check unless
+                # we force a real decode. `.load()` triggers full pixel
+                # decode and raises OSError on bad bytes (Codex P2
+                # round-5). We discard the decoded buffer because we
+                # return the original bytes for PNG fast-path.
+                im.load()
                 return source
             decoded = im.convert("RGBA")
             buf = io.BytesIO()

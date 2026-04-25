@@ -250,6 +250,22 @@ async def _load_image_bytes_for_input(
 # ---------------------------------------------------------------------------
 
 
+async def _existing_checkpoint_for_payload(session_factory: Any, payload: Mapping[str, Any]) -> Any:
+    """Return a committed checkpoint row matching `payload['checkpoint_id']`,
+    or None. Used by the worker to short-circuit when a previous attempt
+    already committed (Codex P1 round-5 — avoid wasted AI calls on retry).
+    """
+    raw = payload.get("checkpoint_id")
+    if not raw:
+        return None
+    try:
+        cid = uuid.UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+    async with session_factory() as db:
+        return await checkpoint_repo.get(db, cid)
+
+
 async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
     """Full pipeline. See module docstring."""
     session_factory = ctx["db_session_factory"]
@@ -263,6 +279,47 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
             return {"task_id": task_id, "ok": False, "reason": "missing"}
 
         if task.cancel_requested or task.status in _TERMINAL_STATUSES:
+            # Subtle case (Codex P2 round-5): if a prior attempt
+            # committed the checkpoint row but crashed before
+            # mark_completed, AND the user then cancelled, we'd reach
+            # this branch with cancel_requested=True + status=running.
+            # Marking the task `cancelled` orphans the committed row
+            # (entity_id never set). Better to recognize the work IS
+            # done and finalize as `completed` — semantically a
+            # too-late cancel.
+            payload_snapshot: dict[str, Any] = dict(task.input_payload)
+            existing = await _existing_checkpoint_for_payload(session_factory, payload_snapshot)
+            if existing is not None and task.status == "running" and not task.entity_id:
+                # Build the DTO + complete the task. Storage backend
+                # used for signed-URL minting.
+                storage_for_dto = _resolve_storage_from_ctx(ctx)
+                dto = build_checkpoint_dto(existing, storage_for_dto)
+                result_payload = {"checkpoint": dto.model_dump(mode="json")}
+                async with session_factory() as db2:
+                    await task_repo.mark_completed(
+                        db2,
+                        task_uuid,
+                        entity_type="checkpoint",
+                        entity_id=existing.id,
+                        result=result_payload,
+                    )
+                    await db2.commit()
+                await _safe_publish(
+                    redis,
+                    task_uuid,
+                    {
+                        "status": "completed",
+                        "result": result_payload,
+                        "task_id": str(task_uuid),
+                    },
+                )
+                _logger.info(
+                    "create_checkpoint: retry recovered committed row %s on cancelled task %s",
+                    existing.id,
+                    task_uuid,
+                )
+                return {"task_id": task_id, "ok": True, "reason": "recovered"}
+
             published_terminal_after_retry_cancel = False
             if task.cancel_requested and task.status == "running":
                 await task_repo.mark_cancelled(db, task_uuid)
@@ -309,6 +366,42 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
     storage = _resolve_storage_from_ctx(ctx)
     ai_client = _resolve_ai_client(ctx)
     reconciler = _resolve_reconciler(ctx)
+
+    # ----- Phase 1.5: idempotent retry short-circuit (Codex P1 round-5).
+    # If a prior attempt already committed the checkpoint row but
+    # crashed before mark_completed, the row is sitting in DB under
+    # the reserved `checkpoint_id`. Skip the AI call (cost + time)
+    # and just finalize the task. The PK-collision branch deeper in
+    # the pipeline handles late races; this is the cheap up-front
+    # check on the happy retry path.
+    existing_row = await _existing_checkpoint_for_payload(session_factory, payload)
+    if existing_row is not None:
+        dto = build_checkpoint_dto(existing_row, storage)
+        result_payload = {"checkpoint": dto.model_dump(mode="json")}
+        async with session_factory() as db:
+            await task_repo.mark_completed(
+                db,
+                task_uuid,
+                entity_type="checkpoint",
+                entity_id=existing_row.id,
+                result=result_payload,
+            )
+            await db.commit()
+        await _safe_publish(
+            redis,
+            task_uuid,
+            {
+                "status": "completed",
+                "result": result_payload,
+                "task_id": str(task_uuid),
+            },
+        )
+        _logger.info(
+            "create_checkpoint: retry skip-AI; row %s already exists for task %s",
+            existing_row.id,
+            task_uuid,
+        )
+        return {"task_id": task_id, "ok": True, "reason": "already_committed"}
 
     # ----- Phase 2: actual work, wrapped so any failure (AgentError or
     # otherwise) lands in `_commit_failed`. Cancel checkpoints between
