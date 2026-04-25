@@ -37,6 +37,7 @@ from app.models.user import User
 from app.schemas.reference_image import ReferenceImageUploadResponse
 from app.services import checkpoint_service
 from app.storage.backend import StorageBackend
+from app.storage.errors import StorageError
 from app.utils.thumbnails import ensure_png_bytes
 
 router = APIRouter(prefix="/v1/creation-sessions", tags=["creation_sessions"])
@@ -127,17 +128,34 @@ async def upload_reference_image(
     # `_get_writable_session` inside `upload_reference_image` —
     # cheap and re-validates against the latest state (the session
     # could have been abandoned during the multipart read).
-    async with factory() as insert_db:
-        created = await checkpoint_service.upload_reference_image(
-            insert_db,
-            user=user,
-            session_id=session_id,
-            reference_id=reference_id,
-            storage_key=storage_key,
-            mime_type=content_type,
-            size_bytes=total,
-            signed_url=signed_url,
-        )
+    #
+    # If the second-phase session check or the INSERT fails, delete
+    # the storage blob before propagating — otherwise repeated failed
+    # uploads accumulate orphans (Codex P2 round-8). The first auth
+    # check already happened above so 4xx is rare in practice; this
+    # covers the in-flight session-state-change window and any DB
+    # error during commit.
+    try:
+        async with factory() as insert_db:
+            created = await checkpoint_service.upload_reference_image(
+                insert_db,
+                user=user,
+                session_id=session_id,
+                reference_id=reference_id,
+                storage_key=storage_key,
+                mime_type=content_type,
+                size_bytes=total,
+                signed_url=signed_url,
+            )
+    except BaseException:
+        try:
+            storage.delete(storage_key)
+        except StorageError:
+            _logger.warning(
+                "upload_reference_image: orphan cleanup failed for %s",
+                storage_key,
+            )
+        raise
     return ReferenceImageUploadResponse(
         reference_image_id=created.reference.id,
         url=signed_url,

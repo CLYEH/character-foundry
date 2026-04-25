@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import (
     conflict_task_already_terminal,
     not_found_task,
+    queue_unavailable,
 )
 from app.core.redis_client import (
     publish_task_cancel,
@@ -177,7 +178,14 @@ async def create_task(
             },
         )
         await db.commit()
-        raise exc
+        # Raise the structured AgentError instead of the bare provider
+        # exception so route handlers don't have to wrap this surface
+        # themselves (Codex P2 round-8 — and tightens the previous
+        # round-7 fix that was over-broad). Pre-commit DB failures
+        # earlier in this function still bubble as their real
+        # exception type, which is what we want — those are not
+        # queue-availability problems.
+        raise queue_unavailable(task_id=str(task.id)) from exc
     return CreatedTask(task=task, job_function=job_function)
 
 
