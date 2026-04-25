@@ -245,6 +245,109 @@ async def test_five_failed_calls_open_circuit_then_short_circuit(
     assert payload["reason"] == "CIRCUIT_OPEN"
 
 
+async def test_request_url_preserves_v1_prefix_from_api_base(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Regression: httpx URL joining used to drop the `/v1` segment when the
+    relative path started with a leading slash, sending requests to
+    `https://api.openai.com/images/...` instead of `.../v1/images/...`. Now
+    we concatenate explicitly so the base path is preserved verbatim
+    (Codex PR #19 P1).
+    """
+    captured: dict[str, str] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["host"] = request.url.host
+        return _success_response(request)
+
+    client = _make_client(fake_redis, _handler)
+    try:
+        await client.generate_image_text2image("hi")
+    finally:
+        await client.aclose()
+
+    assert captured["host"] == "api.openai.test"
+    assert captured["path"] == "/v1/images/generations", captured
+
+
+async def test_content_policy_failures_do_not_open_circuit(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Regression: non-retryable user errors (content policy, invalid
+    request) must NOT count toward the breaker. Five bad prompts shouldn't
+    turn into a 5-minute outage for valid prompts (Codex PR #19 P1).
+    """
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "content_policy_violation",
+                    "message": "rejected",
+                }
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, max_retries=0)
+    try:
+        for _ in range(5):
+            with pytest.raises(AgentErrorException) as info:
+                await client.generate_image_text2image("forbidden")
+            assert info.value.error.code == "PROMPT_CONTENT_POLICY"
+    finally:
+        await client.aclose()
+
+    # Breaker must remain CLOSED — no degraded entry, no recorded failures.
+    assert await fake_redis.get("degraded:gpt-image-2") is None
+    assert await fake_redis.zcard("circuit:gpt-image-2:failures") == 0
+
+
+async def test_invalid_request_400_does_not_open_circuit(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Same rule as content-policy: client-side payload mistakes are not
+    upstream availability signals."""
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"code": "invalid_param", "message": "bad size"}})
+
+    client = _make_client(fake_redis, _handler, max_retries=0)
+    try:
+        for _ in range(5):
+            with pytest.raises(AgentErrorException) as info:
+                await client.generate_image_text2image("x")
+            assert info.value.error.code == "MODEL_INVALID_REQUEST"
+    finally:
+        await client.aclose()
+
+    assert await fake_redis.get("degraded:gpt-image-2") is None
+    assert await fake_redis.zcard("circuit:gpt-image-2:failures") == 0
+
+
+async def test_auth_failures_do_not_open_circuit(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Auth failures are config/setup errors — not transient provider
+    health signals. Don't conflate them with availability."""
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "bad key"}})
+
+    client = _make_client(fake_redis, _handler, max_retries=0)
+    try:
+        for _ in range(5):
+            with pytest.raises(AgentErrorException) as info:
+                await client.generate_image_text2image("x")
+            assert info.value.error.code == "INTERNAL_AUTH_FAILED"
+    finally:
+        await client.aclose()
+
+    assert await fake_redis.get("degraded:gpt-image-2") is None
+    assert await fake_redis.zcard("circuit:gpt-image-2:failures") == 0
+
+
 async def test_circuit_recovers_after_degraded_key_expires(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:

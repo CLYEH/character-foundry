@@ -204,8 +204,16 @@ class GptImage2Client:
         # Exhausted retries (or fast-failed). Count this as ONE breaker
         # failure regardless of attempt count; otherwise a single flaky
         # call could trip the breaker on its own.
-        await self._breaker.record_failure()
+        #
+        # Codex P1 round-1: only *retryable* errors signal upstream
+        # unhealth — they're the timeout / 5xx / 429 / transport family.
+        # Non-retryable errors (PROMPT_CONTENT_POLICY, MODEL_INVALID_REQUEST,
+        # INTERNAL_AUTH_FAILED) are user-input or config issues and must
+        # NOT contribute to opening the breaker; otherwise five bad prompts
+        # in a minute turn into a service-wide outage for the next 5 min.
         assert last_error is not None  # set by every break path above
+        if last_error.error.retryable:
+            await self._breaker.record_failure()
         raise last_error
 
     async def _attempt_once(
@@ -233,9 +241,16 @@ class GptImage2Client:
         files: dict[str, tuple[str, bytes, str]] | None,
     ) -> httpx.Response:
         client = await self._http()
+        # Codex P1 round-1: build a fully-qualified URL ourselves rather than
+        # relying on httpx's base_url joining. With base_url=".../v1" and an
+        # absolute path like "/images/generations", RFC 3986 path resolution
+        # drops the `/v1` segment and posts to ".../images/...". Production
+        # hits the wrong endpoint; stub mode hides it because MockTransport
+        # accepts any URL. Concatenate explicitly so the path is never re-rooted.
+        url = f"{self.api_base}/{path.lstrip('/')}"
         if files is not None:
-            return await client.post(path, data=form_data or {}, files=files)
-        return await client.post(path, json=json_body)
+            return await client.post(url, data=form_data or {}, files=files)
+        return await client.post(url, json=json_body)
 
     def _parse_success(self, response: httpx.Response, *, duration_ms: int) -> AIGenerationResult:
         try:
