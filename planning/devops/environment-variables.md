@@ -36,10 +36,15 @@
 
 | 變數 | 必填 | 說明 | 敏感 |
 |---|---|---|---|
-| `OPENAI_API_KEY` | ✓ | gpt-image-2 呼叫用 | 🔒 |
+| `OPENAI_API_KEY` | (✓ in prod) | gpt-image-2 呼叫用；`AI_STUB_MODE=true` 時可省略 | 🔒 |
+| `AI_STUB_MODE` |  | `true`（預設，dev / CI / E2E）→ 走 StubAIClient 不打 provider；prod 設 `false` | |
+| `OPENAI_API_BASE` |  | 預設 `https://api.openai.com/v1`；測試 / 私有代理可覆寫 | |
 | `GPT_IMAGE_2_MODEL` |  | 預設 `gpt-image-2` | |
 | `GPT_IMAGE_2_TIMEOUT_MS` |  | 預設 `60000` | |
-| `GPT_IMAGE_2_MAX_RETRIES` |  | 預設 `4` | |
+| `GPT_IMAGE_2_MAX_RETRIES` |  | 預設 `3`（指數退避，每次 call 算一次 breaker failure）| |
+| `AI_CIRCUIT_FAILURE_THRESHOLD` |  | 預設 `5`（連續失敗達此值即 OPEN）| |
+| `AI_CIRCUIT_FAILURE_WINDOW_SECONDS` |  | 預設 `60`（sliding window 長度）| |
+| `AI_CIRCUIT_OPEN_DURATION_SECONDS` |  | 預設 `300`（OPEN 持續秒數，TTL 自動恢復）| |
 | `VEO_API_KEY` | ✓ | Veo 3.1 呼叫用（Gemini API / Vertex AI key）| 🔒 |
 | `VEO_API_URL` | ✓ | API endpoint（Gemini API 或 Vertex AI endpoint）| |
 | `VEO_MODEL` |  | 預設 `veo-3.1` | |
@@ -115,6 +120,7 @@ JWT_SECRET=change_me_32_bytes_hex
 STORAGE_SIGNED_URL_SECRET=change_me_32_bytes_hex
 
 OPENAI_API_KEY=sk-...              # gpt-image-2 + gpt-5-mini reconciler 共用
+AI_STUB_MODE=true                  # dev/CI 預設；prod 設 false
 VEO_API_KEY=...
 VEO_API_URL=https://generativelanguage.googleapis.com/v1beta
 
