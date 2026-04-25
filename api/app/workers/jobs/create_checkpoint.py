@@ -735,15 +735,37 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                     "creation_session_id": str(session_id),
                 }
             }
-        async with session_factory() as db:
-            await task_repo.mark_completed(
-                db,
+        # Post-commit task finalization. The checkpoint row + storage
+        # files are already durable; if the mark_completed update or
+        # its commit fails (transient DB blip), the OUTER catch would
+        # mark the task `failed` and that terminal status would block
+        # later retries from reconciling the existing checkpoint
+        # (Codex P1 round-13). Catch and return `ok=False` instead so
+        # arq's retry mechanism can re-enter — the up-front
+        # idempotency lookup will pick up the committed row and
+        # finalize cleanly on the next attempt.
+        try:
+            async with session_factory() as db:
+                await task_repo.mark_completed(
+                    db,
+                    task_uuid,
+                    entity_type="checkpoint",
+                    entity_id=checkpoint_id,
+                    result=result_payload,
+                )
+                await db.commit()
+        except Exception:  # noqa: BLE001 — recoverable; row is already durable
+            _logger.exception(
+                "create_checkpoint: post-commit mark_completed failed for "
+                "task %s; checkpoint %s is durable, retry will reconcile",
                 task_uuid,
-                entity_type="checkpoint",
-                entity_id=checkpoint_id,
-                result=result_payload,
+                checkpoint_id,
             )
-            await db.commit()
+            return {
+                "task_id": task_id,
+                "ok": False,
+                "reason": "completion_pending",
+            }
 
         await _safe_publish(
             redis,

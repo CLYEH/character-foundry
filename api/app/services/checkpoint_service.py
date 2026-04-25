@@ -157,7 +157,22 @@ async def upload_reference_image(
         size_bytes=size_bytes,
     )
     await db.commit()
-    await db.refresh(row)
+    # Post-commit refresh failures must NOT propagate (Codex P1
+    # round-13). The row is already durable in the DB; the route's
+    # outer storage-cleanup `except` would otherwise delete the blob
+    # and leave a committed row pointing at a missing file. The
+    # `id` / `created_at` we hand back are already populated from
+    # the flush during insert, so a missing refresh costs us nothing
+    # observable.
+    try:
+        await db.refresh(row)
+    except Exception:  # noqa: BLE001 — recoverable; row is already durable
+        _logger.warning(
+            "upload_reference_image: post-commit refresh failed for %s; "
+            "returning the in-memory row",
+            row.id,
+            exc_info=True,
+        )
     return CreatedReferenceImage(reference=row, signed_url=signed_url)
 
 
