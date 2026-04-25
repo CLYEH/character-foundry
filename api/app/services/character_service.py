@@ -75,11 +75,17 @@ def _is_name_or_slug_violation(exc: IntegrityError) -> bool:
     return _is_name_constraint_violation(exc) or _is_slug_constraint_violation(exc)
 
 
-# Bound the slug-collision retry loop. With the uuid4-prefix fallback
-# kicking in after 100 numeric suffixes, a 3-attempt cap is generous —
-# anything beyond that points at a deeper problem (or a malicious
-# loop) we don't want to mask.
-_SLUG_RETRY_LIMIT = 3
+# Bound the slug-collision retry loop. The worst-case race is N
+# concurrent creates with pinyin-equal-but-distinct names from the
+# same owner: each iteration only one winner commits, so the slowest
+# request needs N-1 retries to find a free suffix (Codex round-6 P2).
+# 10 covers any realistic Phase 1 contention (10 simultaneous tab-spam
+# creates of slug-equal-but-name-distinct characters from one owner)
+# while still tripping fast on a stuck allocator. The uuid4-prefix
+# fallback kicks in inside `generate_unique_slug` after 100 numeric
+# suffixes, so the cap here only bounds DB-side races, not allocator
+# bugs in the deterministic part.
+_SLUG_RETRY_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -104,13 +110,21 @@ def _checkpoint_seq_key(session_id: uuid.UUID) -> str:
 
 async def create_character(
     db: AsyncSession,
-    redis: Redis,
+    redis: Redis | None,
     *,
     user: User,
     name: str,
     input_mode: str,
 ) -> CreatedCharacter:
-    """Insert character + session in one transaction; bootstrap Redis."""
+    """Insert character + session in one transaction; bootstrap Redis.
+
+    `redis` may be `None` when the dep failed to resolve at the route
+    layer (e.g., `REDIS_URL` unset in dev) — Redis is best-effort here
+    and a missing client takes the same fall-through as a runtime SET
+    failure (Codex round-6 P2). The first call to T-017's INCR
+    allocator will rebuild the cursor from the DB if the seed key
+    isn't there.
+    """
 
     if not name_pattern_ok(name):
         # Pydantic enforces length (1–50) at the route layer, but the
@@ -192,17 +206,24 @@ async def create_character(
     await db.refresh(session)
 
     # Step 4 (best-effort): bootstrap the Redis sequence allocator.
-    # Redis being unreachable is logged but not raised — T-017's
-    # allocator falls back to `MAX(sequence) + 1` from the DB if the
-    # key is missing.
-    try:
-        await redis.set(_checkpoint_seq_key(session.id), 0)
-    except Exception:  # noqa: BLE001 — best-effort; DB is the source of truth
-        _logger.warning(
-            "create_character: redis SET %s failed; T-017 allocator will rebuild from DB",
+    # Redis being unreachable — or the dep failing to resolve at all,
+    # in which case the route hands us `None` — is logged but not
+    # raised. T-017's allocator falls back to `MAX(sequence) + 1`
+    # from the DB if the key is missing.
+    if redis is None:
+        _logger.info(
+            "create_character: redis client unavailable; skipping seq bootstrap for %s",
             _checkpoint_seq_key(session.id),
-            exc_info=True,
         )
+    else:
+        try:
+            await redis.set(_checkpoint_seq_key(session.id), 0)
+        except Exception:  # noqa: BLE001 — best-effort; DB is the source of truth
+            _logger.warning(
+                "create_character: redis SET %s failed; T-017 allocator will rebuild from DB",
+                _checkpoint_seq_key(session.id),
+                exc_info=True,
+            )
 
     return CreatedCharacter(character=character, creation_session=session)
 

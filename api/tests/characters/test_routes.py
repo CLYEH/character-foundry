@@ -95,6 +95,41 @@ def test_create_character_persists_both_rows_atomically(
     asyncio.run(_check())
 
 
+def test_create_succeeds_when_redis_dep_fails(client: TestClient, access_token: str) -> None:
+    """Codex round-6 P2: `get_redis` raising (e.g., REDIS_URL unset)
+    must not block create — Redis seeding is documented as best-effort
+    so the service should still land both rows. We override the dep
+    to raise and assert the create still 201s."""
+    from app.core.redis_client import get_redis as _get_redis_dep
+    from app.main import app
+
+    async def _exploding_redis() -> Any:
+        raise RuntimeError("REDIS_URL is not set")
+
+    # Replace the override in place so the route's lazy `await
+    # get_redis()` lands on this raiser. The conftest's `client`
+    # fixture had already installed a fakeredis override; we restore
+    # it after the test so other cases keep their stand-in.
+    original_override = app.dependency_overrides.get(_get_redis_dep)
+    app.dependency_overrides[_get_redis_dep] = _exploding_redis
+    try:
+        resp = client.post(
+            "/v1/characters",
+            json={"name": "NoRedis", "input_mode": "template"},
+            headers=auth_headers(access_token),
+        )
+    finally:
+        if original_override is not None:
+            app.dependency_overrides[_get_redis_dep] = original_override
+        else:
+            app.dependency_overrides.pop(_get_redis_dep, None)
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["character"]["name"] == "NoRedis"
+    assert body["creation_session"]["status"] == "in_progress"
+
+
 def test_create_seeds_redis_seq(
     client: TestClient,
     access_token: str,

@@ -7,10 +7,11 @@ populates `base` and T-019 populates aliases / motions counts.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,27 @@ from app.schemas.creation_session import CreationSessionDTO
 from app.services import character_service
 
 router = APIRouter(prefix="/v1/characters", tags=["characters"])
+_logger = logging.getLogger(__name__)
+
+
+async def _maybe_redis(request: Request) -> Redis | None:
+    """Resolve Redis but tolerate failure — used by endpoints where
+    Redis is best-effort (Codex round-6 P2). `get_redis` raises if
+    REDIS_URL is unset; depending on it directly would 500 the
+    request before the DB transaction runs even though the service
+    layer documents Redis as optional. We honor `app.dependency_overrides`
+    so test stubs still work; only the underlying call is wrapped.
+    """
+    resolver = request.app.dependency_overrides.get(get_redis, get_redis)
+    try:
+        client: Redis | None = await resolver()
+    except Exception:  # noqa: BLE001 — best-effort, see docstring
+        _logger.warning(
+            "_maybe_redis: redis resolver raised; continuing without Redis",
+            exc_info=True,
+        )
+        return None
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +182,8 @@ async def list_characters(
 async def create_character(
     body: CreateCharacterRequest,
     db: Annotated[AsyncSession, Depends(db_session)],
-    redis: Annotated[Redis, Depends(get_redis)],
     user: Annotated[User, Depends(get_current_user)],
+    redis: Annotated[Redis | None, Depends(_maybe_redis)] = None,
 ) -> CreateCharacterResponse:
     created = await character_service.create_character(
         db,
