@@ -371,11 +371,19 @@ async def get_checkpoint_for_read(
     user: User,
     checkpoint_id: uuid.UUID,
 ) -> Checkpoint:
-    """Fetch a checkpoint scoped to the caller's team. Used by
+    """Fetch a checkpoint visible to the caller. Used by
     `GET /v1/checkpoints/{id}` and (later) the fork endpoint.
 
-    Cross-team / missing → NOT_FOUND_CHECKPOINT (does not leak team
-    membership).
+    Per storage-layout.md §5.1, **checkpoint images are
+    initiator-only** — even same-team callers other than the session
+    initiator must NOT receive signed URLs (Codex P1 round-15).
+    Missing / cross-team / non-initiator all collapse to
+    NOT_FOUND_CHECKPOINT to avoid leaking existence + ownership
+    state.
+
+    The team check still runs first so cross-team callers don't
+    learn anything about session initiators on the other side of
+    the boundary; the initiator check is layered on top.
     """
     checkpoint = await checkpoint_repo.get(db, checkpoint_id)
     if checkpoint is None:
@@ -387,8 +395,9 @@ async def get_checkpoint_for_read(
         character = await character_repo.get_active(db, session.character_id)
         if character is None or character.team_id != user.team_id:
             raise not_found_checkpoint()
-    elif session.initiator_id != user.id:
-        # Character-less session: only the initiator can see the
-        # checkpoints (matches the read rule on the session itself).
+    if session.initiator_id != user.id:
+        # Initiator-only read per storage-layout §5.1. Same code as
+        # cross-team / missing so the response can't distinguish
+        # "not your session" from "doesn't exist".
         raise not_found_checkpoint()
     return checkpoint
