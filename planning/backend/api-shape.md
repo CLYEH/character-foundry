@@ -460,17 +460,29 @@ GET    /v1/meta
   "name": "...",
   "slug": "...",
   "owner": { ... },
-  "base": Base,
+  "base": Base | null,                           // null when session still in progress
   "aliases": [Alias],
   "motions_summary": {
     "base": { "preset_generated": 3, "custom_count": 2 },
     "aliases": [{ "alias_id": "...", "preset_generated": 0, "custom_count": 1 }]
   },
+  "creation_session": {                          // populated only when base === null
+    "id": "uuid",
+    "status": "in_progress" | "abandoned"        // 'completed' 不會出現（completed 必伴隨 base 寫入；此時欄位回 null）
+  } | null,
   "created_at": "...",
   "updated_at": "...",
   "copied_from": { "character_id": "uuid", "name": "..." } | null
 }
 ```
+
+**`creation_session` 用途：** Frontend 在 `base` 為 null（character 尚未確立 Base）時，依 `creation_session.status` 決定行為：
+- `in_progress` → 提供「繼續建立」按鈕導向 `/characters/new/session/{creation_session.id}`
+- `abandoned` → 顯示「此 session 已被放棄」+ Back to Dashboard
+- `null`（base 已確立）→ 不顯示 resume UI，正常 detail flow
+- `null`（base 為 null 但 creation_session 也 null，異常狀態）→ fallback inline error
+
+**Backend serializer 規則：** `base !== null` 時 `creation_session = null`（節省 payload + 清晰契約）；`base === null` 時 join `creation_sessions` 表並回 `{id, status}`。
 
 ### 6.3 `Base`
 

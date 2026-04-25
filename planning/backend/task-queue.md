@@ -236,6 +236,39 @@ async def stream_task(task_id: UUID):
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 ```
 
+### 3.5 Checkpoint sequence allocation（避開 race）
+
+`checkpoints.sequence` 在 `(creation_session_id, sequence)` 上有 UNIQUE 約束（見 `../data/db-schema.md` §3.5）。Phase 1 採 **no-row-until-success** 模型（worker 成功產出 image 才寫 row），因此**不能**用 `SELECT COUNT(*) + 1` 來預定 sequence — 多個 in-flight task 會讀到同樣的 count，全部塞同個 sequence，最後 worker 寫入時撞 UNIQUE。
+
+**選用：Redis atomic INCR**
+
+| 時機 | 動作 |
+|---|---|
+| `POST /v1/characters` 建出 session 時 | `SET seq:checkpoint:{session_id} = 0`（與 DB transaction 一起；Redis 失敗 log warning 但不擋）|
+| `POST /v1/creation-sessions/{id}/checkpoints` 排 task 時 | `INCR seq:checkpoint:{session_id}` 取得 sequence；連同 reserved `checkpoint_id` (UUID v4) 塞進 `task.input_payload` |
+| Worker 成功時 | 用 input_payload 帶來的 sequence 寫 checkpoint row |
+| Session 進 `completed` / `abandoned` | `DEL seq:checkpoint:{session_id}`（避免長期佔用）|
+| Redis key lost（重啟 etc.） | Fallback **必須原子**（避免並發 recovery race）：用 `SETNX seq:checkpoint:{session_id} <baseline>` 才不會 clobber 其他並發 recovery 已寫入的值，再 `INCR`。<br/>`baseline` = `GREATEST(max_persisted, max_in_flight)`<br/>`max_persisted` = `COALESCE((SELECT MAX(sequence) FROM checkpoints WHERE creation_session_id=?), 0)`<br/>`max_in_flight` = `COALESCE((SELECT MAX((input_payload->>'sequence')::int) FROM tasks WHERE input_payload->>'session_id'=? AND task_type='create_checkpoint' AND status NOT IN ('cancelled','failed','completed')), 0)`<br/>**必須包含 in-flight tasks** — 否則 queued/running task 已 reserved 的 sequence 會被新 task 重用，worker 寫入時撞 UNIQUE。<br/>**必須用 SETNX**（不是 SET）— 否則並發 recovery 兩個 request 都 SET=baseline 會把彼此的 INCR 結果蓋掉 |
+
+優點：原子、涵蓋 in-flight job、不需新 schema。
+
+替代方案考慮：
+- Postgres `FOR UPDATE` 鎖 session row 後 COUNT — 可行但鎖粒度較大，且 in-flight job 期間鎖不能釋放
+- 預先建 placeholder checkpoint row — 違反 schema `output_image_key NOT NULL` 與 DTO 無 status 欄位的設計
+- DB-backed sequence allocator（新表或 tasks 加 UNIQUE 欄位）— 見下方殘餘 race 討論
+
+#### 殘餘 race（Phase 1 接受）
+
+Redis INCR 與 task row 在 DB commit 之間有極小窗口（<毫秒級）：若 Redis 在 INCR 之後、task row commit 之前重啟，且**同時**有並發 recovery 進來，兩個 task 可能拿到同 sequence，worker 寫 checkpoint 時其中一個撞 `(creation_session_id, sequence)` UNIQUE。
+
+**Phase 1 接受此 race**：
+- 觸發條件複合：Redis 必須死於毫秒窗口內 + 並發 recovery，內部單機工具實際發生機率近 0
+- 失敗模式 retryable：worker 的 INSERT 撞 UNIQUE → task `failed` with `CONFLICT_SEQUENCE_RACE`（retryable=true）→ 使用者點重試 → 走正常 flow
+- 無資料遺失、無系統毀損
+- 「正規」修法（DB-backed allocator 或 tasks 加 UNIQUE(session_id, sequence) 欄位）需新 schema + transaction 邏輯，對 Phase 1 ROI 不合算
+
+**Phase 2 升級 hook**：若部署 Redis HA / 多 instance / 對外服務，此 race 變相關，屆時改 DB-backed sequence allocator 或在 tasks 表加 UNIQUE 約束。
+
 ---
 
 ## 4. U1 解：Estimated Duration

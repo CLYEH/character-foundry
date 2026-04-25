@@ -57,6 +57,7 @@
 | T-024 | Frontend Prompt preview modal (M-01) | TODO |
 | T-025 | Frontend Select Base + Character Detail (Base only) | TODO |
 | T-026 | E2E Character creation smoke test (template) | TODO |
+| T-027 | CharacterDetail DTO + frontend resume in-progress session | TODO |
 
 ### Sprint 3 — Aliases + Motions（尚未開單）
 三合一 Alias 輸入（含 Inpaint）、Preset + Custom motion。
@@ -98,7 +99,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | FB-3 | Storage URL expired 時 backend 要回對的 code | ✅ T-005 完成（`STORAGE_URL_EXPIRED` vs `AUTH_INVALID_TOKEN` 已分開） |
 | - | Visual design (Pencil mockup) | 之後需要再開 UX iteration 3 |
 | S2-1 | Slug-based URL（目前 `/characters/:id`）| Sprint 3/4 衡量 SEO/可分享性需求再做 |
-| S2-2 | CharacterDetail DTO 加 `creation_session: { id, status }` 讓 in-progress 角色可從 detail 頁恢復 session | 等真實使用情境出現再評估（現先在 detail 顯示 inline 錯誤）|
+| ~~S2-2~~ | ~~CharacterDetail DTO 加 `creation_session` 欄位~~ | ✅ 升為 Sprint 2 ticket T-027 |
 
 ---
 

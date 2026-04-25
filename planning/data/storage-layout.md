@@ -216,6 +216,26 @@ S3 backend 天生 atomic（single PUT operation）。
 
 S3：`S3Client.copy_object()`（server-side copy，不耗頻寬）。
 
+### 4.5 Fork checkpoint image copy（lifecycle 隔離）
+
+`POST /v1/checkpoints/{id}/fork` 從現有 checkpoint 開新 Character + Session，新 session 的第一個 checkpoint 需要 source 的 image。
+
+**規則：必須複製檔案到新 session namespace，不可共用 source key。**
+
+理由：
+- Source session 可能 `abandoned`，依 `lifecycle.md` 7 天後 cleanup 會 cascade-delete source checkpoints + 對應 storage 檔
+- Source checkpoint 對 fork 沒有 FK 保護（不像 `bases.from_checkpoint_id` 有 `ON DELETE RESTRICT`）
+- 共用 key 會讓新 character 的第一個 checkpoint 變 broken image
+
+| Storage backend | 實作 |
+|---|---|
+| LocalFilesystemBackend | `os.link()` 優先（inode 共享、空間零成本、source 刪除 link 仍保留），不支援時 fallback `shutil.copy2()` |
+| S3 | `S3Client.copy_object()` server-side copy |
+
+**只複製 image 檔案**（含 `_thumb.png`）。`prompt`、`generation_log_id` 等 metadata 純 reference 共用，不會被 cleanup 影響。
+
+對應 ticket：T-018（Sprint 2）。
+
 ---
 
 ## 5. 權限模型
