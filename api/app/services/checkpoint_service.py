@@ -30,6 +30,7 @@ from app.core.errors import (
     not_found_checkpoint,
     not_found_creation_session,
     not_found_reference_image,
+    queue_unavailable,
     validation_checkpoint_mode,
     validation_reference_image_required,
 )
@@ -283,7 +284,19 @@ async def enqueue_checkpoint(
         raise validation_reference_image_required()
 
     checkpoint_id = uuid.uuid4()
-    sequence = await sequence_service.reserve_next_sequence(db, redis, session_id=session.id)
+    # Reserve the next sequence number. The allocator does Redis I/O
+    # (EXISTS / SETNX / INCR), so a Redis outage raises here. Map to
+    # `queue_unavailable()` so callers get the same retryable contract
+    # they get for arq enqueue failures (Codex P1 round-9): both are
+    # "the Redis-backed infrastructure is unhealthy, retry shortly".
+    try:
+        sequence = await sequence_service.reserve_next_sequence(db, redis, session_id=session.id)
+    except Exception as exc:
+        _logger.exception(
+            "enqueue_checkpoint: sequence reservation failed for session %s",
+            session.id,
+        )
+        raise queue_unavailable() from exc
 
     payload: dict[str, object] = {
         "session_id": str(session.id),
