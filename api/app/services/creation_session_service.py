@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import not_found_creation_session
-from app.core.permissions import assert_can_read_character
 from app.models.checkpoint import Checkpoint
 from app.models.creation_session import CreationSession
 from app.models.user import User
@@ -57,7 +56,14 @@ async def get_session_for_read(
             # Character row vanished or was soft-deleted — surface as
             # not-found rather than expose orphaned-session state.
             raise not_found_creation_session()
-        assert_can_read_character(character, user)
+        # Inline the team check rather than reusing
+        # `assert_can_read_character` (which raises NOT_FOUND_CHARACTER):
+        # the endpoint contract is "session not found" — leaking a
+        # character-shaped error envelope on cross-team requests would
+        # let callers distinguish "session id maps to other-team
+        # character" from "session id is bogus" (Codex round-3 P2).
+        if character.team_id != user.team_id:
+            raise not_found_creation_session()
     elif session.initiator_id != user.id:
         raise not_found_creation_session()
 
