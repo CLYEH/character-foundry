@@ -68,6 +68,7 @@ async def run_noop(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
         # task to a terminal state (or the cancel route flipped it to
         # cancelled before pickup), do nothing rather than regressing the
         # row back to `running`. Same branch covers cooperative cancel.
+        published_terminal_after_retry_cancel = False
         if task.cancel_requested or task.status in _TERMINAL_STATUSES:
             # Codex P1 round-4: if cancel arrived between a failed first
             # attempt (which committed `running`) and this retry, the
@@ -76,6 +77,7 @@ async def run_noop(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
             # the row stays non-terminal forever.
             if task.cancel_requested and task.status == "running":
                 await task_repo.mark_cancelled(db, task_uuid)
+                published_terminal_after_retry_cancel = True
             _logger.info(
                 "run_noop: task %s already terminal (status=%s, cancel=%s); skipping",
                 task_id,
@@ -83,6 +85,18 @@ async def run_noop(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
                 task.cancel_requested,
             )
             await db.commit()
+
+            # Codex P2 round-5: SSE clients are likely still subscribed
+            # holding `cancel_pending` from the original cancel call.
+            # Publish the terminal `cancelled` event so they close the
+            # stream without falling back to REST polling. Best-effort.
+            if published_terminal_after_retry_cancel:
+                await _safe_publish(
+                    redis,
+                    task_uuid,
+                    {"status": "cancelled", "task_id": str(task_uuid)},
+                )
+
             return {
                 "task_id": task_id,
                 "ok": False,
