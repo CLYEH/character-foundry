@@ -22,6 +22,7 @@ from arq.connections import RedisSettings
 from app.core.redis_client import arq_redis_settings, get_redis
 from app.db.session import async_session_factory
 from app.workers.jobs.cleanup import cleanup_terminal_tasks
+from app.workers.jobs.create_checkpoint import run_create_checkpoint
 from app.workers.jobs.noop import run_noop
 
 _logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class WorkerSettings:
 
     redis_settings: RedisSettings = _resolve_redis_settings()
 
-    functions = [run_noop]
+    functions = [run_noop, run_create_checkpoint]
 
     # Run every hour on the minute. `minute={0}` is the supported way to
     # schedule a single firing per hour in arq.cron.

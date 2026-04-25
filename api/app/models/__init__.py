@@ -5,6 +5,7 @@ from .checkpoint import Checkpoint
 from .creation_session import CreationSession
 from .generation_log import GenerationLog
 from .motion import Motion
+from .reference_image import ReferenceImage
 from .refresh_token import RefreshToken
 from .task import Task
 from .team import Team
@@ -18,6 +19,7 @@ __all__ = [
     "CreationSession",
     "GenerationLog",
     "Motion",
+    "ReferenceImage",
     "RefreshToken",
     "Task",
     "Team",

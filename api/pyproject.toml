@@ -23,6 +23,8 @@ dependencies = [
     "arq>=0.26",
     # Slug generation: Chinese → pinyin transliteration (T-016).
     "pypinyin>=0.51",
+    # PIL for thumbnail generation in the create_checkpoint worker (T-017).
+    "Pillow>=10.4",
 ]
 
 [project.optional-dependencies]
