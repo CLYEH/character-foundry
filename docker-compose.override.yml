@@ -17,6 +17,15 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       TEST_DATABASE_URL: ${TEST_DATABASE_URL:-}
 
+  worker:
+    # Mirror the api service so worker code edits hot-reload would-be
+    # nice-to-have. arq doesn't auto-reload; restart `worker` after
+    # touching app/workers/* to pick up changes.
+    volumes:
+      - ./api/app:/app/app
+      - ./api/alembic:/app/alembic
+      - ./api/alembic.ini:/app/alembic.ini
+
   postgres:
     ports:
       - "5432:5432"

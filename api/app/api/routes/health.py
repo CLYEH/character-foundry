@@ -89,8 +89,9 @@ async def _check_redis(redis: Redis) -> CheckStatus:
     try:
         # redis-py types ping() as `Awaitable[bool] | bool` for the shared
         # sync/async code path; at runtime the async client always returns an
-        # awaitable.
-        await redis.ping()  # type: ignore[misc]
+        # awaitable. Newer stubs may type this directly as a coroutine, so we
+        # only ignore if mypy still flags the await.
+        await redis.ping()
         return "ok"
     except Exception:  # noqa: BLE001
         _logger.exception("health: redis check failed")
