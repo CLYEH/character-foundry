@@ -20,11 +20,31 @@ def _migrate_once(alembic_config, database_url: str) -> Iterator[None]:
 
 
 async def _purge_users(database_url: str) -> None:
+    """Clear users plus everything that references them, in FK order.
+
+    Adjacent test suites (T-017 worker, character routes, etc.) leave
+    rows in `characters` / `generation_logs` / `reference_images` that
+    have RESTRICT FKs onto `users`. A bare `DELETE FROM users` would
+    fail with a ForeignKeyViolationError; clean the descendants
+    first so the seed-e2e fixture stays robust to test ordering.
+    """
     engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
-            await conn.execute(text("DELETE FROM refresh_tokens"))
-            await conn.execute(text("DELETE FROM users"))
+            for table in (
+                "refresh_tokens",
+                "tasks",
+                "generation_logs",
+                "motions",
+                "aliases",
+                "bases",
+                "reference_images",
+                "checkpoints",
+                "creation_sessions",
+                "characters",
+                "users",
+            ):
+                await conn.execute(text(f"DELETE FROM {table}"))
     finally:
         await engine.dispose()
 

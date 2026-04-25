@@ -202,8 +202,17 @@ async def test_worker_cancel_before_image_does_not_write_checkpoint(
             )
             row = await task_repo.get(db, created.task.id)
             assert row is not None
+            # Mirror the real cancel-route case A (queued → cancelled):
+            # `task_service.cancel_task` sets BOTH cancel_requested AND
+            # status='cancelled' for a queued task. Setting just the
+            # flag would represent an incoherent state the route never
+            # produces — and the worker (correctly) wouldn't transition
+            # status from 'queued' on pickup.
+            now = datetime.now(UTC)
             row.cancel_requested = True
-            row.cancel_requested_at = datetime.now(UTC)
+            row.cancel_requested_at = now
+            row.status = "cancelled"
+            row.completed_at = now
             await db.commit()
 
         ctx = _ctx_for(factory, fake_redis, storage_root, ai_client=StubAIClient())
