@@ -30,6 +30,11 @@ JWT_SECRET = "test-jwt-secret-dont-use-in-prod"
 _TABLES_TO_CLEAN = (
     "refresh_tokens",
     "tasks",
+    # generation_logs has FK to users(RESTRICT) — clean before users.
+    # T-017's worker writes a row per successful checkpoint, so this
+    # suite (and any adjacent one running in the same session) needs
+    # the partition cleaned ahead of the user delete.
+    "generation_logs",
     "motions",
     "aliases",
     "bases",
