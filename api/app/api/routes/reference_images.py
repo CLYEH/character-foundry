@@ -9,6 +9,13 @@ The route is registered under the creation-sessions prefix (rather than
 a top-level `/reference-images` collection) because every reference is
 session-scoped: there's no cross-session catalogue, and ownership
 follows the session.
+
+DB connection lifetime: this route owns two short-lived `AsyncSession`s
+rather than depending on the request-scoped `db_session` (Codex P1
+round-6). Holding one session across a 10MB multipart read + storage
+write would pin a connection for the duration of the whole upload,
+which under concurrent traffic exhausts the pool. Same pattern that
+`tasks.py` SSE endpoint uses for its long-lived stream.
 """
 
 from __future__ import annotations
@@ -18,14 +25,14 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, UploadFile
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import db_session, get_current_user, get_storage
+from app.api.deps import get_current_user_no_pin, get_storage
 from app.core.errors import (
     validation_reference_image_too_large,
     validation_reference_image_undecodable,
     validation_reference_image_unsupported_type,
 )
+from app.db.session import async_session_factory
 from app.models.user import User
 from app.schemas.reference_image import ReferenceImageUploadResponse
 from app.services import checkpoint_service
@@ -57,23 +64,23 @@ _MIME_EXTENSION = {
 )
 async def upload_reference_image(
     session_id: uuid.UUID,
-    db: Annotated[AsyncSession, Depends(db_session)],
-    user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user_no_pin)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
     file: Annotated[UploadFile, File(...)],
 ) -> ReferenceImageUploadResponse:
-    # MIME validation first — cheap and gives the caller a fast reject.
+    # MIME validation first — cheap and gives the caller a fast reject
+    # before we even touch the DB.
     content_type = (file.content_type or "").lower()
     if content_type not in _ALLOWED_MIME_TYPES:
         raise validation_reference_image_unsupported_type()
 
-    # Authorization gate BEFORE we burn bandwidth + storage space on
-    # the upload (Codex P1 round-1). Previously this fired only inside
-    # the post-upload service call, so an unauthorized request still
-    # persisted up to 10MB before failing. Run the same checks the
-    # service uses; the second call inside the service is a cheap
-    # re-validate against the same row.
-    await checkpoint_service.assert_session_writable(db, user=user, session_id=session_id)
+    # Auth gate in a SHORT-LIVED session (Codex P1 round-6). Connection
+    # is returned to the pool the moment we exit this `async with`,
+    # before the multipart read starts. Same reason `tasks.py` SSE
+    # endpoint avoids `Depends(db_session)`.
+    factory = async_session_factory()
+    async with factory() as auth_db:
+        await checkpoint_service.assert_session_writable(auth_db, user=user, session_id=session_id)
 
     # Stream the upload into memory with an upper bound so a hostile
     # client can't blow up the worker by sending a 1 GB blob with a
@@ -100,8 +107,8 @@ async def upload_reference_image(
     # MIME types fail with a 400 next to the upload, not as a delayed
     # task failure when the worker calls `ensure_png_bytes` later
     # (Codex P2 round-2). We only need the validation side-effect — the
-    # raw bytes are still what we persist; PIL's lazy decode forces a
-    # full read on `.load()`.
+    # raw bytes are still what we persist; PIL's lazy decode is forced
+    # by the `.load()` call inside `ensure_png_bytes`.
     try:
         ensure_png_bytes(payload)
     except ValueError as exc:
@@ -116,16 +123,21 @@ async def upload_reference_image(
     storage.put(storage_key, payload, content_type)
     signed_url = storage.get_signed_url(storage_key, expires_in_seconds=3600)
 
-    created = await checkpoint_service.upload_reference_image(
-        db,
-        user=user,
-        session_id=session_id,
-        reference_id=reference_id,
-        storage_key=storage_key,
-        mime_type=content_type,
-        size_bytes=total,
-        signed_url=signed_url,
-    )
+    # Second short-lived session for the row insert. Re-runs
+    # `_get_writable_session` inside `upload_reference_image` —
+    # cheap and re-validates against the latest state (the session
+    # could have been abandoned during the multipart read).
+    async with factory() as insert_db:
+        created = await checkpoint_service.upload_reference_image(
+            insert_db,
+            user=user,
+            session_id=session_id,
+            reference_id=reference_id,
+            storage_key=storage_key,
+            mime_type=content_type,
+            size_bytes=total,
+            signed_url=signed_url,
+        )
     return ReferenceImageUploadResponse(
         reference_image_id=created.reference.id,
         url=signed_url,
