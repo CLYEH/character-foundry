@@ -383,6 +383,79 @@ async def test_list_user_tasks_filters_by_status(
 
 
 @pytest.mark.asyncio
+async def test_cancel_succeeds_even_when_redis_publish_raises(
+    db_session: Any,
+    seeded_user: dict[str, Any],
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """Codex P2 fix: post-commit Redis publish failures must NOT bubble
+    up as 500. The DB transition is already persisted; the API contract
+    is that cancel returned a state change. SSE listeners reconcile via
+    polling on retry."""
+
+    class ExplodingRedis:
+        async def publish(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("redis down")
+
+    created = await task_service.create_task(
+        db_session,
+        fake_arq_pool,  # type: ignore[arg-type]
+        user_id=seeded_user["id"],
+        task_type="create_alias",
+        input_payload={},
+    )
+
+    # Should NOT raise even though publish blows up.
+    result = await task_service.cancel_task(
+        db_session,
+        ExplodingRedis(),  # type: ignore[arg-type]
+        fake_arq_pool,  # type: ignore[arg-type]
+        task_id=created.task.id,
+        user_id=seeded_user["id"],
+    )
+
+    assert result.cancel_outcome == "cancelled_immediately"
+    refreshed = await task_repo.get(db_session, created.task.id)
+    assert refreshed is not None
+    assert refreshed.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_pending_succeeds_even_when_redis_publish_raises(
+    db_session: Any,
+    seeded_user: dict[str, Any],
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """Same Codex P2 contract for the running → cancel_pending path."""
+
+    class ExplodingRedis:
+        async def publish(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("redis down")
+
+    created = await task_service.create_task(
+        db_session,
+        fake_arq_pool,  # type: ignore[arg-type]
+        user_id=seeded_user["id"],
+        task_type="create_motion",
+        input_payload={},
+    )
+    await task_repo.mark_running(db_session, created.task.id)
+    await db_session.commit()
+
+    result = await task_service.cancel_task(
+        db_session,
+        ExplodingRedis(),  # type: ignore[arg-type]
+        fake_arq_pool,  # type: ignore[arg-type]
+        task_id=created.task.id,
+        user_id=seeded_user["id"],
+    )
+    assert result.cancel_outcome == "cancel_pending"
+    refreshed = await task_repo.get(db_session, created.task.id)
+    assert refreshed is not None
+    assert refreshed.cancel_requested is True
+
+
+@pytest.mark.asyncio
 async def test_create_task_marks_failed_when_enqueue_raises(
     db_session: Any,
     seeded_user: dict[str, Any],

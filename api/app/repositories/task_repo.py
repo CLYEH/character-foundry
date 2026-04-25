@@ -46,13 +46,18 @@ async def get_owned_for_update(
     """Same as `get_owned` but takes a row-level lock for the duration of
     the surrounding transaction. Used by cancel where we need to read +
     transition state in one TX to avoid racing with the worker.
+
+    `user_id` is part of the WHERE clause (not just a post-fetch check)
+    so cross-user requests don't briefly hold a `FOR UPDATE` lock on the
+    real owner's row before returning 404 (Codex P1 review).
     """
-    stmt = select(Task).where(Task.id == task_id).with_for_update()
+    stmt = (
+        select(Task)
+        .where(Task.id == task_id, Task.user_id == user_id)
+        .with_for_update()
+    )
     result = await db.execute(stmt)
-    task = result.scalar_one_or_none()
-    if task is None or task.user_id != user_id:
-        return None
-    return task
+    return result.scalar_one_or_none()
 
 
 async def list_for_user(

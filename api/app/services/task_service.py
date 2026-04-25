@@ -248,8 +248,12 @@ async def cancel_task(
     await db.commit()
     await db.refresh(task)
 
-    # Side effects after commit so a Redis hiccup never leaves the DB +
-    # queue out of sync.
+    # Side effects after commit must be best-effort (Codex P2 review):
+    # the DB is the source of truth for cancel state, and propagating
+    # a Redis publish error as a 500 would surface "failed cancel" to
+    # the client even though the task is already cancelled in the DB.
+    # SSE listeners reconcile via the next poll / refresh; the worker
+    # also re-checks `cancel_requested` cooperatively.
     if outcome == "cancelled_immediately":
         try:
             await _abort_queued_arq_job(arq_pool, str(task_id))
@@ -257,22 +261,39 @@ async def cancel_task(
             _logger.exception(
                 "cancel: arq abort failed; cooperative worker check will catch this on pickup",
             )
-        await publish_task_event(
-            redis,
-            task_id,
-            {"status": "cancelled", "task_id": str(task_id)},
-        )
+        try:
+            await publish_task_event(
+                redis,
+                task_id,
+                {"status": "cancelled", "task_id": str(task_id)},
+            )
+        except Exception:  # noqa: BLE001 — best-effort; SSE clients reconcile via poll
+            _logger.exception(
+                "cancel: redis publish failed for cancelled_immediately on task %s",
+                task_id,
+            )
     elif outcome == "cancel_pending":
-        await publish_task_cancel(redis, task_id)
-        await publish_task_event(
-            redis,
-            task_id,
-            {
-                "status": "running",
-                "cancel_requested": True,
-                "task_id": str(task_id),
-            },
-        )
+        try:
+            await publish_task_cancel(redis, task_id)
+        except Exception:  # noqa: BLE001 — best-effort
+            _logger.exception(
+                "cancel: redis publish_task_cancel failed for task %s", task_id
+            )
+        try:
+            await publish_task_event(
+                redis,
+                task_id,
+                {
+                    "status": "running",
+                    "cancel_requested": True,
+                    "task_id": str(task_id),
+                },
+            )
+        except Exception:  # noqa: BLE001 — best-effort
+            _logger.exception(
+                "cancel: redis publish_task_event failed for cancel_pending on task %s",
+                task_id,
+            )
 
     return CancelResult(task=task, cancel_outcome=outcome)
 
