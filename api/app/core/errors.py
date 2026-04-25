@@ -146,3 +146,40 @@ def auth_refresh_revoked() -> AgentErrorException:
         ),
         status_code=401,
     )
+
+
+# ---------------------------------------------------------------------------
+# Task-related errors. NOT_FOUND_TASK is also used for "task exists but is
+# owned by someone else" — leaking ownership would let agents probe other
+# users' job IDs.
+# ---------------------------------------------------------------------------
+
+
+def not_found_task() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_TASK",
+            message="找不到此任務",
+            problem="No task with the given id is visible to the caller.",
+            cause="Either the task id is wrong, the task was already cleaned up "
+            "(terminal-state retention is 24h), or the task belongs to another user.",
+            fix="Re-fetch the task list via GET /v1/tasks, or verify the id.",
+            retryable=False,
+        ),
+        status_code=404,
+    )
+
+
+def conflict_task_already_terminal() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="CONFLICT_TASK_ALREADY_TERMINAL",
+            message="任務已結束，無法取消",
+            problem="Task is already in a terminal state (completed/failed/cancelled) "
+            "and cancel was previously acknowledged.",
+            cause="Cancel was called on a task that has nothing left to cancel.",
+            fix="Inspect the task via GET /v1/tasks/{id} for the final result or error.",
+            retryable=False,
+        ),
+        status_code=409,
+    )

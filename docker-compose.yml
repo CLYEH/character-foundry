@@ -38,6 +38,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  worker:
+    # Same image as `api` so handlers share the codebase + dependencies.
+    # Worker speaks arq's Redis protocol directly; it does NOT serve HTTP.
+    build:
+      context: ./api
+    command: ["arq", "app.workers.arq_worker.WorkerSettings"]
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   web:
     build:
       context: ./web
