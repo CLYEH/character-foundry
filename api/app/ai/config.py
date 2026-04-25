@@ -88,6 +88,30 @@ def openai_api_base() -> str:
     return os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
 
 
+# Reconciler (gpt-5-mini) tuning — shared OPENAI_API_KEY with gpt-image-2.
+# Defaults match planning/backend/prompt-reconciler.md §4 and
+# planning/devops/environment-variables.md §2.2.
+def reconciler_model() -> str:
+    return os.environ.get("RECONCILER_MODEL", "gpt-5-mini")
+
+
+def reconciler_timeout_seconds() -> float:
+    return _int_env("RECONCILER_TIMEOUT_MS", default=30_000) / 1000.0
+
+
+def reconciler_max_retries() -> int:
+    """Retry attempts after the initial call (so total = retries + 1).
+
+    Allows `0` so operators can disable retries during incidents without
+    code changes (matches the gpt-image-2 knob).
+    """
+    return _int_env("RECONCILER_MAX_RETRIES", default=3, min_value=0)
+
+
+def reconciler_max_tokens() -> int:
+    return _int_env("RECONCILER_MAX_TOKENS", default=800)
+
+
 # Circuit-breaker tuning. Values default to ai-integration.md §3.4 numbers.
 def circuit_failure_threshold() -> int:
     return _int_env("AI_CIRCUIT_FAILURE_THRESHOLD", default=5)
