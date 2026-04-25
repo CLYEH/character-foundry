@@ -514,16 +514,18 @@ async def test_create_task_marks_failed_when_enqueue_raises(
     seeded_user: dict[str, Any],
 ) -> None:
     """Codex P2 fix: if arq enqueue_job raises (Redis down), the task
-    row must NOT be left in a stuck `queued` state. The service should
-    mark the row failed with `QUEUE_UNAVAILABLE` and re-raise so the
-    caller sees an explicit error rather than silently orphaned work.
+    row must NOT be left in a stuck `queued` state. The service marks
+    the row failed with `QUEUE_UNAVAILABLE` and raises the matching
+    structured AgentError (Codex P2 round-8 — was previously the bare
+    provider exception, which forced every caller to wrap it).
     """
+    from app.core.errors import AgentErrorException
 
     class ExplodingPool:
         async def enqueue_job(self, *_args: Any, **_kwargs: Any) -> None:
             raise RuntimeError("redis unreachable")
 
-    with pytest.raises(RuntimeError, match="redis unreachable"):
+    with pytest.raises(AgentErrorException) as exc_info:
         await task_service.create_task(
             db_session,
             ExplodingPool(),  # type: ignore[arg-type]
@@ -531,6 +533,9 @@ async def test_create_task_marks_failed_when_enqueue_raises(
             task_type="create_alias",
             input_payload={"x": 1},
         )
+    assert exc_info.value.error.code == "QUEUE_UNAVAILABLE"
+    assert exc_info.value.error.retryable is True
+    assert exc_info.value.status_code == 503
 
     # Hunt for the orphan row that would have been left without the fix.
     rows = await task_service.list_user_tasks(db_session, user_id=seeded_user["id"])
