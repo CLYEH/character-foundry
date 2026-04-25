@@ -452,7 +452,13 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
             checkpoint_id = uuid.UUID(str(payload["checkpoint_id"]))
             session_id = uuid.UUID(str(payload["session_id"]))
             output_key = _checkpoint_storage_key(session_id, checkpoint_id)
+            thumb_key = thumbnail_key_for(output_key)
             storage.put(output_key, ai_result.image_bytes, _CONTENT_TYPE_PNG)
+            # Tracks whether the freshly-written files belong to a row
+            # that didn't make it. We flip this off the moment a row
+            # commits referencing them (Codex P2 round-4 — orphan
+            # storage cleanup on DB rollback).
+            output_orphaned = True
 
             # Thumbnail — best-effort. PIL failure or storage write
             # failure logs a warning and continues; the DTO returns
@@ -460,11 +466,7 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
             thumb_bytes = make_thumbnail_png(ai_result.image_bytes)
             if thumb_bytes is not None:
                 try:
-                    storage.put(
-                        thumbnail_key_for(output_key),
-                        thumb_bytes,
-                        _CONTENT_TYPE_PNG,
-                    )
+                    storage.put(thumb_key, thumb_bytes, _CONTENT_TYPE_PNG)
                 except StorageError:
                     _logger.warning("create_checkpoint: thumbnail put failed for %s", output_key)
 
@@ -489,55 +491,94 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                 list(log_input_keys) if log_input_keys else None
             )
 
-            async with session_factory() as db:
-                log_row = await generation_log_repo.insert_success(
-                    db,
-                    user_id=user_id,
-                    character_id=character_id_uuid,
-                    entity_type="checkpoint",
-                    entity_id=checkpoint_id,
-                    model_name="gpt-image-2",
-                    model_version=ai_result.model_version,
-                    final_prompt=final_prompt,
-                    input_image_keys=input_image_keys_for_log,
-                    parameters={
-                        "image_mode": image_mode,
-                        "seed": seed_int,
-                    },
-                    cost_units=ai_result.cost_units,
-                    duration_ms=ai_result.duration_ms,
-                    started_at=started_at,
-                    completed_at=datetime.now(UTC),
-                )
-                try:
-                    checkpoint_row = await checkpoint_repo.insert(
+            try:
+                async with session_factory() as db:
+                    log_row = await generation_log_repo.insert_success(
                         db,
-                        checkpoint_id=checkpoint_id,
-                        creation_session_id=session_id,
-                        sequence=int(payload["sequence"]),
-                        prompt=final_prompt,
-                        user_menu_selections=payload.get("menu_selections"),
-                        user_freeform_note=payload.get("freeform_note"),
-                        reference_image_keys=row_ref_keys or None,
-                        seed=str(seed_int) if seed_int is not None else None,
-                        output_image_key=output_key,
-                        generation_log_id=log_row.id,
+                        user_id=user_id,
+                        character_id=character_id_uuid,
+                        entity_type="checkpoint",
+                        entity_id=checkpoint_id,
+                        model_name="gpt-image-2",
+                        model_version=ai_result.model_version,
+                        final_prompt=final_prompt,
+                        input_image_keys=input_image_keys_for_log,
+                        parameters={
+                            "image_mode": image_mode,
+                            "seed": seed_int,
+                        },
+                        cost_units=ai_result.cost_units,
+                        duration_ms=ai_result.duration_ms,
+                        started_at=started_at,
+                        completed_at=datetime.now(UTC),
                     )
-                    await db.commit()
-                except IntegrityError as exc:
-                    # The accepted residual race in the sequence
-                    # allocator (planning task-queue.md §3.5) lands
-                    # here as a `(creation_session_id, sequence)`
-                    # UNIQUE collision. Map to the dedicated
-                    # CONFLICT_SEQUENCE_RACE so clients get the
-                    # retryable signal instead of the catch-all
-                    # INTERNAL_UNEXPECTED_ERROR (Codex P2 round-2).
-                    await db.rollback()
-                    if "uq_session_sequence" in str(exc.orig or exc):
-                        raise conflict_sequence_race() from exc
-                    raise
-                await db.refresh(checkpoint_row)
-                checkpoint_dto = build_checkpoint_dto(checkpoint_row, storage)
+                    try:
+                        checkpoint_row = await checkpoint_repo.insert(
+                            db,
+                            checkpoint_id=checkpoint_id,
+                            creation_session_id=session_id,
+                            sequence=int(payload["sequence"]),
+                            prompt=final_prompt,
+                            user_menu_selections=payload.get("menu_selections"),
+                            user_freeform_note=payload.get("freeform_note"),
+                            reference_image_keys=row_ref_keys or None,
+                            seed=str(seed_int) if seed_int is not None else None,
+                            output_image_key=output_key,
+                            generation_log_id=log_row.id,
+                        )
+                        await db.commit()
+                        # Files now belong to a committed row.
+                        output_orphaned = False
+                    except IntegrityError as exc:
+                        await db.rollback()
+                        err_text = str(exc.orig or exc)
+                        # Idempotent retry: arq retried after a previous
+                        # attempt committed the checkpoint row but died
+                        # before `mark_completed`. PK collision means the
+                        # row already exists with this checkpoint_id, so
+                        # the work is done — load the row and proceed
+                        # to the success branch (Codex P1 round-4). The
+                        # storage.put we just did overwrote identical
+                        # bytes for the same key, so the files are still
+                        # the canonical row's outputs.
+                        if "checkpoints_pkey" in err_text:
+                            existing = await checkpoint_repo.get(db, checkpoint_id)
+                            if existing is not None:
+                                checkpoint_row = existing
+                                output_orphaned = False
+                                _logger.info(
+                                    "create_checkpoint: idempotent retry — "
+                                    "checkpoint %s already committed; reusing row",
+                                    checkpoint_id,
+                                )
+                            else:
+                                # PK says exists but row vanished — race
+                                # with concurrent delete. Re-raise.
+                                raise
+                        elif "uq_session_sequence" in err_text:
+                            # The accepted residual race in the
+                            # sequence allocator (task-queue.md §3.5).
+                            # Surface as the dedicated retryable code
+                            # instead of INTERNAL_UNEXPECTED_ERROR
+                            # (Codex P2 round-2).
+                            raise conflict_sequence_race() from exc
+                        else:
+                            raise
+                    await db.refresh(checkpoint_row)
+                    checkpoint_dto = build_checkpoint_dto(checkpoint_row, storage)
+            finally:
+                if output_orphaned:
+                    # Cleanup files written in step 3 when no committed
+                    # row references them (Codex P2 round-4). Targets
+                    # both keys; storage.delete is idempotent.
+                    for stale_key in (output_key, thumb_key):
+                        try:
+                            storage.delete(stale_key)
+                        except StorageError:
+                            _logger.warning(
+                                "create_checkpoint: orphan cleanup failed for %s",
+                                stale_key,
+                            )
 
         # progress_publisher CM exit happens before mark_completed so the
         # final 1.0 / completed events arrive in the right order.
