@@ -21,6 +21,8 @@ dependencies = [
     "redis>=5.0",
     "pyyaml>=6.0",
     "arq>=0.26",
+    # Slug generation: Chinese → pinyin transliteration (T-016).
+    "pypinyin>=0.51",
 ]
 
 [project.optional-dependencies]
