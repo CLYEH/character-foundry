@@ -13,6 +13,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session, get_current_user
@@ -64,8 +65,10 @@ async def _maybe_redis(request: Request) -> Redis | None:
 
 
 async def _resolve_owner(db: AsyncSession, user_id: uuid.UUID) -> User:
-    """Look up the embedded `owner` block. We cache the caller's own
-    record via the dependency and only re-fetch for cross-owner rows."""
+    """Look up the embedded `owner` block. Used for single-character
+    paths (detail, patch, restore). The list path bypasses this and
+    batch-loads owners via `_owners_by_ids` to avoid N+1 (Codex
+    round-7 P2)."""
     user = await db.get(User, user_id)
     if user is None:
         # The owner_id FK is RESTRICT, so this is theoretically
@@ -73,6 +76,48 @@ async def _resolve_owner(db: AsyncSession, user_id: uuid.UUID) -> User:
         # synthesize a minimal stand-in. The DTO requires `id + name`.
         return User(id=user_id, name="(unknown)", team_id=uuid.UUID(int=0))
     return user
+
+
+async def _owners_by_ids(db: AsyncSession, user_ids: set[uuid.UUID]) -> dict[uuid.UUID, User]:
+    """Bulk-fetch users for a set of ids. One round-trip; the list
+    endpoint uses this to build owner summaries without `db.get` per
+    row (Codex round-7 P2 — N+1 on team-wide lists with many distinct
+    owners). Empty input short-circuits to an empty dict."""
+    if not user_ids:
+        return {}
+    stmt = select(User).where(User.id.in_(user_ids))
+    result = await db.execute(stmt)
+    return {u.id: u for u in result.scalars().all()}
+
+
+def _owner_summary_from(owner_id: uuid.UUID, owners: dict[uuid.UUID, User]) -> OwnerSummary:
+    """Same fall-through as `_resolve_owner` for the rare missing-row
+    case (FK is RESTRICT so it shouldn't happen in practice)."""
+    user = owners.get(owner_id)
+    name = user.name if user is not None else "(unknown)"
+    return OwnerSummary(id=owner_id, name=name)
+
+
+def _character_to_dto_with_owners(
+    character: Character, owners: dict[uuid.UUID, User]
+) -> CharacterDTO:
+    """List-path DTO builder — synchronous; takes a pre-fetched owner
+    lookup so the caller can amortize the user query across the page.
+    Single-character paths still go through `_character_to_dto` which
+    does its own `_resolve_owner` lookup."""
+    return CharacterDTO(
+        id=character.id,
+        name=character.name,
+        slug=character.slug,
+        owner=_owner_summary_from(character.owner_id, owners),
+        # Sprint 2 placeholder — T-018 backfills via the bases table.
+        base_thumbnail_url=None,
+        # Sprint 2 placeholders — T-019 / T-020 backfill these.
+        alias_count=0,
+        motion_count=0,
+        created_at=character.created_at,
+        updated_at=character.updated_at,
+    )
 
 
 async def _character_to_dto(db: AsyncSession, character: Character) -> CharacterDTO:
@@ -174,7 +219,11 @@ async def list_characters(
         limit=limit,
         cursor_str=cursor,
     )
-    items = [await _character_to_dto(db, c) for c in result.items]
+    # Bulk-fetch the unique owners in one round-trip so DTO assembly
+    # is O(1) DB work, not O(page size). Codex round-7 P2.
+    owner_ids = {c.owner_id for c in result.items}
+    owners = await _owners_by_ids(db, owner_ids)
+    items = [_character_to_dto_with_owners(c, owners) for c in result.items]
     return CharacterListResponse(items=items, next_cursor=result.next_cursor)
 
 
