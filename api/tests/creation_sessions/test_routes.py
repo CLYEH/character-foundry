@@ -62,3 +62,26 @@ def test_get_session_visible_to_same_team_member(
         headers=auth_headers(second_access_token),
     )
     assert resp.status_code == 200
+
+
+def test_get_session_404_after_character_soft_deleted(
+    client: TestClient, access_token: str
+) -> None:
+    """Codex round-2 P2: soft-deleting the character must hide its
+    session from the public read surface. Ticket note "若 character
+    已刪，session 不對外出" — internal fork paths can still find the
+    row through their own repo call, but `GET /v1/creation-sessions/{id}`
+    must collapse to 404 once the linked character is soft-deleted."""
+    body = _create_character(client, access_token)
+    char_id = body["character"]["id"]
+    session_id = body["creation_session"]["id"]
+
+    delete = client.delete(f"/v1/characters/{char_id}", headers=auth_headers(access_token))
+    assert delete.status_code == 204
+
+    resp = client.get(
+        f"/v1/creation-sessions/{session_id}",
+        headers=auth_headers(access_token),
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND_CREATION_SESSION"

@@ -47,9 +47,14 @@ async def get_session_for_read(
     # the pair atomically, but keep the guard for forward compat),
     # only the initiator can read.
     if session.character_id is not None:
-        character = await character_repo.get_including_deleted(db, session.character_id)
+        # `get_active` (not `get_including_deleted`) so a soft-deleted
+        # character collapses the session to 404. Per the T-016 ticket
+        # note: "若 character 已刪，session 不對外出" — internal fork
+        # paths still need the deleted row, but they go through their
+        # own repo call rather than this read-side surface.
+        character = await character_repo.get_active(db, session.character_id)
         if character is None:
-            # Character row vanished from under the session — surface as
+            # Character row vanished or was soft-deleted — surface as
             # not-found rather than expose orphaned-session state.
             raise not_found_creation_session()
         assert_can_read_character(character, user)
