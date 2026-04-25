@@ -73,16 +73,25 @@ async def _get_writable_session(
     if session is None:
         raise not_found_creation_session()
 
-    # Cross-team mismatch → 404 to keep the team boundary opaque. The
-    # session may be character-attached or character-less; fall through
-    # to the initiator check for the latter.
     if session.character_id is not None:
+        # Character-attached session: cross-team mismatch is 404 (don't
+        # leak team boundaries), same-team-but-non-initiator is 403 so
+        # the frontend can render "view only" affordances.
         character = await character_repo.get_active(db, session.character_id)
         if character is None or character.team_id != user.team_id:
             raise not_found_creation_session()
-
-    if session.initiator_id != user.id:
-        raise auth_insufficient_permission()
+        if session.initiator_id != user.id:
+            raise auth_insufficient_permission()
+    else:
+        # Character-less session: visible only to its initiator. Any
+        # other caller — even on the same team — sees 404, not 403.
+        # Otherwise a cross-team request would leak that the id exists
+        # and break the function's "cross-team mismatch → 404" contract
+        # (Codex P2 round-11). The 403 path is reserved for cases where
+        # the caller has clear cross-team-but-not-owner standing, which
+        # only the character-attached branch can establish.
+        if session.initiator_id != user.id:
+            raise not_found_creation_session()
 
     if session.status != "in_progress":
         # An abandoned / completed session can be GETd but not mutated.
