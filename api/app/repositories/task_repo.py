@@ -123,10 +123,15 @@ async def transition_queued_to_running(db: AsyncSession, task_id: uuid.UUID) -> 
             Task.cancel_requested.is_(False),
         )
         .values(status="running", started_at=func.now())
+        .returning(Task.id)
         .execution_options(synchronize_session=False)
     )
+    # `RETURNING id` lets us check transition success via the public
+    # typed `Result.scalar_one_or_none()` API instead of poking
+    # `rowcount` (which lives on `CursorResult` and trips mypy on the
+    # broader `Result[...]` return type of AsyncSession.execute).
     result = await db.execute(stmt)
-    return (result.rowcount or 0) > 0
+    return result.scalar_one_or_none() is not None
 
 
 async def mark_completed(

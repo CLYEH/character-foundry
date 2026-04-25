@@ -32,12 +32,18 @@ async def cleanup_terminal_tasks(ctx: dict[str, Any]) -> dict[str, int]:
                 Task.completed_at.is_not(None),
                 Task.completed_at < text("NOW() - INTERVAL '24 hours'"),
             )
+            .returning(Task.id)
             .execution_options(synchronize_session=False)
         )
+        # `RETURNING id` lets us count via the public typed
+        # `result.scalars().all()` instead of `rowcount`, which lives
+        # on CursorResult and trips mypy on the broader Result[...]
+        # return type of AsyncSession.execute.
         result = await db.execute(stmt)
+        deleted_ids = result.scalars().all()
         await db.commit()
 
-    deleted = result.rowcount or 0
+    deleted = len(deleted_ids)
     if deleted:
         _logger.info("cleanup_terminal_tasks: deleted %d task rows", deleted)
     return {"deleted": deleted}
