@@ -61,21 +61,56 @@ async def test_raise_if_open_passes_when_closed(
     await breaker.raise_if_open()
 
 
-async def test_record_success_clears_state(
+async def test_record_success_clears_failure_counter(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
+    """Success drops the accumulated-failure ZSET so old transient errors
+    don't keep contributing to the next OPEN."""
     breaker = CircuitBreaker("gpt-image-2", fake_redis)
-    breaker.failure_threshold = 5
+    breaker.failure_threshold = 10  # well above what we'll write
 
-    for _ in range(5):
+    for _ in range(3):
         await breaker.record_failure()
-    assert await fake_redis.get("degraded:gpt-image-2") is not None
+    assert await fake_redis.zcard("circuit:gpt-image-2:failures") == 3
 
     await breaker.record_success()
 
-    assert await fake_redis.get("degraded:gpt-image-2") is None
+    assert await fake_redis.zcard("circuit:gpt-image-2:failures") == 0
     state = await breaker.get_state()
-    assert state.is_open is False
+    assert state.failure_count == 0
+
+
+async def test_record_success_does_not_close_open_circuit_during_burst(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Codex P1 round-2 regression: a late in-flight success must not
+    clear the public `degraded:{model}` key. Otherwise a successful
+    response from a CLOSED-era call landing after a concurrent burst
+    tripped the breaker would race the OPEN state shut, letting
+    subsequent calls resume hammering the unhealthy provider before
+    its 300s cool-down elapsed.
+    """
+    breaker = CircuitBreaker("gpt-image-2", fake_redis)
+    breaker.failure_threshold = 5
+
+    # Simulate the concurrent burst: 5 failures trip OPEN.
+    for _ in range(5):
+        await breaker.record_failure()
+    degraded_before = await fake_redis.get("degraded:gpt-image-2")
+    assert degraded_before is not None
+
+    # Late-arriving success from a CLOSED-era call.
+    await breaker.record_success()
+
+    # Public degraded key MUST still exist — TTL drives recovery, not the
+    # late success.
+    degraded_after = await fake_redis.get("degraded:gpt-image-2")
+    assert degraded_after is not None
+    assert degraded_after == degraded_before
+    state = await breaker.get_state()
+    assert state.is_open is True
+    # Internal failure counter is still cleared so post-recovery calls
+    # don't inherit ancient timestamps.
     assert state.failure_count == 0
 
 

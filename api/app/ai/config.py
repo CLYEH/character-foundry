@@ -20,7 +20,13 @@ def _bool_env(name: str, *, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _int_env(name: str, *, default: int) -> int:
+def _int_env(name: str, *, default: int, min_value: int = 1) -> int:
+    """Parse an int env var; fall back to `default` on missing / garbage / below min.
+
+    `min_value` guards against operationally-meaningless zeros for things
+    like timeouts, but callers that *want* zero (e.g. retries-disabled)
+    pass `min_value=0` explicitly. Codex P2 round-2.
+    """
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
         return default
@@ -28,7 +34,7 @@ def _int_env(name: str, *, default: int) -> int:
         value = int(raw)
     except ValueError:
         return default
-    return value if value > 0 else default
+    return value if value >= min_value else default
 
 
 def stub_mode_enabled() -> bool:
@@ -53,8 +59,12 @@ def gpt_image_2_timeout_seconds() -> float:
 
 
 def gpt_image_2_max_retries() -> int:
-    """Retry attempts after the initial call (so total = retries + 1)."""
-    return _int_env("GPT_IMAGE_2_MAX_RETRIES", default=3)
+    """Retry attempts after the initial call (so total = retries + 1).
+
+    Allows `0` so operators can disable retries during incidents / load tests
+    without code changes (Codex P2 round-2).
+    """
+    return _int_env("GPT_IMAGE_2_MAX_RETRIES", default=3, min_value=0)
 
 
 def openai_api_base() -> str:

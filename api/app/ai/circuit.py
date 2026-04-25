@@ -102,9 +102,20 @@ class CircuitBreaker:
             raise model_unavailable(self.model, cause=cause)
 
     async def record_success(self) -> None:
-        """Closing-the-loop event: a call succeeded, drop all failure history."""
+        """A call succeeded — drop accumulated failures so a single recent
+        glitch can't accumulate toward OPEN once the system is healthy again.
+
+        Codex P1 round-2: deliberately does NOT delete `degraded:{model}`.
+        Concurrent calls can race: A starts while CLOSED, B…F start in
+        parallel, B…F fail and trip the breaker OPEN, A completes
+        successfully *after*. If success cleared the OPEN key, the circuit
+        would close instantly on a stale in-flight result and subsequent
+        calls would resume hammering an unhealthy provider before its 300s
+        cool-down elapsed. Let the TTL be authoritative for OPEN→CLOSED
+        recovery; failures past the 60s window are trimmed naturally on
+        the next `record_failure()`.
+        """
         await self.redis.delete(_failures_key(self.model))
-        await self.redis.delete(_degraded_key(self.model))
 
     async def record_failure(self) -> bool:
         """Add a failure timestamp. Returns True if this trip opened the circuit.
