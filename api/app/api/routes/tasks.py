@@ -33,7 +33,7 @@ from fastapi.responses import StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import db_session, get_current_user
+from app.api.deps import db_session, get_current_user, get_current_user_no_pin
 from app.core.errors import not_found_task
 from app.core.redis_client import (
     get_arq_pool,
@@ -246,15 +246,21 @@ async def _stream_task_events(
 async def stream_task(
     task_id: uuid.UUID,
     redis: Annotated[Redis, Depends(get_redis)],
-    user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user_no_pin)],
 ) -> StreamingResponse:
     """Open an SSE stream for a task.
 
-    No `Depends(db_session)` here on purpose (Codex P1 #2): yield-based
-    deps are released only after the response finishes, which for SSE
-    means "after the client disconnects". We open a short-lived
-    session for the existence + ownership check and close it before
-    handing the response off to StreamingResponse.
+    Auth uses `get_current_user_no_pin` (Codex P1 round-4): the
+    standard `get_current_user` chains through `Depends(db_session)`,
+    which would still pin a DB connection for the entire stream
+    lifetime even though THIS function doesn't take `db` directly.
+    The no-pin variant opens its own short-lived session for the
+    user lookup and closes it before this handler runs.
+
+    The existence + ownership check below also uses a short-lived
+    session, closed before we hand the response off to
+    StreamingResponse — so no DB connection is held during the
+    actual streaming.
     """
     factory = async_session_factory()
     async with factory() as db:

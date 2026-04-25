@@ -69,6 +69,13 @@ async def run_noop(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
         # cancelled before pickup), do nothing rather than regressing the
         # row back to `running`. Same branch covers cooperative cancel.
         if task.cancel_requested or task.status in _TERMINAL_STATUSES:
+            # Codex P1 round-4: if cancel arrived between a failed first
+            # attempt (which committed `running`) and this retry, the
+            # row is currently `running` with cancel_requested=True. We
+            # must persist `cancelled` here or the retry returns ok and
+            # the row stays non-terminal forever.
+            if task.cancel_requested and task.status == "running":
+                await task_repo.mark_cancelled(db, task_uuid)
             _logger.info(
                 "run_noop: task %s already terminal (status=%s, cancel=%s); skipping",
                 task_id,

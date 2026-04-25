@@ -146,6 +146,52 @@ async def test_run_noop_completes_even_when_publish_raises(
 
 
 @pytest.mark.asyncio
+async def test_run_noop_marks_cancelled_when_retry_sees_cancel_on_running_row(
+    database_url: str,
+    seeded_user: dict[str, Any],
+    fake_redis: Any,
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """Codex P1 round-4: prior attempt committed status='running' then
+    failed; user calls cancel between attempts -> cancel_requested=True
+    on a running row; arq retries. The retry must persist `cancelled`
+    so the row doesn't stay non-terminal forever."""
+    engine, factory = _factory_for(database_url)
+    try:
+        async with factory() as db:
+            created = await task_service.create_task(
+                db,
+                fake_arq_pool,  # type: ignore[arg-type]
+                user_id=seeded_user["id"],
+                task_type="create_alias",
+                input_payload={},
+            )
+            # Simulate the failed first attempt: row is `running`.
+            await task_repo.mark_running(db, created.task.id)
+            # Simulate cancel arriving between attempts.
+            row = await task_repo.get(db, created.task.id)
+            assert row is not None
+            row.cancel_requested = True
+            row.cancel_requested_at = datetime.now(UTC)
+            await db.commit()
+
+        result = await run_noop(
+            {"db_session_factory": factory, "redis": fake_redis},
+            str(created.task.id),
+        )
+        assert result["ok"] is False
+        assert result["reason"] == "cancelled"
+
+        async with factory() as db:
+            row = await task_repo.get(db, created.task.id)
+            assert row is not None
+            assert row.status == "cancelled"
+            assert row.completed_at is not None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_run_noop_skips_pre_cancelled_task(
     database_url: str,
     seeded_user: dict[str, Any],
