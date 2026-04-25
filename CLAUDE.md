@@ -99,11 +99,26 @@
 
    `/loop 10m <內容>`——每 10 分鐘 tick 一次，判讀**只看 PR body 上 Codex（`chatgpt-codex-connector[bot]`）的 reactions**（`/issues/N/reactions`）：
 
-   1. **`+1` reaction** → `gh pr merge N --squash --delete-branch`，停 loop
+   1. **`+1` reaction** → **先檢查 CI 是否全綠**（見下方 §Merge gate），全綠才 `gh pr merge N --squash --delete-branch` 停 loop；有任何 FAILURE / SKIPPED → 不 merge，照「CI 紅」分支處理
    2. **`eyes` reaction** → 繼續 loop（Codex 還在審）
    3. **無任何 reaction 且無 Codex comment（issue-level / inline / review record 都沒有）** → `gh pr comment N --body "@codex review"`，繼續 loop
 
-   **除此之外沒有其他 merge 條件。** 只有 `+1` 能觸發 merge；CI / mergeable / approval 由 GitHub branch protection 在 `gh pr merge` 當下自行把關，不是 loop 的判讀責任。
+   **Merge gate（必查；不依賴 GitHub branch protection）：**
+
+   ```bash
+   gh pr view N --json statusCheckRollup \
+     -q '.statusCheckRollup[] | "\(.name)\t\(.conclusion)\t\(.status)"'
+   ```
+
+   - 每個 check 的 `conclusion` 必須是 `SUCCESS`（或 `NEUTRAL`），且 `status` 是 `COMPLETED`
+   - 任何 `FAILURE` / `CANCELLED` / `TIMED_OUT` / `ACTION_REQUIRED` → CI 紅，不 merge
+   - `SKIPPED` 也算紅（通常是上游 check FAIL 導致 dependent job 沒跑；意味著該 check 沒給 signal）
+   - 若還有 `IN_PROGRESS` / `QUEUED` / `PENDING` → 繼續 loop 等
+   - 沒有任何 check 也算紅（保險：repo 應該至少要有 PR workflow 跑 lint/test）
+
+   理由：branch protection 不一定有設好 required checks，Codex `+1` 也只代表程式碼層次的 review pass，不代表 tooling/CI pass。merge red PR 會把壞 main 推給後續 ticket。Loop 必須自己把關。
+
+   **CI 紅且 Codex `+1`（衝突情境）：** 不 merge。判讀 CI failure log（`gh run view <run-id> --log-failed`），是 flake → 重跑（`gh run rerun <run-id>`）；是 real failure → 推 fix commit，繼續 loop（CI 重跑後 Codex 也會再 react，重新走完整流程）。**不要因為已經有 `+1` 就跳過修 CI**——`+1` 對應的是當時 commit 的 review，新 commit 推上去 Codex 會重新評估。
 
    **Codex 留 critical comment / `-1`（但沒 `+1`）→ 不 merge**，採納 / 駁回 / defer + 推 fix commit + 回覆該 thread，繼續 loop。⚠ 採納前 cross-check：Codex 意見可能和 Codex App 文件 / CONTRIBUTING / observable 行為衝突；第二意見不自動更權威，理由站不住就駁回並在 thread 說明。
 

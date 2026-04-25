@@ -68,3 +68,4 @@ chroma.sqlite3
 entities.json
 mempalace.yaml
 .mempalace/
+.claude/
