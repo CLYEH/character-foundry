@@ -13,7 +13,7 @@ reconciler doesn't have to know that:
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 from app.core.platform_constraints import (
     PlatformConstraints,
@@ -21,7 +21,7 @@ from app.core.platform_constraints import (
 )
 
 
-class ReconcileMode(str, Enum):
+class ReconcileMode(StrEnum):
     CREATE_BASE = "create_base"
     CREATE_BASE_WITH_REF = "create_base_with_ref"
     CREATE_ALIAS = "create_alias"
