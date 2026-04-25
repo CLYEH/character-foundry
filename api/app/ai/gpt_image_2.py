@@ -31,6 +31,7 @@ from app.ai.circuit import CircuitBreaker
 from app.ai.errors import (
     map_exception_to_agent_error,
     map_response_to_agent_error,
+    parse_retry_after_seconds,
 )
 from app.core.errors import AgentErrorException
 
@@ -290,13 +291,12 @@ class GptImage2Client:
         self, attempt: int, *, response: httpx.Response | None = None
     ) -> None:
         # Honour Retry-After if the server told us how long to wait.
+        # `parse_retry_after_seconds` accepts both the delta-seconds and
+        # the HTTP-date forms allowed by RFC 9110 §10.2.3 (Codex P2 round-3).
         if response is not None:
-            ra = response.headers.get("Retry-After")
-            if ra is not None:
-                try:
-                    await asyncio.sleep(max(float(ra), 0.0))
-                    return
-                except (TypeError, ValueError):
-                    pass
+            seconds = parse_retry_after_seconds(response.headers.get("Retry-After"))
+            if seconds is not None:
+                await asyncio.sleep(seconds)
+                return
         delay = min(2.0**attempt, 8.0)
         await asyncio.sleep(delay)

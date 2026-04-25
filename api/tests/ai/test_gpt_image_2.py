@@ -245,6 +245,45 @@ async def test_five_failed_calls_open_circuit_then_short_circuit(
     assert payload["reason"] == "CIRCUIT_OPEN"
 
 
+async def test_retry_honours_http_date_retry_after(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 round-3: a date-formatted `Retry-After` used to fall through
+    to exponential backoff because `float("Mon, 01 Jan 2000...")` raises.
+    Now we parse it; a past date clamps to 0s so the test still finishes
+    quickly without monkey-patching asyncio.sleep.
+    """
+    sleeps: list[float] = []
+
+    async def _record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("asyncio.sleep", _record_sleep)
+
+    calls = {"n": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "Mon, 01 Jan 2000 00:00:00 GMT"},
+                json={},
+            )
+        return _success_response(request)
+
+    client = _make_client(fake_redis, _handler)
+    try:
+        result = await client.generate_image_text2image("ok")
+    finally:
+        await client.aclose()
+
+    assert calls["n"] == 2
+    assert result.image_bytes == _FAKE_PNG
+    # First sleep should be the parsed-and-clamped 0s, not the 1s exp backoff.
+    assert sleeps[0] == 0.0
+
+
 async def test_request_url_preserves_v1_prefix_from_api_base(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:

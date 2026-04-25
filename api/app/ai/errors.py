@@ -12,6 +12,8 @@ remember the schema.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -155,7 +157,7 @@ def map_response_to_agent_error(model: str, response: httpx.Response) -> AgentEr
         payload = None
 
     if status == 429:
-        retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+        retry_after = parse_retry_after_seconds(response.headers.get("Retry-After"))
         return model_rate_limit(model, retry_after=retry_after)
 
     if status in (401, 403):
@@ -185,13 +187,41 @@ def map_exception_to_agent_error(model: str, exc: Exception) -> AgentErrorExcept
     return model_unavailable(model, cause=f"unexpected error: {exc}")
 
 
-def _parse_retry_after(raw: str | None) -> float | None:
+def parse_retry_after_seconds(raw: str | None) -> float | None:
+    """Parse an HTTP `Retry-After` header into a non-negative seconds value.
+
+    Per RFC 9110 §10.2.3 the header value is either a `delta-seconds`
+    integer OR an HTTP-date. Codex P2 round-3: the previous parser only
+    handled the numeric form, so a date-formatted Retry-After silently
+    fell through to exponential backoff and retried earlier than the
+    server asked, increasing the chance of repeat 429s and unnecessary
+    breaker pressure.
+
+    Returns None for missing / unparseable values; callers fall back to
+    their own backoff policy.
+    """
     if raw is None:
         return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    # Form 1: delta-seconds.
     try:
-        return float(raw)
+        return max(float(raw), 0.0)
+    except (TypeError, ValueError):
+        pass
+    # Form 2: HTTP-date. parsedate_to_datetime returns naive datetimes for
+    # values that omit a timezone — RFC requires GMT, so default-attach UTC.
+    try:
+        target = parsedate_to_datetime(raw)
     except (TypeError, ValueError):
         return None
+    if target is None:
+        return None
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=UTC)
+    delta = (target - datetime.now(tz=UTC)).total_seconds()
+    return max(delta, 0.0)
 
 
 def _extract_message(payload: Any) -> str | None:

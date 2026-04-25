@@ -7,6 +7,7 @@ import httpx
 from app.ai.errors import (
     map_exception_to_agent_error,
     map_response_to_agent_error,
+    parse_retry_after_seconds,
 )
 
 
@@ -82,3 +83,31 @@ def test_transport_error_maps_to_unavailable() -> None:
         "gpt-image-2", httpx.ConnectError("conn refused", request=request)
     )
     assert err.error.code == "MODEL_UNAVAILABLE"
+
+
+def test_parse_retry_after_seconds_handles_delta_seconds() -> None:
+    assert parse_retry_after_seconds("12") == 12.0
+    assert parse_retry_after_seconds("0") == 0.0
+    # Negative deltas — clamp to 0 rather than sleep into the past.
+    assert parse_retry_after_seconds("-3") == 0.0
+
+
+def test_parse_retry_after_seconds_handles_http_date_future() -> None:
+    """Codex P2 round-3: RFC 9110 §10.2.3 also allows HTTP-date format."""
+    # Far-future date — must yield a large positive number, not None.
+    seconds = parse_retry_after_seconds("Fri, 31 Dec 2099 23:59:59 GMT")
+    assert seconds is not None
+    assert seconds > 1_000_000  # ~70 years away in 2026 → many seconds
+
+
+def test_parse_retry_after_seconds_clamps_past_dates_to_zero() -> None:
+    """A date in the past means "you can retry now" — return 0, not negative."""
+    seconds = parse_retry_after_seconds("Mon, 01 Jan 2000 00:00:00 GMT")
+    assert seconds == 0.0
+
+
+def test_parse_retry_after_seconds_returns_none_for_garbage() -> None:
+    assert parse_retry_after_seconds(None) is None
+    assert parse_retry_after_seconds("") is None
+    assert parse_retry_after_seconds("   ") is None
+    assert parse_retry_after_seconds("not a date or number") is None

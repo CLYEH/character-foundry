@@ -12,12 +12,29 @@ from __future__ import annotations
 
 import os
 
+_TRUE_TOKENS = frozenset({"1", "true", "yes", "on"})
+_FALSE_TOKENS = frozenset({"0", "false", "no", "off"})
+
 
 def _bool_env(name: str, *, default: bool) -> bool:
+    """Parse a bool env var; fall back to `default` for missing OR invalid values.
+
+    Codex P1 round-3: a typo like `AI_STUB_MODE=treu` previously slipped
+    silently into the "anything not truthy is False" branch, flipping the
+    safe stub default off and surfacing as either an unintended OpenAI
+    spend or a hard failure if the key was unset. Now only explicit false
+    tokens disable, and anything else (typo, garbage, mixed-case Yes) keeps
+    the documented default.
+    """
     raw = os.environ.get(name)
     if raw is None:
         return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+    normalised = raw.strip().lower()
+    if normalised in _TRUE_TOKENS:
+        return True
+    if normalised in _FALSE_TOKENS:
+        return False
+    return default
 
 
 def _int_env(name: str, *, default: int, min_value: int = 1) -> int:

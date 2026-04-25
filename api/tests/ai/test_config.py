@@ -45,3 +45,30 @@ def test_timeout_still_rejects_zero(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_circuit_threshold_still_rejects_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AI_CIRCUIT_FAILURE_THRESHOLD", "0")
     assert config.circuit_failure_threshold() == 5
+
+
+def test_stub_mode_typo_keeps_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex P1 round-3: a typo (`treu`) used to coerce to False and
+    flip the safe stub default off. Now anything that isn't an explicit
+    true/false token falls back to default."""
+    monkeypatch.setenv("AI_STUB_MODE", "treu")
+    assert config.stub_mode_enabled() is True
+
+
+def test_stub_mode_garbage_keeps_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_STUB_MODE", "maybe?")
+    assert config.stub_mode_enabled() is True
+
+
+def test_stub_mode_explicit_false_disables(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An *explicit* falsy token still disables, so production deploys keep
+    working. Tokens accepted: 0/false/no/off (case-insensitive)."""
+    for value in ("false", "FALSE", "0", "no", "OFF"):
+        monkeypatch.setenv("AI_STUB_MODE", value)
+        assert config.stub_mode_enabled() is False, value
+
+
+def test_stub_mode_explicit_true_enables(monkeypatch: pytest.MonkeyPatch) -> None:
+    for value in ("true", "TRUE", "1", "yes", "ON"):
+        monkeypatch.setenv("AI_STUB_MODE", value)
+        assert config.stub_mode_enabled() is True, value
