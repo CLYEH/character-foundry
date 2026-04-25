@@ -60,9 +60,18 @@ async def upload_reference_image(
     storage: Annotated[StorageBackend, Depends(get_storage)],
     file: Annotated[UploadFile, File(...)],
 ) -> ReferenceImageUploadResponse:
+    # MIME validation first — cheap and gives the caller a fast reject.
     content_type = (file.content_type or "").lower()
     if content_type not in _ALLOWED_MIME_TYPES:
         raise validation_reference_image_unsupported_type()
+
+    # Authorization gate BEFORE we burn bandwidth + storage space on
+    # the upload (Codex P1 round-1). Previously this fired only inside
+    # the post-upload service call, so an unauthorized request still
+    # persisted up to 10MB before failing. Run the same checks the
+    # service uses; the second call inside the service is a cheap
+    # re-validate against the same row.
+    await checkpoint_service.assert_session_writable(db, user=user, session_id=session_id)
 
     # Stream the upload into memory with an upper bound so a hostile
     # client can't blow up the worker by sending a 1 GB blob with a
@@ -85,9 +94,7 @@ async def upload_reference_image(
 
     payload = b"".join(chunks)
 
-    # Reserve the storage key BEFORE writing — gives us a stable id we
-    # can hand back to the client even if the DB INSERT later races
-    # with a session abort. Storage layout per planning §2 / §4.1:
+    # Storage layout per planning §2 / §4.1:
     #   checkpoints/{session_id}/references/{reference_id}.{ext}
     reference_id = uuid.uuid4()
     extension = _MIME_EXTENSION[content_type]
@@ -96,13 +103,6 @@ async def upload_reference_image(
     storage.put(storage_key, payload, content_type)
     signed_url = storage.get_signed_url(storage_key, expires_in_seconds=3600)
 
-    # Authorization happens inside the service via _get_writable_session.
-    # The storage write above precedes the DB insert; if the service
-    # rejects the upload (wrong session, not initiator, session not
-    # active) the bytes are orphaned. Lifecycle cleanup reaps them when
-    # the parent session is hard-deleted, which is acceptable for
-    # Phase 1 — the alternative (delete on validation failure) would
-    # add a storage round-trip on the cold path.
     created = await checkpoint_service.upload_reference_image(
         db,
         user=user,

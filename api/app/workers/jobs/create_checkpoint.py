@@ -36,10 +36,12 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
+
 from app.ai.base import AIClient, AIGenerationResult
 from app.ai.factory import get_image_client
 from app.ai.progress import progress_publisher
-from app.core.errors import AgentError, AgentErrorException
+from app.core.errors import AgentError, AgentErrorException, conflict_sequence_race
 from app.core.redis_client import publish_task_event
 from app.prompt.constraints import ReconcileMode
 from app.prompt.reconciler import (
@@ -57,7 +59,7 @@ from app.schemas.checkpoint_builder import build_checkpoint_dto, thumbnail_key_f
 from app.storage.backend import StorageBackend
 from app.storage.errors import StorageError
 from app.storage.local import LocalFilesystemBackend
-from app.utils.thumbnails import make_thumbnail_png
+from app.utils.thumbnails import ensure_png_bytes, make_thumbnail_png
 
 _logger = logging.getLogger(__name__)
 
@@ -147,7 +149,11 @@ def _decide_image_mode(payload: Mapping[str, Any]) -> str:
     """Pick text2image vs image2image based on (input_mode, mode, refs).
 
     - mode == 'remix'        → image2image (source checkpoint's output)
-    - mode == 'retry_same'   → match the source's mode by reference keys
+    - mode == 'retry_same'   → match source: reference keys are
+      forwarded by the service for both real-reference AND remix
+      lineage (we store the remix base's output_key in the source
+      row's reference_image_keys, Codex P1 round-2). So a non-empty
+      list means image2image regardless of how the source was made.
     - mode == 'fresh'        → text2image if no refs, else image2image
     """
     mode = payload.get("mode")
@@ -364,6 +370,12 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
 
             ai_result: AIGenerationResult
             input_image_bytes: bytes | None = None
+            # Tracks what the AI call actually conditioned on, for
+            # `generation_logs.input_image_keys` (audit / reproducibility).
+            # Includes the remix base's output_image_key when applicable —
+            # without this, remix log rows would show NULL even though
+            # an input image WAS used (Codex P2 round-1).
+            log_input_keys: list[str] = []
             if image_mode == "image2image":
                 if payload.get("mode") == "remix":
                     base_id = payload.get("base_checkpoint_id")
@@ -385,8 +397,14 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                                         ),
                                         status_code=500,
                                     ) from exc
+                                log_input_keys.append(source.output_image_key)
                 else:
                     input_image_bytes = await _load_image_bytes_for_input(storage, payload)
+                    # The first reference key was the conditioning image;
+                    # carry it into the audit trail too.
+                    refs = payload.get("reference_image_keys") or []
+                    if refs:
+                        log_input_keys.append(str(refs[0]))
 
                 if input_image_bytes is None:
                     raise AgentErrorException(
@@ -400,6 +418,26 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                         ),
                         status_code=500,
                     )
+                # Provider's image-edits endpoint labels every multipart
+                # upload `image/png` regardless of the bytes (see
+                # gpt_image_2.py:_call_image2image). A JPEG / WebP
+                # reference sent verbatim trips provider-side decode
+                # validation (Codex P2 round-2). Convert to PNG here so
+                # the labelled MIME and the actual bytes agree.
+                try:
+                    input_image_bytes = ensure_png_bytes(input_image_bytes)
+                except ValueError as exc:
+                    raise AgentErrorException(
+                        AgentError(
+                            code="STORAGE_NOT_FOUND",
+                            message="參考圖無法解碼",
+                            problem="Reference image bytes could not be decoded by PIL.",
+                            cause=str(exc),
+                            fix="Re-upload the reference as a clean PNG / JPEG / WebP.",
+                            retryable=False,
+                        ),
+                        status_code=500,
+                    ) from exc
                 ai_result = await ai_client.generate_image_image2image(
                     final_prompt, input_image_bytes, seed=seed_int
                 )
@@ -434,9 +472,22 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
             # session. checkpoint references the log id as a soft FK.
             character_id_raw = payload.get("character_id")
             character_id_uuid = uuid.UUID(str(character_id_raw)) if character_id_raw else None
-            ref_keys_raw = payload.get("reference_image_keys") or []
-            ref_keys_list: list[str] = [str(k) for k in ref_keys_raw]
-            input_image_keys_for_log: list[str] | None = ref_keys_list if ref_keys_list else None
+
+            # `reference_image_keys` on the row records what THIS
+            # checkpoint was actually conditioned on (db-schema §3.5
+            # field semantics). For uploaded references it's whatever
+            # the caller sent; for remix it's the base checkpoint's
+            # output_key. Recording the remix lineage here is what
+            # lets retry_same find conditioning bytes for a remix
+            # source — the source row's reference_image_keys becomes
+            # the carry-forward channel (Codex P1 round-2).
+            payload_ref_keys: list[str] = [
+                str(k) for k in (payload.get("reference_image_keys") or [])
+            ]
+            row_ref_keys: list[str] = list(log_input_keys) if log_input_keys else payload_ref_keys
+            input_image_keys_for_log: list[str] | None = (
+                list(log_input_keys) if log_input_keys else None
+            )
 
             async with session_factory() as db:
                 log_row = await generation_log_repo.insert_success(
@@ -458,20 +509,33 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                     started_at=started_at,
                     completed_at=datetime.now(UTC),
                 )
-                checkpoint_row = await checkpoint_repo.insert(
-                    db,
-                    checkpoint_id=checkpoint_id,
-                    creation_session_id=session_id,
-                    sequence=int(payload["sequence"]),
-                    prompt=final_prompt,
-                    user_menu_selections=payload.get("menu_selections"),
-                    user_freeform_note=payload.get("freeform_note"),
-                    reference_image_keys=ref_keys_list or None,
-                    seed=str(seed_int) if seed_int is not None else None,
-                    output_image_key=output_key,
-                    generation_log_id=log_row.id,
-                )
-                await db.commit()
+                try:
+                    checkpoint_row = await checkpoint_repo.insert(
+                        db,
+                        checkpoint_id=checkpoint_id,
+                        creation_session_id=session_id,
+                        sequence=int(payload["sequence"]),
+                        prompt=final_prompt,
+                        user_menu_selections=payload.get("menu_selections"),
+                        user_freeform_note=payload.get("freeform_note"),
+                        reference_image_keys=row_ref_keys or None,
+                        seed=str(seed_int) if seed_int is not None else None,
+                        output_image_key=output_key,
+                        generation_log_id=log_row.id,
+                    )
+                    await db.commit()
+                except IntegrityError as exc:
+                    # The accepted residual race in the sequence
+                    # allocator (planning task-queue.md §3.5) lands
+                    # here as a `(creation_session_id, sequence)`
+                    # UNIQUE collision. Map to the dedicated
+                    # CONFLICT_SEQUENCE_RACE so clients get the
+                    # retryable signal instead of the catch-all
+                    # INTERNAL_UNEXPECTED_ERROR (Codex P2 round-2).
+                    await db.rollback()
+                    if "uq_session_sequence" in str(exc.orig or exc):
+                        raise conflict_sequence_race() from exc
+                    raise
                 await db.refresh(checkpoint_row)
                 checkpoint_dto = build_checkpoint_dto(checkpoint_row, storage)
 

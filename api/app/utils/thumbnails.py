@@ -1,4 +1,4 @@
-"""PIL-backed thumbnail generation for checkpoint / alias images.
+"""PIL-backed image utilities — thumbnails + format normalisation.
 
 Phase 1 only needs a 512-pixel-wide thumbnail per checkpoint output;
 preserving alpha (PNG) is mandatory because the platform constraint
@@ -20,6 +20,31 @@ from PIL import Image, UnidentifiedImageError
 _logger = logging.getLogger(__name__)
 
 _DEFAULT_WIDTH = 512
+
+
+def ensure_png_bytes(source: bytes) -> bytes:
+    """Re-encode `source` as PNG if it isn't already.
+
+    The OpenAI image-edits client labels every multipart upload as
+    `image/png` regardless of the bytes — so a JPEG / WebP reference
+    sent verbatim trips provider-side validation. Convert here before
+    the AI call. Idempotent on PNG input (returns the original bytes
+    unmodified) to avoid a needless re-encode roundtrip.
+
+    Raises ValueError if PIL can't decode the source — callers should
+    map that to a user-visible error since the upload route already
+    validated the MIME type.
+    """
+    try:
+        with Image.open(io.BytesIO(source)) as im:
+            if im.format == "PNG":
+                return source
+            decoded = im.convert("RGBA")
+            buf = io.BytesIO()
+            decoded.save(buf, format="PNG")
+            return buf.getvalue()
+    except (OSError, UnidentifiedImageError) as exc:
+        raise ValueError(f"unable to decode image bytes: {exc}") from exc
 
 
 def make_thumbnail_png(

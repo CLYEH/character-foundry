@@ -89,6 +89,19 @@ async def _get_writable_session(
     return session
 
 
+async def assert_session_writable(
+    db: AsyncSession,
+    *,
+    user: User,
+    session_id: uuid.UUID,
+) -> CreationSession:
+    """Public wrapper around `_get_writable_session` for callers that
+    need an early authorization gate before doing expensive work
+    (e.g. the reference-image route reading and storing 10MB before
+    the DB-backed authz check, Codex P1 round-1)."""
+    return await _get_writable_session(db, user=user, session_id=session_id)
+
+
 # ---------------------------------------------------------------------------
 # Reference image upload
 # ---------------------------------------------------------------------------
