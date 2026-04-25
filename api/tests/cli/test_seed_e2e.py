@@ -47,37 +47,44 @@ def clean_users(database_url: str) -> None:
     asyncio.run(_purge_users(database_url))
 
 
-def _reset_engine_cache() -> None:
-    # `get_engine` / `async_session_factory` are lru_cached. Clear so the CLI
-    # picks up the test DATABASE_URL set by the alembic_config fixture.
+def _run_cli(args: list[str]) -> int:
+    """Invoke the CLI with a fresh engine + session factory.
+
+    `app.db.session.get_engine` / `async_session_factory` are lru_cached, and
+    each `main()` call goes through its own `asyncio.run()` which closes the
+    loop on exit. If we left the cache warm between calls the engine's
+    connection pool would still be bound to the closed loop, producing
+    "attached to a different loop" errors on the next call. Clearing before
+    every invocation guarantees the engine is built inside the live loop.
+    """
+    from app.cli import main
     from app.db.session import async_session_factory, get_engine
 
     get_engine.cache_clear()
     async_session_factory.cache_clear()
+    return main(args)
 
 
 def test_seed_e2e_creates_users_and_is_idempotent(clean_users: None, database_url: str) -> None:
     os.environ["DATABASE_URL"] = database_url
-    _reset_engine_cache()
 
-    from app.cli import E2E_USERS, main
+    from app.cli import E2E_USERS
 
-    assert main(["seed-e2e"]) == 0
+    assert _run_cli(["seed-e2e"]) == 0
     assert asyncio.run(_user_count(database_url)) == len(E2E_USERS)
 
     # Re-running must not error and must not duplicate.
-    assert main(["seed-e2e"]) == 0
+    assert _run_cli(["seed-e2e"]) == 0
     assert asyncio.run(_user_count(database_url)) == len(E2E_USERS)
 
 
 def test_seed_e2e_users_can_login(clean_users: None, database_url: str) -> None:
     os.environ["DATABASE_URL"] = database_url
-    _reset_engine_cache()
 
     from app.auth.passwords import verify_password
-    from app.cli import E2E_PASSWORD, E2E_USERS, main
+    from app.cli import E2E_PASSWORD, E2E_USERS
 
-    assert main(["seed-e2e"]) == 0
+    assert _run_cli(["seed-e2e"]) == 0
 
     async def _password_hashes() -> list[str]:
         engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
