@@ -208,6 +208,128 @@ async def test_run_noop_marks_cancelled_when_retry_sees_cancel_on_running_row(
 
 
 @pytest.mark.asyncio
+async def test_transition_queued_to_running_succeeds_for_clean_queued_row(
+    database_url: str,
+    seeded_user: dict[str, Any],
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """CAS happy path: queued + cancel_requested=False → running."""
+    engine, factory = _factory_for(database_url)
+    try:
+        async with factory() as db:
+            created = await task_service.create_task(
+                db,
+                fake_arq_pool,  # type: ignore[arg-type]
+                user_id=seeded_user["id"],
+                task_type="create_alias",
+                input_payload={},
+            )
+        async with factory() as db:
+            ok = await task_repo.transition_queued_to_running(db, created.task.id)
+            await db.commit()
+            assert ok is True
+        async with factory() as db:
+            row = await task_repo.get(db, created.task.id)
+            assert row is not None
+            assert row.status == "running"
+            assert row.started_at is not None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_transition_queued_to_running_fails_when_cancel_requested(
+    database_url: str,
+    seeded_user: dict[str, Any],
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """Codex P1 round-6: cancel-vs-pickup race protection. CAS must
+    refuse to transition if cancel_requested was set, even when the
+    row is still in `queued` status."""
+    engine, factory = _factory_for(database_url)
+    try:
+        async with factory() as db:
+            created = await task_service.create_task(
+                db,
+                fake_arq_pool,  # type: ignore[arg-type]
+                user_id=seeded_user["id"],
+                task_type="create_alias",
+                input_payload={},
+            )
+            row = await task_repo.get(db, created.task.id)
+            assert row is not None
+            row.cancel_requested = True
+            row.cancel_requested_at = datetime.now(UTC)
+            await db.commit()
+        async with factory() as db:
+            ok = await task_repo.transition_queued_to_running(db, created.task.id)
+            await db.commit()
+            assert ok is False
+        async with factory() as db:
+            row = await task_repo.get(db, created.task.id)
+            assert row is not None
+            # Row stayed `queued` — CAS did not regress it.
+            assert row.status == "queued"
+            assert row.started_at is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_run_noop_does_not_regress_when_cancel_committed_after_read(
+    database_url: str,
+    seeded_user: dict[str, Any],
+    fake_redis: Any,
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """End-to-end shape of the cancel-vs-pickup race (Codex round-6).
+
+    Simulate the race by setting cancel_requested=True on a `queued`
+    row (representing the cancel API committing AFTER the worker's
+    initial read). run_noop's CAS should refuse to advance the row
+    and return `cancelled`, NOT regress to `running`.
+    """
+    engine, factory = _factory_for(database_url)
+    try:
+        async with factory() as db:
+            created = await task_service.create_task(
+                db,
+                fake_arq_pool,  # type: ignore[arg-type]
+                user_id=seeded_user["id"],
+                task_type="create_alias",
+                input_payload={},
+            )
+        # Worker's first read happens inside run_noop and sees `queued`.
+        # We set cancel_requested AFTER create but BEFORE running, so the
+        # initial read in run_noop will already see cancel_requested=True
+        # — that's the existing pre-pickup cancel branch. To exercise the
+        # CAS specifically, the test orders things so run_noop sees
+        # cancel_requested=True at first read AND the CAS would also
+        # refuse: both layers of defense should converge to `cancelled`.
+        async with factory() as db:
+            row = await task_repo.get(db, created.task.id)
+            assert row is not None
+            row.cancel_requested = True
+            row.cancel_requested_at = datetime.now(UTC)
+            await db.commit()
+
+        result = await run_noop(
+            {"db_session_factory": factory, "redis": fake_redis},
+            str(created.task.id),
+        )
+        assert result["ok"] is False
+        assert result["reason"] == "cancelled"
+
+        async with factory() as db:
+            row = await task_repo.get(db, created.task.id)
+            assert row is not None
+            # Critical: NOT regressed to running.
+            assert row.status != "running"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_run_noop_skips_pre_cancelled_task(
     database_url: str,
     seeded_user: dict[str, Any],

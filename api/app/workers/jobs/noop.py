@@ -49,10 +49,11 @@ async def run_noop(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
     """Trivial worker handler.
 
     Reads the task row, honors a pre-pickup cancel OR an already-
-    terminal state (idempotent retry — Codex P1 round 3), marks
-    running → completed, and publishes SSE events with best-effort
-    semantics. Real handlers will call AI clients between the
-    running/completed transitions, but should follow this same shape.
+    terminal state (idempotent retry — Codex P1 round 3), atomically
+    transitions queued → running with cancel-race protection (Codex
+    P1 round 6), and publishes SSE events with best-effort semantics.
+    Real handlers will call AI clients between the running/completed
+    transitions, but should follow this same shape.
     """
     session_factory = ctx["db_session_factory"]
     redis = ctx["redis"]
@@ -103,8 +104,31 @@ async def run_noop(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
                 "reason": "cancelled" if task.cancel_requested else task.status,
             }
 
-        await task_repo.mark_running(db, task_uuid)
-        await db.commit()
+        # In-flight retry of a prior attempt that committed `running`
+        # but died before completion: we keep the existing row state and
+        # skip straight to the completion path below. New `queued`
+        # tasks need an atomic transition that fails closed if cancel
+        # raced us — see `transition_queued_to_running` (Codex P1 #6).
+        if task.status == "queued":
+            transitioned = await task_repo.transition_queued_to_running(db, task_uuid)
+            await db.commit()
+            if not transitioned:
+                # Cancel won the race between our SELECT and the CAS,
+                # OR another worker beat us to it. Re-read to figure
+                # out which and respond accordingly.
+                async with session_factory() as db2:
+                    latest = await task_repo.get(db2, task_uuid)
+                    if latest is None:
+                        return {"task_id": task_id, "ok": False, "reason": "missing"}
+                    if latest.status == "cancelled":
+                        return {"task_id": task_id, "ok": False, "reason": "cancelled"}
+                    # Status moved to running/completed/failed via another
+                    # path — bail without doing more work.
+                    return {
+                        "task_id": task_id,
+                        "ok": False,
+                        "reason": f"raced_{latest.status}",
+                    }
 
     await _safe_publish(
         redis,

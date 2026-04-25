@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.task import Task
@@ -98,6 +98,35 @@ async def mark_running(db: AsyncSession, task_id: uuid.UUID) -> None:
         return
     task.status = "running"
     task.started_at = datetime.now(UTC)
+
+
+async def transition_queued_to_running(db: AsyncSession, task_id: uuid.UUID) -> bool:
+    """Atomic CAS: `queued AND NOT cancel_requested` → `running`.
+
+    Worker handlers must use this (instead of `mark_running`) for the
+    pre-running transition so a cancel that committed between the
+    handler's initial read and its update can't be overwritten —
+    Codex P1 round-6 race. The plain `mark_running` issues an
+    unconditional UPDATE that ignores the current DB state and would
+    regress a freshly-cancelled row back to `running`.
+
+    Returns True iff the row transitioned. False means cancel won the
+    race, the row is already past `queued`, or the task is gone — the
+    caller should re-read state and decide what to do (skip / mark
+    cancelled / fail).
+    """
+    stmt = (
+        update(Task)
+        .where(
+            Task.id == task_id,
+            Task.status == "queued",
+            Task.cancel_requested.is_(False),
+        )
+        .values(status="running", started_at=func.now())
+        .execution_options(synchronize_session=False)
+    )
+    result = await db.execute(stmt)
+    return (result.rowcount or 0) > 0
 
 
 async def mark_completed(
