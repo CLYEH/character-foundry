@@ -406,6 +406,17 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
     # ----- Phase 2: actual work, wrapped so any failure (AgentError or
     # otherwise) lands in `_commit_failed`. Cancel checkpoints between
     # each significant step.
+    #
+    # `checkpoint_committed` tracks whether the checkpoint row has
+    # been durably persisted. After commit, any exception in the
+    # post-commit phase (DTO build, mark_completed) MUST propagate to
+    # arq so the job is retried — the up-front idempotency lookup on
+    # the next attempt will find the row and finalize. If we let the
+    # outer except handlers run `_commit_failed`, the task goes
+    # `failed` (terminal) and the retry guard skips it forever, so
+    # clients see a permanent false failure for what was actually a
+    # successful generation (Codex P1 round-14 fix).
+    checkpoint_committed = False
     try:
         async with progress_publisher(redis, task_uuid, estimated_ms):
             if await _is_cancel_requested(session_factory, task_uuid):
@@ -629,8 +640,10 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                             generation_log_id=log_row.id,
                         )
                         await db.commit()
-                        # Files now belong to a committed row.
+                        # Files now belong to a committed row, and the
+                        # task is past the failure-recoverable phase.
                         output_orphaned = False
+                        checkpoint_committed = True
                     except IntegrityError as exc:
                         await db.rollback()
                         err_text = str(exc.orig or exc)
@@ -648,6 +661,7 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                             if existing is not None:
                                 checkpoint_row = existing
                                 output_orphaned = False
+                                checkpoint_committed = True
                                 _logger.info(
                                     "create_checkpoint: idempotent retry — "
                                     "checkpoint %s already committed; reusing row",
@@ -735,37 +749,23 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                     "creation_session_id": str(session_id),
                 }
             }
-        # Post-commit task finalization. The checkpoint row + storage
-        # files are already durable; if the mark_completed update or
-        # its commit fails (transient DB blip), the OUTER catch would
-        # mark the task `failed` and that terminal status would block
-        # later retries from reconciling the existing checkpoint
-        # (Codex P1 round-13). Catch and return `ok=False` instead so
-        # arq's retry mechanism can re-enter — the up-front
-        # idempotency lookup will pick up the committed row and
-        # finalize cleanly on the next attempt.
-        try:
-            async with session_factory() as db:
-                await task_repo.mark_completed(
-                    db,
-                    task_uuid,
-                    entity_type="checkpoint",
-                    entity_id=checkpoint_id,
-                    result=result_payload,
-                )
-                await db.commit()
-        except Exception:  # noqa: BLE001 — recoverable; row is already durable
-            _logger.exception(
-                "create_checkpoint: post-commit mark_completed failed for "
-                "task %s; checkpoint %s is durable, retry will reconcile",
+        # Post-commit task finalization. `checkpoint_committed=True`,
+        # so any exception here propagates to the outer except, which
+        # re-raises (rather than calling _commit_failed) so arq's
+        # retry kicks in. The retry's up-front idempotency lookup
+        # picks up the durable checkpoint and runs mark_completed
+        # cleanly (Codex P1 round-14 — round-13 swallowed the
+        # exception, but arq only retries on `raise`, so the task
+        # was left `running` forever on a transient DB blip).
+        async with session_factory() as db:
+            await task_repo.mark_completed(
+                db,
                 task_uuid,
-                checkpoint_id,
+                entity_type="checkpoint",
+                entity_id=checkpoint_id,
+                result=result_payload,
             )
-            return {
-                "task_id": task_id,
-                "ok": False,
-                "reason": "completion_pending",
-            }
+            await db.commit()
 
         await _safe_publish(
             redis,
@@ -779,6 +779,20 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
         return {"task_id": task_id, "ok": True}
 
     except AgentErrorException as exc:
+        if checkpoint_committed:
+            # Post-commit failure (DTO build, mark_completed). Row is
+            # durable. Re-raise so arq retries and the next attempt's
+            # up-front idempotency lookup finalises cleanly. We do NOT
+            # call `_commit_failed` here — that would mark the task
+            # `failed` (terminal) and the retry guard would skip the
+            # row, locking the task in a permanent false-failure state.
+            _logger.warning(
+                "run_create_checkpoint: post-commit AgentError for task %s; "
+                "raising for arq retry. code=%s",
+                task_id,
+                exc.error.code,
+            )
+            raise
         _logger.warning(
             "run_create_checkpoint: task %s failing with %s",
             task_id,
@@ -787,6 +801,13 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
         await _commit_failed(session_factory, task_uuid, exc.error, redis)
         return {"task_id": task_id, "ok": False, "reason": exc.error.code}
     except Exception as exc:  # noqa: BLE001 — catch-all so the task row never sticks
+        if checkpoint_committed:
+            _logger.warning(
+                "run_create_checkpoint: post-commit failure for task %s; raising for arq retry",
+                task_id,
+                exc_info=True,
+            )
+            raise
         _logger.exception("run_create_checkpoint: unhandled exception for task %s", task_id)
         await _commit_failed(session_factory, task_uuid, _agent_error_from_exception(exc), redis)
         return {"task_id": task_id, "ok": False, "reason": "internal_error"}
