@@ -2,6 +2,7 @@
 
 Usage:
     python -m app.cli create-user --email a@b.com --password ... --name Alice
+    python -m app.cli seed-e2e
 
 Phase 1 has no self-serve registration (DECISIONS §6 B4), so user accounts
 are bootstrapped via this CLI. Uses argparse to avoid adding a dependency —
@@ -21,6 +22,15 @@ from app.auth.passwords import hash_password
 from app.db.session import async_session_factory
 from app.models.team import Team
 from app.models.user import User
+
+# Fixed identities for E2E. Kept stable so Playwright fixtures can hard-code
+# them; password is non-secret because it only ever exists in CI / dev DBs.
+E2E_TEAM_NAME = "default"
+E2E_PASSWORD = "TestPassword123!"  # noqa: S105 — fixture password, not a secret
+E2E_USERS: tuple[tuple[str, str], ...] = (
+    ("test+alice@internal.local", "Alice"),
+    ("test+bob@internal.local", "Bob"),
+)
 
 
 async def _create_user(email: str, password: str, name: str, team_name: str) -> User:
@@ -61,6 +71,47 @@ def _run_create_user(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _seed_e2e() -> list[tuple[str, str]]:
+    """Create the E2E test users if they don't exist. Returns (email, action) pairs."""
+    session_factory = async_session_factory()
+    async with session_factory() as db:
+        team = (
+            await db.execute(select(Team).where(Team.name == E2E_TEAM_NAME))
+        ).scalar_one_or_none()
+        if team is None:
+            raise SystemExit(
+                f"team {E2E_TEAM_NAME!r} not found — run alembic migrations first "
+                "(default team is created by the teams migration)"
+            )
+
+        results: list[tuple[str, str]] = []
+        for email, name in E2E_USERS:
+            existing = (
+                await db.execute(select(User).where(User.email == email))
+            ).scalar_one_or_none()
+            if existing is not None:
+                results.append((email, "skipped"))
+                continue
+            db.add(
+                User(
+                    team_id=team.id,
+                    name=name,
+                    email=email,
+                    password_hash=hash_password(E2E_PASSWORD),
+                )
+            )
+            results.append((email, "created"))
+        await db.commit()
+        return results
+
+
+def _run_seed_e2e(_args: argparse.Namespace) -> int:
+    results = asyncio.run(_seed_e2e())
+    for email, action in results:
+        print(f"{action}: {email}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="app.cli", description="Admin CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -71,6 +122,12 @@ def build_parser() -> argparse.ArgumentParser:
     create_user.add_argument("--name", required=True)
     create_user.add_argument("--team", default="default", help="Team name (default: 'default')")
     create_user.set_defaults(func=_run_create_user)
+
+    seed_e2e = subparsers.add_parser(
+        "seed-e2e",
+        help="Create the fixed E2E test users in the default team (idempotent)",
+    )
+    seed_e2e.set_defaults(func=_run_seed_e2e)
 
     return parser
 

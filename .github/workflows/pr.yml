@@ -102,3 +102,104 @@ jobs:
       - name: Vitest
         working-directory: web
         run: pnpm test
+
+  e2e:
+    name: e2e (Playwright on docker compose stack)
+    needs: [backend-lint-test, frontend-lint-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write .env for compose
+        # docker-compose.yml interpolates ${VAR} from this file and api/web
+        # services pick it up via `env_file: .env`. Secrets are throwaway —
+        # they never leave the runner.
+        run: |
+          cat > .env <<'EOF'
+          POSTGRES_PASSWORD=cf_test_pw
+          REDIS_PASSWORD=cf_test_redis
+          JWT_SECRET=ci_jwt_secret_not_for_prod_0123456789abcdef0123456789abcdef
+          STORAGE_SIGNED_URL_SECRET=ci_storage_secret_not_for_prod_0123456789abcdef
+          OPENAI_API_KEY=
+          SEEDANCE_API_KEY=
+          ANTHROPIC_API_KEY=
+          POSTGRES_DB=character_foundry
+          POSTGRES_USER=cf_app
+          DATABASE_URL=postgresql+asyncpg://cf_app:cf_test_pw@postgres:5432/character_foundry
+          REDIS_URL=redis://:cf_test_redis@redis:6379/0
+          STORAGE_ROOT=/storage
+          WORKER_CONCURRENCY=4
+          LOG_LEVEL=INFO
+          SOFT_DELETE_RETENTION_DAYS=30
+          TASK_TERMINAL_RETENTION_HOURS=24
+          VITE_API_BASE_URL=/api
+          VITE_STORAGE_BASE_URL=/storage
+          VITE_APP_VERSION=0.1.0-ci
+          EOF
+
+      - name: Start stack
+        # Use only the base compose — the override mounts host paths that
+        # don't exist on the runner.
+        run: docker compose -f docker-compose.yml up -d --build
+
+      - name: Wait for /api/health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost/api/health > /dev/null; then
+              echo "stack ready after ${i} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "stack failed to come up"
+          docker compose -f docker-compose.yml ps
+          docker compose -f docker-compose.yml logs --tail=200
+          exit 1
+
+      - name: Apply migrations
+        run: docker compose -f docker-compose.yml exec -T api alembic upgrade head
+
+      - name: Seed E2E users
+        run: docker compose -f docker-compose.yml exec -T api python -m app.cli seed-e2e
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web deps
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright
+        working-directory: web
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost
+        run: pnpm e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml logs --tail=500
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f docker-compose.yml down -v
