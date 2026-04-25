@@ -60,15 +60,25 @@ _SSE_HEARTBEAT_SECONDS = 15.0
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
 
-async def _build_dto(
+def _build_dto(
     task: Task,
-    arq_pool: ArqRedis,
+    *,
+    queue_position: int | None = None,
 ) -> TaskDTO:
-    """Build a TaskDTO, resolving queue_position from arq when status='queued'."""
-    position: int | None = None
-    if task.status == "queued":
-        position = await task_service.queue_position(arq_pool, task.id)
-    return TaskDTO.from_model(task, queue_position=position)
+    """Synchronous DTO builder.
+
+    Queue position must be resolved by the caller — for single-task
+    endpoints we call `task_service.queue_position`; for the list
+    endpoint we call `task_service.queue_positions_bulk` once and
+    thread the result in (Codex P2 round 3: avoid O(N×queue) scans).
+    """
+    return TaskDTO.from_model(task, queue_position=queue_position)
+
+
+async def _resolve_queue_position(arq_pool: ArqRedis, task: Task) -> int | None:
+    if task.status != "queued":
+        return None
+    return await task_service.queue_position(arq_pool, task.id)
 
 
 @router.get("/{task_id}", response_model=TaskResponse)
@@ -81,7 +91,8 @@ async def get_task(
     task = await task_repo.get_owned(db, task_id=task_id, user_id=user.id)
     if task is None:
         raise not_found_task()
-    return TaskResponse(task=await _build_dto(task, arq_pool))
+    pos = await _resolve_queue_position(arq_pool, task)
+    return TaskResponse(task=_build_dto(task, queue_position=pos))
 
 
 @router.post("/{task_id}/cancel", response_model=CancelTaskResponse)
@@ -99,8 +110,9 @@ async def cancel_task(
         task_id=task_id,
         user_id=user.id,
     )
+    pos = await _resolve_queue_position(arq_pool, result.task)
     return CancelTaskResponse(
-        task=await _build_dto(result.task, arq_pool),
+        task=_build_dto(result.task, queue_position=pos),
         cancel_outcome=result.cancel_outcome,  # type: ignore[arg-type]
     )
 
@@ -114,7 +126,9 @@ async def list_tasks(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> TaskListResponse:
     tasks = await task_service.list_user_tasks(db, user_id=user.id, status=status, limit=limit)
-    items = [await _build_dto(t, arq_pool) for t in tasks]
+    queued_ids = [t.id for t in tasks if t.status == "queued"]
+    positions = await task_service.queue_positions_bulk(arq_pool, queued_ids)
+    items = [_build_dto(t, queue_position=positions.get(t.id)) for t in tasks]
     return TaskListResponse(items=items)
 
 

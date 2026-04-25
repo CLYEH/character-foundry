@@ -63,6 +63,89 @@ async def test_run_noop_advances_task_to_completed(
 
 
 @pytest.mark.asyncio
+async def test_run_noop_is_idempotent_on_already_completed_task(
+    database_url: str,
+    seeded_user: dict[str, Any],
+    fake_redis: Any,
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """Codex round-3 P1: arq retries can re-invoke run_noop. If the
+    task is already terminal, the handler MUST short-circuit rather
+    than flipping the row back to running."""
+    engine, factory = _factory_for(database_url)
+    try:
+        async with factory() as db:
+            created = await task_service.create_task(
+                db,
+                fake_arq_pool,  # type: ignore[arg-type]
+                user_id=seeded_user["id"],
+                task_type="create_alias",
+                input_payload={},
+            )
+        # Drive the handler once — succeeds.
+        first_result = await run_noop(
+            {"db_session_factory": factory, "redis": fake_redis},
+            str(created.task.id),
+        )
+        assert first_result["ok"] is True
+
+        # Simulate arq retry — second invocation. Must NOT regress to running.
+        second_result = await run_noop(
+            {"db_session_factory": factory, "redis": fake_redis},
+            str(created.task.id),
+        )
+        assert second_result["ok"] is False
+        assert second_result["reason"] == "completed"
+
+        async with factory() as db:
+            row = await task_repo.get(db, created.task.id)
+            assert row is not None
+            assert row.status == "completed"
+            assert row.result == {"noop": True}
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_run_noop_completes_even_when_publish_raises(
+    database_url: str,
+    seeded_user: dict[str, Any],
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """Codex round-3 P1: if Redis publish fails, run_noop must still
+    advance the task to `completed` (DB is source of truth). Otherwise
+    arq retries would loop forever, regressing state each time."""
+
+    class ExplodingRedis:
+        async def publish(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("redis publish down")
+
+    engine, factory = _factory_for(database_url)
+    try:
+        async with factory() as db:
+            created = await task_service.create_task(
+                db,
+                fake_arq_pool,  # type: ignore[arg-type]
+                user_id=seeded_user["id"],
+                task_type="create_alias",
+                input_payload={},
+            )
+
+        result = await run_noop(
+            {"db_session_factory": factory, "redis": ExplodingRedis()},
+            str(created.task.id),
+        )
+        assert result["ok"] is True
+
+        async with factory() as db:
+            row = await task_repo.get(db, created.task.id)
+            assert row is not None
+            assert row.status == "completed"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_run_noop_skips_pre_cancelled_task(
     database_url: str,
     seeded_user: dict[str, Any],

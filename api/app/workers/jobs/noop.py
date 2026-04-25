@@ -23,12 +23,36 @@ from app.repositories import task_repo
 _logger = logging.getLogger(__name__)
 
 
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+
+
+async def _safe_publish(redis: Any, task_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    """Publish an SSE event without ever raising back into the worker.
+
+    Codex P1 (round 3): if a post-commit publish raises, the worker
+    propagates the exception, arq retries, and the next run can flip
+    a terminal task back into `running`. Treat the publish as advisory —
+    log and swallow — so DB state remains the source of truth and
+    monotonic across retries.
+    """
+    try:
+        await publish_task_event(redis, task_id, payload)
+    except Exception:  # noqa: BLE001 — best-effort; SSE clients reconcile via poll
+        _logger.exception(
+            "run_noop: redis publish failed for task %s payload=%s",
+            task_id,
+            payload.get("status"),
+        )
+
+
 async def run_noop(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
     """Trivial worker handler.
 
-    Reads the task row, honors a pre-pickup cancel, marks running →
-    completed, and publishes the corresponding SSE events. Real handlers
-    will call AI clients between the running/completed transitions.
+    Reads the task row, honors a pre-pickup cancel OR an already-
+    terminal state (idempotent retry — Codex P1 round 3), marks
+    running → completed, and publishes SSE events with best-effort
+    semantics. Real handlers will call AI clients between the
+    running/completed transitions, but should follow this same shape.
     """
     session_factory = ctx["db_session_factory"]
     redis = ctx["redis"]
@@ -40,17 +64,28 @@ async def run_noop(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
             _logger.warning("run_noop: task %s not found, skipping", task_id)
             return {"task_id": task_id, "ok": False, "reason": "missing"}
 
-        # Cooperative cancel BEFORE we flip to running. Cancel-while-queued
-        # already sets status=cancelled, so we just respect that and exit.
-        if task.cancel_requested or task.status == "cancelled":
-            _logger.info("run_noop: task %s cancelled before pickup", task_id)
+        # Idempotent retry guard: if a previous run already advanced the
+        # task to a terminal state (or the cancel route flipped it to
+        # cancelled before pickup), do nothing rather than regressing the
+        # row back to `running`. Same branch covers cooperative cancel.
+        if task.cancel_requested or task.status in _TERMINAL_STATUSES:
+            _logger.info(
+                "run_noop: task %s already terminal (status=%s, cancel=%s); skipping",
+                task_id,
+                task.status,
+                task.cancel_requested,
+            )
             await db.commit()
-            return {"task_id": task_id, "ok": False, "reason": "cancelled"}
+            return {
+                "task_id": task_id,
+                "ok": False,
+                "reason": "cancelled" if task.cancel_requested else task.status,
+            }
 
         await task_repo.mark_running(db, task_uuid)
         await db.commit()
 
-    await publish_task_event(
+    await _safe_publish(
         redis,
         task_uuid,
         {"status": "running", "task_id": str(task_uuid)},
@@ -64,7 +99,7 @@ async def run_noop(ctx: dict[str, Any], task_id: str) -> dict[str, Any]:
         )
         await db.commit()
 
-    await publish_task_event(
+    await _safe_publish(
         redis,
         task_uuid,
         {

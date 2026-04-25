@@ -348,6 +348,59 @@ async def test_queue_position_returns_index_for_queued_task(
 
 
 @pytest.mark.asyncio
+async def test_queue_positions_bulk_one_scan_per_call(
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """Codex P2 round-3: bulk lookup must do a SINGLE arq queue scan
+    even with many task ids."""
+    ids = [uuid.uuid4() for _ in range(5)]
+    for tid in ids:
+        await fake_arq_pool.enqueue_job("run_x", _job_id=str(tid))
+    extra = uuid.uuid4()  # not enqueued
+
+    # Wrap queued_jobs to count how many times it's called.
+    call_count = 0
+    original = fake_arq_pool.queued_jobs
+
+    async def counting_queued_jobs() -> Any:
+        nonlocal call_count
+        call_count += 1
+        return await original()
+
+    fake_arq_pool.queued_jobs = counting_queued_jobs  # type: ignore[method-assign]
+
+    positions = await task_service.queue_positions_bulk(
+        fake_arq_pool,  # type: ignore[arg-type]
+        ids + [extra],
+    )
+    assert call_count == 1
+    assert {tid: positions[tid] for tid in ids} == {tid: i for i, tid in enumerate(ids, start=1)}
+    assert extra not in positions
+
+
+@pytest.mark.asyncio
+async def test_queue_positions_bulk_empty_input_skips_scan(
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """Empty list shouldn't trigger any Redis call at all."""
+    call_count = 0
+    original = fake_arq_pool.queued_jobs
+
+    async def counting_queued_jobs() -> Any:
+        nonlocal call_count
+        call_count += 1
+        return await original()
+
+    fake_arq_pool.queued_jobs = counting_queued_jobs  # type: ignore[method-assign]
+    result = await task_service.queue_positions_bulk(
+        fake_arq_pool,  # type: ignore[arg-type]
+        [],
+    )
+    assert result == {}
+    assert call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_list_user_tasks_filters_by_status(
     db_session: Any,
     seeded_user: dict[str, Any],

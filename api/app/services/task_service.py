@@ -319,6 +319,36 @@ async def queue_position(arq_pool: ArqRedis, task_id: uuid.UUID) -> int | None:
     return None
 
 
+async def queue_positions_bulk(
+    arq_pool: ArqRedis,
+    task_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """Bulk lookup of 1-based queue positions for a batch of task ids.
+
+    Single arq `queued_jobs()` scan amortized over all callers — used by
+    `GET /v1/tasks` so the list endpoint does NOT degrade to O(N×Q)
+    where N is response size and Q is the queue depth (Codex P2 round 3).
+    """
+    if not task_ids:
+        return {}
+    target_set = {str(tid) for tid in task_ids}
+    try:
+        queued_jobs = await arq_pool.queued_jobs()
+    except Exception:  # noqa: BLE001 — Redis hiccup shouldn't fail the GET
+        _logger.exception("queue_positions_bulk: arq queued_jobs() failed")
+        return {}
+    out: dict[uuid.UUID, int] = {}
+    for i, job in enumerate(queued_jobs, start=1):
+        if job.job_id in target_set:
+            try:
+                out[uuid.UUID(job.job_id)] = i
+            except ValueError:
+                # arq job ids are normally UUIDs in our codebase, but
+                # don't crash if a non-UUID id ever shows up.
+                continue
+    return out
+
+
 async def list_user_tasks(
     db: AsyncSession,
     *,
