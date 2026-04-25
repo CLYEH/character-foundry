@@ -42,16 +42,31 @@ async def get_creation_session(
     result = await creation_session_service.get_session_for_read(
         db, user=user, session_id=session_id
     )
+
+    # Checkpoint images are initiator-only per
+    # planning/data/storage-layout.md §5.1. The session itself is
+    # team-visible (read-side), but the embedded checkpoint DTOs
+    # carry signed image URLs — gate them so a same-team non-
+    # initiator can see the session shell without getting back
+    # someone else's image links (Codex P1 round-16 — same policy
+    # `checkpoint_service.get_checkpoint_for_read` enforces, applied
+    # to the embedded list here).
+    is_initiator = result.session.initiator_id == user.id
+    visible_checkpoints = result.checkpoints if is_initiator else ()
+
     session_dto = CreationSessionDTO(
         id=result.session.id,
         character_id=result.session.character_id,
         input_mode=result.session.input_mode,  # type: ignore[arg-type]
         status=result.session.status,  # type: ignore[arg-type]
-        checkpoint_count=result.checkpoint_count,
+        # Non-initiators see no count either — leaking "this session
+        # has 7 checkpoints I can't show you" exposes generation
+        # cadence to viewers who shouldn't see the artefacts.
+        checkpoint_count=len(visible_checkpoints),
         created_at=result.session.created_at,
         completed_at=result.session.completed_at,
     )
-    checkpoint_dtos = [build_checkpoint_dto(c, storage) for c in result.checkpoints]
+    checkpoint_dtos = [build_checkpoint_dto(c, storage) for c in visible_checkpoints]
     return CreationSessionDetailResponse(session=session_dto, checkpoints=checkpoint_dtos)
 
 
