@@ -218,6 +218,47 @@ async def test_refusal_field_raises_content_policy_not_unavailable(
     assert await fake_redis.zcard(f"circuit:{RECONCILER_SERVICE_NAME}:failures") == 0
 
 
+async def test_content_filter_finish_reason_raises_content_policy(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Codex P1 round-4: content-policy blocks can arrive as
+    `finish_reason: "content_filter"` with empty/null content and NO
+    refusal field. Must raise PROMPT_CONTENT_POLICY (non-retryable) so
+    they short-circuit the retry loop and don't pollute the breaker.
+    """
+    calls = {"n": 0}
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return _chat_response(
+            {
+                "model": "gpt-5-mini",
+                "choices": [
+                    {
+                        "finish_reason": "content_filter",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                        },
+                    }
+                ],
+            }
+        )
+
+    client = _make_client(fake_redis, _handler, max_retries=3)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.call(system_prompt="sys", user_prompt="user")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "PROMPT_CONTENT_POLICY"
+    assert info.value.error.retryable is False
+    assert calls["n"] == 1
+    assert await fake_redis.get(f"degraded:{RECONCILER_SERVICE_NAME}") is None
+    assert await fake_redis.zcard(f"circuit:{RECONCILER_SERVICE_NAME}:failures") == 0
+
+
 async def test_content_parts_array_extracts_text(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:

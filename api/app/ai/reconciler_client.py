@@ -193,21 +193,27 @@ class Gpt5MiniClient:
             raise map_exception_to_agent_error(
                 self.model, RuntimeError("response.choices[0] not an object")
             )
+
+        # Content-policy blocks can arrive in two shapes from Chat Completions:
+        #   1. `finish_reason: "content_filter"` with empty/null content and
+        #      typically no `refusal` field (older / generic shape; Codex P1
+        #      round-4).
+        #   2. `message.refusal` containing a refusal string with `content`
+        #      null/empty (gpt-5 family declines this way when JSON-mode would
+        #      otherwise force a fabrication; Codex P1 round-3).
+        # Detect BOTH before the content-shape check below — otherwise content
+        # filter hits fall into the `not isinstance(content, str)` branch,
+        # get mapped to MODEL_UNAVAILABLE (retryable), retried 3x, and counted
+        # as breaker failures, opening `reconciler` for unrelated users.
+        if first.get("finish_reason") == "content_filter":
+            raise prompt_content_policy(self.model)
+
         message = first.get("message")
         if not isinstance(message, dict):
             raise map_exception_to_agent_error(
                 self.model, RuntimeError("response.choices[0].message missing")
             )
 
-        # Refusal field — gpt-5 family declines via this when JSON-mode would
-        # otherwise force a fabrication. Content is typically `null`/empty in
-        # this shape. Treat as a content-policy event (non-retryable) so it
-        # short-circuits the retry loop AND does NOT contribute to opening
-        # the breaker. Codex P1 round-3: previously fell into the
-        # not-a-string branch and got mapped to MODEL_UNAVAILABLE
-        # (retryable), so refused prompts could have been retried multiple
-        # times and counted toward circuit failures, opening `reconciler`
-        # for unrelated users.
         refusal = message.get("refusal")
         if isinstance(refusal, str) and refusal.strip():
             raise prompt_content_policy(self.model)
