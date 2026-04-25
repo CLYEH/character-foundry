@@ -1,15 +1,16 @@
 import { test as base, expect, type Page } from '@playwright/test'
 
 // Mirrors `app.cli.E2E_USERS` / `E2E_PASSWORD` (api/app/cli.py). Keep in sync
-// when adding fixtures.
+// when adding fixtures. Uses `example.com` (RFC 2606) because pydantic's
+// `EmailStr` rejects `.local` as a special-use TLD.
 export const ALICE = {
-  email: 'test+alice@internal.local',
+  email: 'test+alice@example.com',
   password: 'TestPassword123!',
   name: 'Alice',
 } as const
 
 export const BOB = {
-  email: 'test+bob@internal.local',
+  email: 'test+bob@example.com',
   password: 'TestPassword123!',
   name: 'Bob',
 } as const

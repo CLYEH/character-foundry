@@ -25,11 +25,14 @@ from app.models.user import User
 
 # Fixed identities for E2E. Kept stable so Playwright fixtures can hard-code
 # them; password is non-secret because it only ever exists in CI / dev DBs.
+# Domain is `example.com` (RFC 2606 reserved-for-documentation) rather than
+# `.local` — pydantic's `EmailStr` (via email-validator) rejects `.local` as
+# a special-use TLD, which would 422 every login.
 E2E_TEAM_NAME = "default"
 E2E_PASSWORD = "TestPassword123!"  # noqa: S105 — fixture password, not a secret
 E2E_USERS: tuple[tuple[str, str], ...] = (
-    ("test+alice@internal.local", "Alice"),
-    ("test+bob@internal.local", "Bob"),
+    ("test+alice@example.com", "Alice"),
+    ("test+bob@example.com", "Bob"),
 )
 
 

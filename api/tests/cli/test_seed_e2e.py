@@ -35,7 +35,7 @@ async def _user_count(database_url: str) -> int:
         async with engine.connect() as conn:
             return (
                 await conn.execute(
-                    text("SELECT COUNT(*) FROM users WHERE email LIKE 'test+%@internal.local'")
+                    text("SELECT COUNT(*) FROM users WHERE email LIKE 'test+%@example.com'")
                 )
             ).scalar_one()
     finally:
@@ -78,6 +78,21 @@ def test_seed_e2e_creates_users_and_is_idempotent(clean_users: None, database_ur
     assert asyncio.run(_user_count(database_url)) == len(E2E_USERS)
 
 
+def test_seed_e2e_emails_pass_pydantic_validation() -> None:
+    """Regression for the `.local` 422 — every seeded email must pass `LoginRequest`.
+
+    pydantic's `EmailStr` (email-validator backend) rejects special-use TLDs
+    like `.local` / `.localhost`. If someone reintroduces such a domain in
+    `E2E_USERS`, the seed will succeed but E2E login will 422 across the
+    board. This test fails fast with a clear message instead.
+    """
+    from app.auth.schemas import LoginRequest
+    from app.cli import E2E_PASSWORD, E2E_USERS
+
+    for email, _ in E2E_USERS:
+        LoginRequest(email=email, password=E2E_PASSWORD)
+
+
 def test_seed_e2e_users_can_login(clean_users: None, database_url: str) -> None:
     os.environ["DATABASE_URL"] = database_url
 
@@ -94,7 +109,7 @@ def test_seed_e2e_users_can_login(clean_users: None, database_url: str) -> None:
                     await conn.execute(
                         text(
                             "SELECT password_hash FROM users "
-                            "WHERE email LIKE 'test+%@internal.local' "
+                            "WHERE email LIKE 'test+%@example.com' "
                             "ORDER BY email"
                         )
                     )
