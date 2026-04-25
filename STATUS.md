@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-25
-> **Phase:** Sprint 1 in progress（T-006, T-007, T-008, T-009, T-010, T-011 done）；Sprint 2 tickets 已開（T-013 ~ T-026）
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 tickets 已開（T-013 ~ T-027）
 
 ---
 
@@ -36,7 +36,7 @@
 | T-009 | Backend /health + /v1/meta | DONE |
 | T-010 | Frontend TopNav + DegradedBanner | DONE |
 | T-011 | Frontend Toast + ErrorBoundary | DONE |
-| T-012 | E2E smoke test (login flow) | TODO |
+| T-012 | E2E smoke test (login flow) | DONE |
 
 ### Sprint 2 — Character Creation
 **目標：** 建 Character、選單 / 參考圖模式、Checkpoints、確立 Base（M2）。
@@ -73,7 +73,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 ## Milestones
 
 - [ ] **M0** — Dev environment runs（`docker compose up` → `/health` returns ok）【Sprint 0 完成】
-- [ ] **M1** — Login works end-to-end【Sprint 1 完成】
+- [x] **M1** — Login works end-to-end【Sprint 1 完成】
 - [ ] **M2** — Create Character (template mode) end-to-end【Sprint 2 完成】
 - [ ] **M3** — Aliases + Motions working【Sprint 3 完成】
 - [ ] **M4** — Download ZIP works【Sprint 4 完成】

@@ -27,5 +27,8 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
+    // Playwright owns tests/e2e — Vitest must not try to load specs that
+    // import `@playwright/test`, which is not jsdom-compatible.
+    exclude: ['node_modules', 'dist', 'tests/e2e/**'],
   },
 })

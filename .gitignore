@@ -55,6 +55,13 @@ Thumbs.db
 *.sw?
 
 # ========================
+# Playwright (T-012)
+# ========================
+web/playwright-report/
+web/test-results/
+web/playwright/.cache/
+
+# ========================
 # Local tooling / MemPalace
 # ========================
 chroma.sqlite3
