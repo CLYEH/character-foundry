@@ -170,6 +170,106 @@ def not_found_task() -> AgentErrorException:
     )
 
 
+def auth_insufficient_permission() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="AUTH_INSUFFICIENT_PERMISSION",
+            message="權限不足",
+            problem="Caller is authenticated but not allowed to perform this action.",
+            cause="The resource is owned by another user; only the owner may modify it.",
+            fix="Ask the owner to perform this action, or read-only operations only.",
+            retryable=False,
+        ),
+        status_code=403,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Character + creation_session errors. NOT_FOUND_CHARACTER doubles as the
+# response for soft-deleted-past-window restore attempts so callers don't
+# leak deletion-state metadata via distinct codes.
+# ---------------------------------------------------------------------------
+
+
+def not_found_character() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_CHARACTER",
+            message="找不到此角色",
+            problem="No character with the given id is visible to the caller, "
+            "or the soft-delete restore window has elapsed.",
+            cause="Either the id is wrong, the character was hard-deleted, "
+            "the character is soft-deleted past the 30-day restore window, "
+            "or the character belongs to another team.",
+            fix="Re-fetch the list via GET /v1/characters, or verify the id.",
+            retryable=False,
+        ),
+        status_code=404,
+    )
+
+
+def gone_character_restore_window() -> AgentErrorException:
+    """Restore-specific 410 — same code as NOT_FOUND_CHARACTER per the
+    api-shape error table (404/410 share the prefix). Distinct factory so
+    routes can return 410 for past-window restore vs 404 elsewhere
+    without leaking which case is which to read-side callers.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_CHARACTER",
+            message="角色已超過 30 天還原期限",
+            problem="Character is soft-deleted but the 30-day restore window has elapsed.",
+            cause="Restore was attempted on a row whose `deleted_at` is older than 30 days.",
+            fix="The character is no longer recoverable. Re-create from scratch.",
+            retryable=False,
+        ),
+        status_code=410,
+    )
+
+
+def not_found_creation_session() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_CREATION_SESSION",
+            message="找不到此建立流程",
+            problem="No creation session with the given id is visible to the caller.",
+            cause="Either the id is wrong or the session belongs to another team.",
+            fix="Re-fetch via GET /v1/characters/{id} to find the active session id.",
+            retryable=False,
+        ),
+        status_code=404,
+    )
+
+
+def conflict_duplicate_name() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="CONFLICT_DUPLICATE_NAME",
+            message="此角色名稱已存在",
+            problem="A non-deleted character with this name already exists for this owner.",
+            cause="Character names are unique per owner (planning/data/db-schema.md §3.3).",
+            fix="Pick a different name, or restore / hard-delete the existing one first.",
+            retryable=False,
+        ),
+        status_code=409,
+    )
+
+
+def validation_name_invalid() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_INVALID_CHARS",
+            message="名稱含有不允許的字元",
+            problem="Name does not match the required character set: "
+            "Chinese (U+4E00–U+9FFF), ASCII letters, digits, underscore, hyphen.",
+            cause="Input contains spaces, punctuation, or other unsupported characters.",
+            fix="Limit the name to Chinese characters, English letters, digits, `_`, or `-`.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
 def conflict_task_already_terminal() -> AgentErrorException:
     return AgentErrorException(
         AgentError(

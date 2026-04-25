@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.characters import router as characters_router
+from app.api.routes.creation_sessions import router as creation_sessions_router
 from app.api.routes.health import router as health_router
 from app.api.routes.meta import router as meta_router
 from app.api.routes.storage import router as storage_router
@@ -17,3 +19,5 @@ app.include_router(auth_router)
 app.include_router(health_router)
 app.include_router(meta_router)
 app.include_router(tasks_router)
+app.include_router(characters_router)
+app.include_router(creation_sessions_router)

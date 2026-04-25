@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-25
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-015 done，T-016 ~ T-027 開單中）
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-016 done，T-017 ~ T-027 開單中）
 
 ---
 
@@ -46,7 +46,7 @@
 | T-013 | Backend task queue (arq + Redis) + Task API | DONE |
 | T-014 | Backend AI client infra (gpt-image-2 + circuit breaker + stub) | DONE |
 | T-015 | Backend Prompt Reconciler module (gpt-5-mini) | DONE |
-| T-016 | Backend Character CRUD + CreationSession bootstrap | TODO |
+| T-016 | Backend Character CRUD + CreationSession bootstrap | DONE |
 | T-017 | Backend Checkpoint generation flow | TODO |
 | T-018 | Backend Select Base / Fork / Abandon | TODO |
 | T-019 | Backend Prompt preview endpoint | TODO |
