@@ -325,7 +325,19 @@ class PromptReconciler:
                 cause="LLM did not honour the required output schema.",
                 fix="Retry; if persistent, inspect the system prompt for schema drift.",
             )
-        removed_raw = payload.get("removed_segments", [])
+        # Codex P2 round-4: missing `removed_segments` is partial schema
+        # drift, same severity as a missing `reconciled_note_en`. Previously
+        # defaulted to `[]` (via `.get(..., [])`) and silently accepted —
+        # cached output for that input lost the audit trail until 24h expiry.
+        # Treat absence as failure, matching how the per-item validation
+        # below treats malformed entries.
+        if "removed_segments" not in payload:
+            raise prompt_conflict(
+                problem="Reconciler LLM omitted the required `removed_segments` field.",
+                cause="LLM did not honour the required output schema.",
+                fix="Retry; if persistent, inspect the system prompt for schema drift.",
+            )
+        removed_raw = payload["removed_segments"]
         if not isinstance(removed_raw, list):
             raise prompt_conflict(
                 problem="Reconciler LLM returned removed_segments as a non-list value.",

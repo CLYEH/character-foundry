@@ -159,6 +159,22 @@ async def test_non_object_llm_response_raises_prompt_conflict(
     assert info.value.error.code == "PROMPT_CONFLICT"
 
 
+async def test_missing_removed_segments_field_raises_prompt_conflict(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Codex P2 round-4: a response that omits `removed_segments` entirely
+    is partial schema drift — must raise PROMPT_CONFLICT same as a missing
+    `reconciled_note_en`, not be silently defaulted to `[]`."""
+    client = FakeReconcilerClient(
+        lambda _s, _u: {"reconciled_note_en": "ok"},  # removed_segments absent
+    )
+    rec = PromptReconciler(redis=fake_redis, client=client)
+
+    with pytest.raises(AgentErrorException) as info:
+        await rec.reconcile(ReconcileInput(mode=ReconcileMode.CREATE_BASE, freeform_note="補述"))
+    assert info.value.error.code == "PROMPT_CONFLICT"
+
+
 async def test_malformed_removed_segment_item_raises_prompt_conflict(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
