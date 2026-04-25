@@ -102,6 +102,27 @@ def internal_auth_failed(model: str) -> AgentErrorException:
     )
 
 
+def model_response_truncated(model: str, *, detail: str | None = None) -> AgentErrorException:
+    """Provider returned a 200 with a truncated body (e.g. Chat Completions
+    `finish_reason=length`). Non-retryable: same input + same max_tokens
+    will deterministically truncate again, so retrying just burns the
+    breaker budget. Surface as MODEL_INVALID_REQUEST to stay within the
+    api-shape.md §4 categories.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="MODEL_INVALID_REQUEST",
+            message="模型回應被截斷，請縮短輸入或調高 max_tokens",
+            problem=f"{model} truncated its response (finish_reason=length).",
+            cause=detail or "Token budget exhausted before the model finished.",
+            fix="Increase the model's max_tokens (e.g. RECONCILER_MAX_TOKENS) "
+            "or shorten the input prompt.",
+            retryable=False,
+        ),
+        status_code=502,
+    )
+
+
 def model_invalid_request(model: str, *, detail: str | None = None) -> AgentErrorException:
     return AgentErrorException(
         AgentError(

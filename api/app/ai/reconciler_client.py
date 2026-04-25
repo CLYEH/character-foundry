@@ -26,6 +26,7 @@ from app.ai.circuit import CircuitBreaker
 from app.ai.errors import (
     map_exception_to_agent_error,
     map_response_to_agent_error,
+    model_response_truncated,
     parse_retry_after_seconds,
     prompt_content_policy,
 )
@@ -205,8 +206,22 @@ class Gpt5MiniClient:
         # filter hits fall into the `not isinstance(content, str)` branch,
         # get mapped to MODEL_UNAVAILABLE (retryable), retried 3x, and counted
         # as breaker failures, opening `reconciler` for unrelated users.
-        if first.get("finish_reason") == "content_filter":
+        finish_reason = first.get("finish_reason")
+        if finish_reason == "content_filter":
             raise prompt_content_policy(self.model)
+        # Token-budget truncation is deterministic for fixed input/budget:
+        # the same prompt with the same RECONCILER_MAX_TOKENS produces the
+        # same truncated body every time. Letting it fall through to JSON
+        # parsing would map to MODEL_UNAVAILABLE (retryable) → 3 retries →
+        # 1 breaker failure, and 5 such users would open `reconciler` for
+        # everyone. Surface as a non-retryable MODEL_INVALID_REQUEST with
+        # the operator hint about RECONCILER_MAX_TOKENS. Codex P1 round-5.
+        if finish_reason == "length":
+            raise model_response_truncated(
+                self.model,
+                detail=f"max_tokens={self.max_tokens} exhausted; "
+                "shorten the input or raise RECONCILER_MAX_TOKENS",
+            )
 
         message = first.get("message")
         if not isinstance(message, dict):

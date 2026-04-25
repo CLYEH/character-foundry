@@ -259,6 +259,50 @@ async def test_content_filter_finish_reason_raises_content_policy(
     assert await fake_redis.zcard(f"circuit:{RECONCILER_SERVICE_NAME}:failures") == 0
 
 
+async def test_finish_reason_length_raises_non_retryable_invalid_request(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Codex P1 round-5: token-budget truncation (`finish_reason=length`)
+    is deterministic for fixed input + budget. Must short-circuit as
+    non-retryable so we don't retry a guaranteed-truncating call 3x and
+    pollute the breaker — repeated truncations across users would open
+    `reconciler` for everyone."""
+    calls = {"n": 0}
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return _chat_response(
+            {
+                "model": "gpt-5-mini",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "role": "assistant",
+                            # Truncated mid-JSON.
+                            "content": '{"reconciled_note_en": "ok", "removed',
+                        },
+                    }
+                ],
+            }
+        )
+
+    client = _make_client(fake_redis, _handler, max_retries=3)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.call(system_prompt="sys", user_prompt="user")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_INVALID_REQUEST"
+    assert info.value.error.retryable is False
+    # Single attempt — non-retryable code must short-circuit the retry loop.
+    assert calls["n"] == 1
+    # Must not contribute to breaker failures.
+    assert await fake_redis.get(f"degraded:{RECONCILER_SERVICE_NAME}") is None
+    assert await fake_redis.zcard(f"circuit:{RECONCILER_SERVICE_NAME}:failures") == 0
+
+
 async def test_content_parts_array_extracts_text(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
