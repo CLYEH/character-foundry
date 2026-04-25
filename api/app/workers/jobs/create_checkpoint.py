@@ -412,13 +412,22 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                 await _commit_cancelled(session_factory, task_uuid, redis)
                 return {"task_id": task_id, "ok": False, "reason": "cancelled"}
 
-            # Step 1: prompt reconciliation
+            # Step 1: prompt reconciliation. `has_reference_image`
+            # tracks whether the AI call will be image2image — that's
+            # the LLM's actual decision-relevant signal, AND it's what
+            # gets baked into the reconciler cache key. Computing this
+            # only from `reference_image_keys` would say False for a
+            # vanilla remix (where conditioning comes from
+            # `base_checkpoint_id`), producing inconsistent reconciler
+            # output + a stale cache slot for remix runs (Codex P2
+            # round-7).
             reconcile_mode = _decide_reconcile_mode(payload)
+            has_ref_image = _decide_image_mode(payload) == "image2image"
             reconcile_input = ReconcileInput(
                 mode=reconcile_mode,
                 menu_selections=payload.get("menu_selections"),
                 freeform_note=payload.get("freeform_note"),
-                has_reference_image=bool(payload.get("reference_image_keys")),
+                has_reference_image=has_ref_image,
                 has_inpaint_mask=False,
             )
 

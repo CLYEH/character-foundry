@@ -25,11 +25,13 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import (
+    AgentErrorException,
     auth_insufficient_permission,
     conflict_session_not_active,
     not_found_checkpoint,
     not_found_creation_session,
     not_found_reference_image,
+    queue_unavailable,
     validation_checkpoint_mode,
     validation_reference_image_required,
 )
@@ -305,13 +307,25 @@ async def enqueue_checkpoint(
         if base_checkpoint.reference_image_keys:
             payload["reference_image_keys"] = list(base_checkpoint.reference_image_keys)
 
-    created = await task_service.create_task(
-        db,
-        arq_pool,
-        user_id=user.id,
-        task_type="create_checkpoint",
-        input_payload=payload,
-    )
+    # Wrap task_service.create_task so an arq enqueue outage surfaces
+    # as a structured AgentError instead of a bare 500 (Codex P1 round-7).
+    # task_service.create_task marks the DB row failed with the
+    # `QUEUE_UNAVAILABLE` shape before re-raising the underlying
+    # exception; we just translate to the AgentError envelope and keep
+    # the reserved task_id in the message so callers can still inspect
+    # the failed row.
+    try:
+        created = await task_service.create_task(
+            db,
+            arq_pool,
+            user_id=user.id,
+            task_type="create_checkpoint",
+            input_payload=payload,
+        )
+    except AgentErrorException:
+        raise
+    except Exception as exc:
+        raise queue_unavailable() from exc
     return EnqueuedCheckpoint(task_id=created.task.id, checkpoint_id=checkpoint_id)
 
 

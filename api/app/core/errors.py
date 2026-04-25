@@ -410,6 +410,29 @@ def validation_reference_image_too_large(
     )
 
 
+def queue_unavailable(*, task_id: str | None = None) -> AgentErrorException:
+    """Raised when the arq queue can't accept a job — usually Redis is
+    down or unreachable. The DB row has already been marked `failed`
+    with the same code by `task_service.create_task`; we surface this
+    AgentError to the caller so the response is structured (not a 500)
+    and includes the reserved `task_id` so the caller can still inspect
+    the failed row (Codex P1 round-7).
+    """
+    return AgentErrorException(
+        AgentError(
+            code="QUEUE_UNAVAILABLE",
+            message="任務佇列暫時不可用，請稍後再試",
+            problem="arq enqueue_job raised; the task row was marked "
+            "failed to avoid a stuck queued orphan." + (f" Task id: {task_id}." if task_id else ""),
+            cause="Redis or the arq worker pool is unreachable.",
+            fix="Retry shortly. If the issue persists, check infra / "
+            "Redis status and the worker process.",
+            retryable=True,
+        ),
+        status_code=503,
+    )
+
+
 def conflict_session_not_active() -> AgentErrorException:
     """Mutating endpoints (`/checkpoints`, `/reference-images`) refuse
     to act on a session that's already `completed` or `abandoned` —
