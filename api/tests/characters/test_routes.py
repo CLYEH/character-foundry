@@ -149,6 +149,76 @@ def test_create_with_u3007_rejected_at_app_layer(client: TestClient, access_toke
     assert resp.json()["error"]["code"] == "VALIDATION_INVALID_CHARS"
 
 
+def test_create_retries_slug_collision_for_distinct_names(
+    client: TestClient,
+    access_token: str,
+    seeded_user: dict[str, Any],
+    database_url: str,
+) -> None:
+    """Codex round-5 P2: when `uq_characters_owner_slug` races between
+    two creates with DIFFERENT names that pinyin-collapse to the same
+    slug, the service must regenerate the slug rather than 409 the
+    second create with a misleading "name exists". We simulate by
+    seeding a character whose slug equals what the second create's
+    slug allocator would pick on first probe; the allocator should
+    retry, see the existing slug, and append a `-2` suffix."""
+    from sqlalchemy import text as sql_text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.repositories import character_repo
+
+    # Plant a character with name "Aria" (slug "aria") so the second
+    # create — for a DIFFERENT name with the same pinyin — has to
+    # walk past the slug collision.
+    async def _plant_row() -> None:
+        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                team_id = (
+                    await conn.execute(sql_text("SELECT id FROM teams WHERE name='default'"))
+                ).scalar_one()
+                await conn.execute(
+                    sql_text(
+                        "INSERT INTO characters (team_id, owner_id, name, slug) "
+                        "VALUES (:t, :o, 'Aria', 'aria')"
+                    ),
+                    {"t": team_id, "o": seeded_user["id"]},
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_plant_row())
+
+    # Force `slug_exists_for_owner` to lie ("nothing taken") on first
+    # call so the allocator hands us "aria" and the DB races. The lie
+    # toggles off after one call so the retry sees the real state and
+    # picks "aria-2".
+    original = character_repo.slug_exists_for_owner
+    call_count = {"n": 0}
+
+    async def _liar(db: Any, *, owner_id: Any, slug: Any) -> bool:
+        call_count["n"] += 1
+        if call_count["n"] <= 1:
+            return False
+        return await original(db, owner_id=owner_id, slug=slug)
+
+    character_repo.slug_exists_for_owner = _liar  # type: ignore[assignment]
+    try:
+        resp = client.post(
+            "/v1/characters",
+            json={"name": "Aria2", "input_mode": "template"},
+            headers=auth_headers(access_token),
+        )
+    finally:
+        character_repo.slug_exists_for_owner = original  # type: ignore[assignment]
+
+    # Retry path succeeded — second slug pick was "aria-2".
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["character"]["name"] == "Aria2"
+    assert body["character"]["slug"] != "aria"
+
+
 def test_create_translates_unique_violation_race_to_409(
     client: TestClient,
     access_token: str,

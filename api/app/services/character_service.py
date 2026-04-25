@@ -41,24 +41,45 @@ _logger = logging.getLogger(__name__)
 
 RESTORE_WINDOW_DAYS = 30
 
-# Names of the partial UNIQUE indexes that map to CONFLICT_DUPLICATE_NAME.
-# When a `name_exists_for_owner` pre-check passes but a concurrent insert
-# wins the race, Postgres raises an IntegrityError carrying one of these
-# constraint names — translate it to the structured AgentError instead of
-# bubbling a 500 (Codex P2 review).
-_NAME_CONFLICT_CONSTRAINTS = ("uq_characters_owner_name", "uq_characters_owner_slug")
+# Constraint-name sniffers for the partial UNIQUE indexes on
+# `characters` (planning/data/db-schema.md §3.3). We match the rendered
+# exception text rather than reach into asyncpg internals — both
+# `pgcode='23505'` and the constraint name appear in the message
+# regardless of driver version, so the string match keeps us decoupled
+# from psycopg/asyncpg differences. The two indexes need separate
+# handling: name conflicts are real duplicates (409), slug conflicts
+# are a race the slug allocator can resolve on retry (Codex round-5 P2).
+_NAME_CONSTRAINT = "uq_characters_owner_name"
+_SLUG_CONSTRAINT = "uq_characters_owner_slug"
 
 
-def _is_duplicate_name_violation(exc: IntegrityError) -> bool:
-    """Best-effort match against the partial UNIQUE indexes that guard
-    `(owner_id, name)` and `(owner_id, slug)` (planning/data/db-schema.md
-    §3.3). We sniff the rendered exception text rather than reach into
-    asyncpg internals — both `pgcode='23505'` and the constraint name
-    appear in the message regardless of driver version, and the string
-    match keeps us decoupled from psycopg/asyncpg differences.
+def _integrity_error_message(exc: IntegrityError) -> str:
+    return str(exc.orig) if exc.orig is not None else str(exc)
+
+
+def _is_name_constraint_violation(exc: IntegrityError) -> bool:
+    return _NAME_CONSTRAINT in _integrity_error_message(exc)
+
+
+def _is_slug_constraint_violation(exc: IntegrityError) -> bool:
+    return _SLUG_CONSTRAINT in _integrity_error_message(exc)
+
+
+def _is_name_or_slug_violation(exc: IntegrityError) -> bool:
+    """Combined check used by PATCH/restore where slug retry isn't an
+    option: PATCH only touches `name` (slug is stable), and restoring
+    a soft-deleted row can't transparently mint a new slug without
+    surprising the user (URL would change). Both paths therefore
+    surface either index violation as 409.
     """
-    message = str(exc.orig) if exc.orig is not None else str(exc)
-    return any(name in message for name in _NAME_CONFLICT_CONSTRAINTS)
+    return _is_name_constraint_violation(exc) or _is_slug_constraint_violation(exc)
+
+
+# Bound the slug-collision retry loop. With the uuid4-prefix fallback
+# kicking in after 100 numeric suffixes, a 3-attempt cap is generous —
+# anything beyond that points at a deeper problem (or a malicious
+# loop) we don't want to mask.
+_SLUG_RETRY_LIMIT = 3
 
 
 @dataclass(frozen=True)
@@ -103,49 +124,70 @@ async def create_character(
     async def _is_taken(slug: str) -> bool:
         return await character_repo.slug_exists_for_owner(db, owner_id=user.id, slug=slug)
 
-    slug = await generate_unique_slug(name, is_taken=_is_taken)
+    # Slug allocation + insert sit in a retry loop. The two partial
+    # UNIQUE indexes have different semantics:
+    #   - `uq_characters_owner_name` → real duplicate, raise 409.
+    #   - `uq_characters_owner_slug` → two pinyin-equal-but-distinct
+    #     names raced; the freshly-committed row is now visible to
+    #     `slug_exists_for_owner`, so re-running the allocator picks
+    #     a different suffix. Retry rather than 409 with a misleading
+    #     "name exists" (Codex round-5 P2 — the names are different).
+    character: Character | None = None
+    session: CreationSession | None = None
+    last_slug_exc: IntegrityError | None = None
+    for _attempt in range(_SLUG_RETRY_LIMIT):
+        slug = await generate_unique_slug(name, is_taken=_is_taken)
+        try:
+            # Step 1: insert character (no creation_session_id yet — the
+            # FK is ALTER-added at migration time with `use_alter=True`
+            # so we don't need a deferred constraint here). The partial
+            # UNIQUE indexes can fire at FIRST flush (asyncpg+RETURNING
+            # raises before commit), so the handler must wrap the whole
+            # insert sequence, not just commit (Codex round-1 P2).
+            character = Character(
+                team_id=user.team_id,
+                owner_id=user.id,
+                name=name,
+                slug=slug,
+            )
+            db.add(character)
+            await db.flush()  # populates character.id
 
-    # Steps 1–3 in one try/except: the partial UNIQUE indexes on
-    # `(owner_id, name)` and `(owner_id, slug)` can fire at the FIRST
-    # `await db.flush()` (asyncpg+RETURNING raises before commit), so
-    # the handler must wrap the whole insert sequence — not just commit
-    # — to catch the race the pre-check missed (Codex P2 review).
-    try:
-        # Step 1: insert character (no creation_session_id yet — the
-        # FK is ALTER-added at migration time with `use_alter=True` so
-        # we don't need a deferred constraint here).
-        character = Character(
-            team_id=user.team_id,
-            owner_id=user.id,
-            name=name,
-            slug=slug,
-        )
-        db.add(character)
-        await db.flush()  # populates character.id
+            # Step 2: insert session pointing at the brand-new character.
+            session = CreationSession(
+                character_id=character.id,
+                initiator_id=user.id,
+                input_mode=input_mode,
+            )
+            db.add(session)
+            await db.flush()  # populates session.id
 
-        # Step 2: insert session pointing at the brand-new character.
-        session = CreationSession(
-            character_id=character.id,
-            initiator_id=user.id,
-            input_mode=input_mode,
-        )
-        db.add(session)
-        await db.flush()  # populates session.id
+            # Step 3: back-reference the session on the character.
+            # SQLAlchemy turns this into a single UPDATE on commit.
+            character.creation_session_id = session.id
 
-        # Step 3: back-reference the session on the character.
-        # SQLAlchemy turns this into a single UPDATE on commit.
-        character.creation_session_id = session.id
+            await db.commit()
+            break
+        except IntegrityError as exc:
+            await db.rollback()
+            if _is_name_constraint_violation(exc):
+                raise conflict_duplicate_name() from exc
+            if _is_slug_constraint_violation(exc):
+                # Loop and re-allocate. The committing winner is now
+                # visible to the next probe so the allocator picks a
+                # different suffix.
+                last_slug_exc = exc
+                continue
+            raise
+    else:
+        # Retry budget exhausted on slug constraint specifically. This
+        # is rare enough to suggest a real bug (e.g., the allocator
+        # keeps picking the same suffix for some reason) — surface
+        # rather than swallow.
+        assert last_slug_exc is not None
+        raise last_slug_exc
 
-        await db.commit()
-    except IntegrityError as exc:
-        # Pre-check + insert is racy: two concurrent POSTs with the
-        # same `(owner_id, name)` (or pinyin-equal slugs) can both
-        # pass `name_exists_for_owner` and only fail in the DB. We
-        # translate the driver error into the structured 409.
-        await db.rollback()
-        if _is_duplicate_name_violation(exc):
-            raise conflict_duplicate_name() from exc
-        raise
+    assert character is not None and session is not None
     await db.refresh(character)
     await db.refresh(session)
 
@@ -253,7 +295,7 @@ async def update_character_name(
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
-        if _is_duplicate_name_violation(exc):
+        if _is_name_or_slug_violation(exc):
             raise conflict_duplicate_name() from exc
         raise
     await db.refresh(character)
@@ -319,7 +361,7 @@ async def restore_character(
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
-        if _is_duplicate_name_violation(exc):
+        if _is_name_or_slug_violation(exc):
             raise conflict_duplicate_name() from exc
         raise
     await db.refresh(character)
