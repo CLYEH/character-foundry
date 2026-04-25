@@ -121,21 +121,17 @@ async def upload_reference_image(
     extension = _MIME_EXTENSION[content_type]
     storage_key = f"checkpoints/{session_id}/references/{reference_id}.{extension}"
 
+    # Single try/except covers EVERY step that can leave bytes in
+    # storage without a row pointing at them: signed-URL minting (e.g.
+    # missing secret), the second short-lived DB session, and the
+    # INSERT itself. Without this, an exception between `storage.put`
+    # and the original DB-only try/except (e.g. URL signing fails)
+    # leaks an orphan blob (Codex P2 round-10). The flag flips after
+    # `storage.put` succeeds; cleanup only runs if we got that far.
     storage.put(storage_key, payload, content_type)
-    signed_url = storage.get_signed_url(storage_key, expires_in_seconds=3600)
-
-    # Second short-lived session for the row insert. Re-runs
-    # `_get_writable_session` inside `upload_reference_image` —
-    # cheap and re-validates against the latest state (the session
-    # could have been abandoned during the multipart read).
-    #
-    # If the second-phase session check or the INSERT fails, delete
-    # the storage blob before propagating — otherwise repeated failed
-    # uploads accumulate orphans (Codex P2 round-8). The first auth
-    # check already happened above so 4xx is rare in practice; this
-    # covers the in-flight session-state-change window and any DB
-    # error during commit.
+    storage_committed = True
     try:
+        signed_url = storage.get_signed_url(storage_key, expires_in_seconds=3600)
         async with factory() as insert_db:
             created = await checkpoint_service.upload_reference_image(
                 insert_db,
@@ -147,14 +143,16 @@ async def upload_reference_image(
                 size_bytes=total,
                 signed_url=signed_url,
             )
+        storage_committed = False  # row now references the file
     except BaseException:
-        try:
-            storage.delete(storage_key)
-        except StorageError:
-            _logger.warning(
-                "upload_reference_image: orphan cleanup failed for %s",
-                storage_key,
-            )
+        if storage_committed:
+            try:
+                storage.delete(storage_key)
+            except StorageError:
+                _logger.warning(
+                    "upload_reference_image: orphan cleanup failed for %s",
+                    storage_key,
+                )
         raise
     return ReferenceImageUploadResponse(
         reference_image_id=created.reference.id,

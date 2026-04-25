@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 from arq.connections import ArqRedis
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import (
@@ -284,16 +285,18 @@ async def enqueue_checkpoint(
         raise validation_reference_image_required()
 
     checkpoint_id = uuid.uuid4()
-    # Reserve the next sequence number. The allocator does Redis I/O
-    # (EXISTS / SETNX / INCR), so a Redis outage raises here. Map to
-    # `queue_unavailable()` so callers get the same retryable contract
-    # they get for arq enqueue failures (Codex P1 round-9): both are
-    # "the Redis-backed infrastructure is unhealthy, retry shortly".
+    # Reserve the next sequence number. Catch ONLY `RedisError` —
+    # `reserve_next_sequence` also runs DB recovery queries
+    # (`_max_persisted_sequence`, `_max_in_flight_sequence`) that
+    # raise SQLAlchemyError on Postgres trouble. Mislabeling those as
+    # QUEUE_UNAVAILABLE would mis-route ops triage (Codex P2 round-10
+    # — same lesson as the round-8 task_service fix). DB errors bubble
+    # as their real type.
     try:
         sequence = await sequence_service.reserve_next_sequence(db, redis, session_id=session.id)
-    except Exception as exc:
+    except RedisError as exc:
         _logger.exception(
-            "enqueue_checkpoint: sequence reservation failed for session %s",
+            "enqueue_checkpoint: redis-backed sequence reservation failed for session %s",
             session.id,
         )
         raise queue_unavailable() from exc
