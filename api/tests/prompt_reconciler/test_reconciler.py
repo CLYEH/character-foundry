@@ -298,6 +298,55 @@ async def test_cache_key_isolates_stub_and_real_clients(
     assert len(fake_stub.calls) == 1
 
 
+async def test_system_prompt_change_invalidates_cache(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex P2 round-2: a SYSTEM_PROMPT update must shift the cache key.
+    Otherwise a product-side prompt fix would still serve old translations
+    for up to 24h."""
+    client = FakeReconcilerClient(_no_conflict_response)
+    rec = PromptReconciler(redis=fake_redis, client=client)
+    inp = ReconcileInput(mode=ReconcileMode.CREATE_BASE, freeform_note="補述")
+
+    await rec.reconcile(inp)
+    assert len(client.calls) == 1
+
+    monkeypatch.setattr(
+        PromptReconciler,
+        "SYSTEM_PROMPT",
+        "Different system prompt — should force re-translation.",
+    )
+    await rec.reconcile(inp)
+    assert len(client.calls) == 2
+
+
+async def test_menu_fragments_change_invalidates_cache(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex P2 round-2: a MENU_FRAGMENTS mapping change must shift the
+    cache key — otherwise a corrected option label still serves the old
+    final_prompt for up to 24h."""
+    client = FakeReconcilerClient(_no_conflict_response)
+    rec = PromptReconciler(redis=fake_redis, client=client)
+    inp = ReconcileInput(
+        mode=ReconcileMode.CREATE_BASE,
+        menu_selections={"gender": "female"},
+        freeform_note="補述",
+    )
+
+    await rec.reconcile(inp)
+    assert len(client.calls) == 1
+
+    monkeypatch.setattr(
+        "app.prompt.reconciler.MENU_FRAGMENTS",
+        {"gender": {"female": "different translation"}},
+    )
+    await rec.reconcile(inp)
+    assert len(client.calls) == 2
+
+
 async def test_cache_corruption_falls_back_to_fresh_llm_call(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:

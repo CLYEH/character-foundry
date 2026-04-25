@@ -39,7 +39,7 @@ from app.prompt.constraints import (
     get_constraints_version,
 )
 from app.prompt.errors import prompt_conflict
-from app.prompt.menu_fragments import resolve_menu_fragments
+from app.prompt.menu_fragments import MENU_FRAGMENTS, resolve_menu_fragments
 
 _logger = logging.getLogger(__name__)
 
@@ -165,6 +165,12 @@ class PromptReconciler:
         # cached entries. Otherwise a stub-mode entry could be served to a
         # subsequent real-model run for up to 24h, returning a degraded
         # prompt with no Chinese-note translation. Codex P2 round-1.
+        #
+        # `logic_version` hashes the SYSTEM_PROMPT and MENU_FRAGMENTS table
+        # so a prompt-template tweak or menu-mapping correction auto-shifts
+        # the cache key — no manual version-bump needed. Without this, a
+        # product fix to the mapping would still serve old entries for up
+        # to 24h. Codex P2 round-2.
         payload = {
             "mode": inp.mode.value,
             "menu_selections": dict(sorted((inp.menu_selections or {}).items())),
@@ -173,10 +179,29 @@ class PromptReconciler:
             "has_inpaint_mask": bool(inp.has_inpaint_mask),
             "constraint_version": get_constraints_version(),
             "client_identity": self.client.client_identity,
+            "logic_version": self._logic_version(),
         }
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
         return f"{_CACHE_KEY_PREFIX}{digest}"
+
+    def _logic_version(self) -> str:
+        """SHA-256 prefix of the reconciler's prompt + menu mapping.
+
+        Computed on each cache-key call; the hash is microseconds-cheap
+        compared to the LLM hop it gates. Updating SYSTEM_PROMPT or
+        MENU_FRAGMENTS in code automatically shifts the digest and
+        invalidates entries written under the old logic.
+        """
+        blob = json.dumps(
+            {
+                "system_prompt": self.SYSTEM_PROMPT,
+                "menu_fragments": MENU_FRAGMENTS,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
     async def _read_cache(self, key: str) -> ReconcileOutput | None:
         try:
