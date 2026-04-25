@@ -276,9 +276,7 @@ async def cancel_task(
         try:
             await publish_task_cancel(redis, task_id)
         except Exception:  # noqa: BLE001 — best-effort
-            _logger.exception(
-                "cancel: redis publish_task_cancel failed for task %s", task_id
-            )
+            _logger.exception("cancel: redis publish_task_cancel failed for task %s", task_id)
         try:
             await publish_task_event(
                 redis,

@@ -51,11 +51,7 @@ async def get_owned_for_update(
     so cross-user requests don't briefly hold a `FOR UPDATE` lock on the
     real owner's row before returning 404 (Codex P1 review).
     """
-    stmt = (
-        select(Task)
-        .where(Task.id == task_id, Task.user_id == user_id)
-        .with_for_update()
-    )
+    stmt = select(Task).where(Task.id == task_id, Task.user_id == user_id).with_for_update()
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
