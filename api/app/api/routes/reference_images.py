@@ -23,12 +23,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import db_session, get_current_user, get_storage
 from app.core.errors import (
     validation_reference_image_too_large,
+    validation_reference_image_undecodable,
     validation_reference_image_unsupported_type,
 )
 from app.models.user import User
 from app.schemas.reference_image import ReferenceImageUploadResponse
 from app.services import checkpoint_service
 from app.storage.backend import StorageBackend
+from app.utils.thumbnails import ensure_png_bytes
 
 router = APIRouter(prefix="/v1/creation-sessions", tags=["creation_sessions"])
 _logger = logging.getLogger(__name__)
@@ -93,6 +95,17 @@ async def upload_reference_image(
         chunks.append(chunk)
 
     payload = b"".join(chunks)
+
+    # Decode-validate at upload time so corrupted bytes / mislabeled
+    # MIME types fail with a 400 next to the upload, not as a delayed
+    # task failure when the worker calls `ensure_png_bytes` later
+    # (Codex P2 round-2). We only need the validation side-effect — the
+    # raw bytes are still what we persist; PIL's lazy decode forces a
+    # full read on `.load()`.
+    try:
+        ensure_png_bytes(payload)
+    except ValueError as exc:
+        raise validation_reference_image_undecodable() from exc
 
     # Storage layout per planning §2 / §4.1:
     #   checkpoints/{session_id}/references/{reference_id}.{ext}

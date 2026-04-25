@@ -372,6 +372,26 @@ def validation_reference_image_unsupported_type() -> AgentErrorException:
     )
 
 
+def validation_reference_image_undecodable() -> AgentErrorException:
+    """The uploaded multipart bytes weren't actually a decodable image,
+    even though the `Content-Type` header said they were. Catching at
+    upload time means the failure surfaces as a 400 next to the upload
+    itself instead of a delayed task failure when the worker tries
+    `ensure_png_bytes` (Codex P2 round-2)."""
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_REFERENCE_IMAGE_UNDECODABLE",
+            message="參考圖檔案損毀或格式不正確",
+            problem="Reference image upload could not be decoded by PIL.",
+            cause="Content-Type claimed PNG / JPEG / WebP but the bytes "
+            "were truncated, corrupted, or a different encoding entirely.",
+            fix="Re-export the reference from a working image editor and re-upload.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
 def validation_reference_image_too_large(
     *, size_bytes: int, limit_bytes: int
 ) -> AgentErrorException:
