@@ -32,7 +32,6 @@ from typing import Any
 
 from redis.asyncio import Redis
 
-from app.ai import config
 from app.ai.reconciler_client import ReconcilerClient, get_reconciler_client
 from app.prompt.constraints import (
     ReconcileMode,
@@ -161,6 +160,11 @@ class PromptReconciler:
         return output
 
     def _cache_key(self, inp: ReconcileInput) -> str:
+        # `client_identity` (not `config.reconciler_model()`) so toggling
+        # AI_STUB_MODE — or otherwise swapping the wired client — invalidates
+        # cached entries. Otherwise a stub-mode entry could be served to a
+        # subsequent real-model run for up to 24h, returning a degraded
+        # prompt with no Chinese-note translation. Codex P2 round-1.
         payload = {
             "mode": inp.mode.value,
             "menu_selections": dict(sorted((inp.menu_selections or {}).items())),
@@ -168,7 +172,7 @@ class PromptReconciler:
             "has_reference_image": bool(inp.has_reference_image),
             "has_inpaint_mask": bool(inp.has_inpaint_mask),
             "constraint_version": get_constraints_version(),
-            "model_version": config.reconciler_model(),
+            "client_identity": self.client.client_identity,
         }
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()

@@ -260,6 +260,44 @@ async def test_menu_selection_order_does_not_affect_cache_key(
     assert len(client.calls) == 1
 
 
+async def test_cache_key_isolates_stub_and_real_clients(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Codex P2 round-1: a stub-mode entry must not satisfy a real-model
+    cache lookup. Otherwise toggling AI_STUB_MODE off would still serve the
+    stub's empty `reconciled_note_en` for up to 24h, sending gpt-image-2 a
+    prompt with no translation of the user's Chinese note.
+    """
+
+    def _stub_response(_s: str, _u: str) -> dict[str, Any]:
+        return {"reconciled_note_en": "", "removed_segments": []}
+
+    fake_real = FakeReconcilerClient(_no_conflict_response, identity="real:gpt-5-mini")
+    fake_stub = FakeReconcilerClient(_stub_response, identity="stub:v1")
+
+    rec_real = PromptReconciler(redis=fake_redis, client=fake_real)
+    rec_stub = PromptReconciler(redis=fake_redis, client=fake_stub)
+
+    inp = ReconcileInput(mode=ReconcileMode.CREATE_BASE, freeform_note="補述")
+
+    # Stub populates its own slot.
+    stub_out = await rec_stub.reconcile(inp)
+    assert stub_out.reconciled_note_en == ""
+    assert len(fake_stub.calls) == 1
+
+    # Real client must not see the stub's empty note — it gets its own
+    # cache slot and its own LLM call.
+    real_out = await rec_real.reconcile(inp)
+    assert real_out.reconciled_note_en == "an elegant figure in classical attire"
+    assert len(fake_real.calls) == 1
+
+    # Both keys coexist; neither client's second call hits the LLM.
+    await rec_real.reconcile(inp)
+    await rec_stub.reconcile(inp)
+    assert len(fake_real.calls) == 1
+    assert len(fake_stub.calls) == 1
+
+
 async def test_cache_corruption_falls_back_to_fresh_llm_call(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:

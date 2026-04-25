@@ -43,7 +43,15 @@ class ReconcilerClient(Protocol):
     Real (`Gpt5MiniClient`) and stub (`StubReconcilerClient`) implementations
     are duck-typed against this protocol so the reconciler module never
     branches on which one is wired in.
+
+    `client_identity` MUST disambiguate stub vs real (and ideally the model
+    SKU within real). The reconciler bakes it into the cache key so that
+    flipping `AI_STUB_MODE` — or otherwise rotating the wired client — never
+    serves a stale stub entry to a real-model run.
     """
+
+    @property
+    def client_identity(self) -> str: ...
 
     async def call(self, *, system_prompt: str, user_prompt: str) -> dict[str, Any]: ...
 
@@ -88,6 +96,10 @@ class Gpt5MiniClient:
         if self._http_client is not None and self._owns_client:
             await self._http_client.aclose()
             self._http_client = None
+
+    @property
+    def client_identity(self) -> str:
+        return f"real:{self.model}"
 
     async def call(self, *, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -225,6 +237,10 @@ class StubReconcilerClient:
     """
 
     MODEL_VERSION = "stub-reconciler-v1"
+
+    @property
+    def client_identity(self) -> str:
+        return f"stub:{self.MODEL_VERSION}"
 
     async def call(
         self,

@@ -20,11 +20,24 @@ class FakeReconcilerClient:
     Pass a callable that maps `(system_prompt, user_prompt) -> dict`. Calls
     are recorded so tests can assert cache behaviour (e.g. that a second
     `reconcile()` with the same input never invokes the LLM).
+
+    `identity` mirrors the real protocol's `client_identity` so cache-key
+    isolation tests can fork two fakes that read different cache slots.
     """
 
-    def __init__(self, responder: Callable[[str, str], dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        responder: Callable[[str, str], dict[str, Any]],
+        *,
+        identity: str = "fake:test",
+    ) -> None:
         self._responder = responder
         self.calls: list[tuple[str, str]] = []
+        self._identity = identity
+
+    @property
+    def client_identity(self) -> str:
+        return self._identity
 
     async def call(self, *, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         self.calls.append((system_prompt, user_prompt))
