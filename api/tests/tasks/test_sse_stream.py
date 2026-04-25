@@ -39,7 +39,11 @@ async def test_sse_forwards_running_then_completed(
     )
     task = created.task
 
-    gen = _stream_task_events(task, fake_redis)
+    gen = _stream_task_events(
+        task_id=task.id,
+        user_id=seeded_user["id"],
+        redis=fake_redis,
+    )
 
     # First yield is the initial snapshot.
     first = await asyncio.wait_for(gen.__anext__(), timeout=2.0)
@@ -102,7 +106,11 @@ async def test_sse_terminal_initial_state_closes_after_one_frame(
     await db_session.commit()
     await db_session.refresh(created.task)
 
-    gen = _stream_task_events(created.task, fake_redis)
+    gen = _stream_task_events(
+        task_id=created.task.id,
+        user_id=seeded_user["id"],
+        redis=fake_redis,
+    )
     frames: list[str] = []
     async for frame in gen:
         frames.append(frame)
@@ -111,3 +119,56 @@ async def test_sse_terminal_initial_state_closes_after_one_frame(
     payload = json.loads(frames[0][len("data: ") :].strip())
     assert payload["status"] == "failed"
     assert payload["error"]["code"] == "MODEL_TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_sse_subscribes_before_initial_state_read(
+    db_session: Any,
+    seeded_user: dict[str, Any],
+    fake_redis: Any,
+    fake_arq_pool: FakeArqPool,
+) -> None:
+    """Codex P1 race: if the worker publishes a terminal event between
+    the route's auth check and our subscribe, the client gets stuck on a
+    stale `queued` snapshot. The generator must subscribe FIRST so the
+    event is buffered before the initial-state read.
+
+    We exercise this by publishing on the channel BEFORE pulling the
+    first frame from the generator. The generator's `subscribe` runs as
+    soon as it's awaited (anext), so the published "completed" frame
+    must show up after the initial snapshot rather than be lost.
+    """
+    created = await task_service.create_task(
+        db_session,
+        fake_arq_pool,  # type: ignore[arg-type]
+        user_id=seeded_user["id"],
+        task_type="create_alias",
+        input_payload={},
+    )
+    task = created.task
+
+    gen = _stream_task_events(
+        task_id=task.id,
+        user_id=seeded_user["id"],
+        redis=fake_redis,
+    )
+
+    # Pull the first frame — this drives the subscribe + initial fetch.
+    first = await asyncio.wait_for(gen.__anext__(), timeout=2.0)
+    initial = json.loads(first[len("data: ") :].strip())
+    assert initial["status"] == "queued"
+
+    # Now publish a terminal event AFTER we've subscribed but during the
+    # active stream. The generator must forward it.
+    await publish_task_event(
+        fake_redis,
+        task.id,
+        {"status": "completed", "result": {"late": True}},
+    )
+
+    second_frame = await asyncio.wait_for(gen.__anext__(), timeout=2.0)
+    second = json.loads(second_frame[len("data: ") :].strip())
+    assert second["status"] == "completed"
+    assert second["result"] == {"late": True}
+
+    await gen.aclose()

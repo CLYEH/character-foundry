@@ -9,6 +9,10 @@ Surface:
 Notes:
 - SSE handler subscribes to Redis BEFORE reading initial state so a
   worker event published between the read and subscribe can't be lost.
+- SSE handler does NOT use `Depends(db_session)` — yield-based deps
+  hold the DB connection until the response finishes, which for an
+  open SSE stream is "until the client disconnects". We open + close
+  short-lived sessions for each DB read instead.
 - Cancel state transitions go through `task_service.cancel_task` which
   takes a row-level lock for the duration of the TX.
 - We use `text/event-stream` + `X-Accel-Buffering: no` so nginx (T-005
@@ -36,6 +40,7 @@ from app.core.redis_client import (
     get_redis,
     task_channel,
 )
+from app.db.session import async_session_factory
 from app.models.task import Task
 from app.models.user import User
 from app.repositories import task_repo
@@ -122,23 +127,51 @@ def _sse_format(payload: str) -> str:
     return f"data: {payload}\n\n"
 
 
+async def _read_initial_task(
+    *,
+    task_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> Task | None:
+    """Fetch the task in a short-lived DB session and return it.
+
+    Pulled out so `_stream_task_events` can read the initial snapshot
+    without holding a long-lived session: each call creates a session,
+    reads the row, and closes the session before any awaitable that
+    blocks on Redis. Returns None if the task is gone (cleanup, etc.).
+    """
+    factory = async_session_factory()
+    async with factory() as db:
+        return await task_repo.get_owned(db, task_id=task_id, user_id=user_id)
+
+
 async def _stream_task_events(
-    task: Task,
+    *,
+    task_id: uuid.UUID,
+    user_id: uuid.UUID,
     redis: Redis,
 ) -> AsyncIterator[str]:
     """Yield SSE-formatted strings for a single task.
 
-    Order matters: subscribe BEFORE reading initial state so we don't
-    miss an event the worker publishes between the DB read and the
-    subscription. After yielding the initial state we drain any messages
-    that arrived during the subscribe-window.
+    Order matters (Codex P1 fix): subscribe BEFORE reading initial state
+    so a worker event published between the route's auth check and our
+    subscribe is buffered on the channel rather than missed. We then
+    fetch the snapshot from a short-lived DB session — keeping the
+    session alive through the stream would pin a connection per
+    listener (Codex P1 #2).
     """
     pubsub = redis.pubsub()
-    channel = task_channel(task.id)
+    channel = task_channel(task_id)
     await pubsub.subscribe(channel)
     try:
-        # Initial state snapshot from DB. If terminal, we close right
-        # after — no point holding the connection open.
+        task = await _read_initial_task(task_id=task_id, user_id=user_id)
+        if task is None:
+            # Task vanished between the route's existence check and our
+            # initial fetch (cleanup cron, owner deletion). Close
+            # without yielding — the route already 404'd the obvious
+            # missing-task case; this branch is racey enough that a
+            # silent close is the right surface.
+            return
+
         initial_payload = {
             "status": task.status,
             "progress": task.progress,
@@ -153,20 +186,23 @@ async def _stream_task_events(
             return
 
         while True:
-            # `pubsub.get_message(timeout=...)` blocks up to `timeout` seconds
-            # for the next message, returning None on timeout. Don't wrap with
-            # `asyncio.wait_for` — get_message returns None immediately when
-            # no message is queued, which would spin the loop without ever
-            # firing the wait_for timeout.
-            msg = await pubsub.get_message(
-                ignore_subscribe_messages=True,
-                timeout=_SSE_HEARTBEAT_SECONDS,
-            )
+            # `pubsub.get_message(timeout=...)` blocks up to `timeout`
+            # seconds, returning None only on real timeout. We don't pass
+            # `ignore_subscribe_messages=True` because redis-py reports
+            # subscribe-acks back as None too — that would falsely trip
+            # the heartbeat path the first iteration after subscribe.
+            # Filter on `msg["type"]` instead so subscribe-acks are
+            # dropped silently and only data events flow through.
+            msg = await pubsub.get_message(timeout=_SSE_HEARTBEAT_SECONDS)
             if msg is None:
                 # No event arrived inside the heartbeat window — keep the
                 # connection warm so proxies (nginx etc.) don't reap it.
                 # Comments are valid SSE noise per the EventSource spec.
                 yield ": keepalive\n\n"
+                continue
+            if msg.get("type") not in ("message", "pmessage"):
+                # subscribe / psubscribe / unsubscribe / etc. — control
+                # frames, never user data; skip without a heartbeat.
                 continue
 
             data = msg.get("data")
@@ -195,16 +231,25 @@ async def _stream_task_events(
 @router.get("/{task_id}/stream")
 async def stream_task(
     task_id: uuid.UUID,
-    db: Annotated[AsyncSession, Depends(db_session)],
     redis: Annotated[Redis, Depends(get_redis)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> StreamingResponse:
-    task = await task_repo.get_owned(db, task_id=task_id, user_id=user.id)
-    if task is None:
-        raise not_found_task()
+    """Open an SSE stream for a task.
+
+    No `Depends(db_session)` here on purpose (Codex P1 #2): yield-based
+    deps are released only after the response finishes, which for SSE
+    means "after the client disconnects". We open a short-lived
+    session for the existence + ownership check and close it before
+    handing the response off to StreamingResponse.
+    """
+    factory = async_session_factory()
+    async with factory() as db:
+        task = await task_repo.get_owned(db, task_id=task_id, user_id=user.id)
+        if task is None:
+            raise not_found_task()
 
     return StreamingResponse(
-        _stream_task_events(task, redis),
+        _stream_task_events(task_id=task_id, user_id=user.id, redis=redis),
         media_type="text/event-stream",
         headers={
             # Tell nginx to flush each chunk as it arrives.

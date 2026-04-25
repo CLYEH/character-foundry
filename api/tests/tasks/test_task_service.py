@@ -383,6 +383,41 @@ async def test_list_user_tasks_filters_by_status(
 
 
 @pytest.mark.asyncio
+async def test_create_task_marks_failed_when_enqueue_raises(
+    db_session: Any,
+    seeded_user: dict[str, Any],
+) -> None:
+    """Codex P2 fix: if arq enqueue_job raises (Redis down), the task
+    row must NOT be left in a stuck `queued` state. The service should
+    mark the row failed with `QUEUE_UNAVAILABLE` and re-raise so the
+    caller sees an explicit error rather than silently orphaned work.
+    """
+
+    class ExplodingPool:
+        async def enqueue_job(self, *_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("redis unreachable")
+
+    with pytest.raises(RuntimeError, match="redis unreachable"):
+        await task_service.create_task(
+            db_session,
+            ExplodingPool(),  # type: ignore[arg-type]
+            user_id=seeded_user["id"],
+            task_type="create_alias",
+            input_payload={"x": 1},
+        )
+
+    # Hunt for the orphan row that would have been left without the fix.
+    rows = await task_service.list_user_tasks(db_session, user_id=seeded_user["id"])
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.status == "failed"
+    assert row.completed_at is not None
+    assert row.error is not None
+    assert row.error["code"] == "QUEUE_UNAVAILABLE"
+    assert row.error["retryable"] is True
+
+
+@pytest.mark.asyncio
 async def test_cancel_isolation_does_not_alter_unrelated_task(
     db_session: Any,
     seeded_user: dict[str, Any],

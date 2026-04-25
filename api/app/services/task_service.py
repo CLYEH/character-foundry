@@ -133,6 +133,11 @@ async def create_task(
 
     The arq job id is set to the task uuid so cancel can target it
     deterministically without a separate mapping.
+
+    If `arq_pool.enqueue_job` raises (e.g. Redis is down), the task row
+    is committed first then immediately marked `failed` with
+    `QUEUE_UNAVAILABLE` so the caller sees a real error rather than a
+    permanently-stuck `queued` orphan (Codex P2 review).
     """
     estimated = await estimate_duration_ms(db, task_type=task_type, input_payload=input_payload)
     task = await task_repo.insert(
@@ -146,11 +151,33 @@ async def create_task(
     await db.refresh(task)
 
     job_function = f"run_{task_type}"
-    await arq_pool.enqueue_job(
-        job_function,
-        task_id=str(task.id),
-        _job_id=str(task.id),
-    )
+    try:
+        await arq_pool.enqueue_job(
+            job_function,
+            task_id=str(task.id),
+            _job_id=str(task.id),
+        )
+    except Exception as exc:
+        _logger.exception(
+            "create_task: enqueue_job failed for task %s; marking row failed",
+            task.id,
+        )
+        await task_repo.mark_failed(
+            db,
+            task.id,
+            error={
+                "code": "QUEUE_UNAVAILABLE",
+                "message": "任務佇列暫時不可用，請稍後再試",
+                "problem": "arq enqueue_job raised; the task row has been "
+                "marked failed to avoid a stuck queued orphan.",
+                "cause": "Redis or the arq worker pool is unreachable.",
+                "fix": "Retry shortly. If the issue persists, check "
+                "infra/redis status and the worker process.",
+                "retryable": True,
+            },
+        )
+        await db.commit()
+        raise exc
     return CreatedTask(task=task, job_function=job_function)
 
 

@@ -59,6 +59,26 @@ def _migrate_once(alembic_config: Any, database_url: str) -> Iterator[None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_session_cache() -> Iterator[None]:
+    """Clear the lru-cached engine + session factory before every test.
+
+    pytest-asyncio gives each test its own event loop. The lru-cached
+    `get_engine()` / `async_session_factory()` in `app/db/session.py`
+    bind their AsyncEngine to whichever loop ran first; subsequent
+    tests then get `RuntimeError: Event loop is closed` when the
+    generator's `async_session_factory()` tries to reuse a stale pool.
+    Clearing here means each test starts fresh.
+    """
+    from app.db.session import async_session_factory, get_engine
+
+    get_engine.cache_clear()
+    async_session_factory.cache_clear()
+    yield
+    get_engine.cache_clear()
+    async_session_factory.cache_clear()
+
+
 @pytest.fixture
 def clean_tables(database_url: str) -> None:
     asyncio.run(_delete_all(database_url))
