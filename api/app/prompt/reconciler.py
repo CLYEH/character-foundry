@@ -332,14 +332,32 @@ class PromptReconciler:
                 cause="LLM did not honour the required output schema.",
                 fix="Retry; if persistent, inspect the system prompt for schema drift.",
             )
+        # Strict per-item validation. Codex P2 round-3: previously skipped
+        # malformed entries with `continue`, which silently dropped
+        # conflict-audit info and cached a partially-correct output. The
+        # contract requires every removed_segments entry to be
+        # {original_zh: str, reason: str} — partial schema drift should
+        # surface as PROMPT_CONFLICT, same as a missing top-level field.
         removed: list[RemovedSegment] = []
         for seg in removed_raw:
             if not isinstance(seg, dict):
-                continue
+                raise prompt_conflict(
+                    problem="Reconciler LLM returned a removed_segments item "
+                    "that is not an object.",
+                    cause="LLM did not honour the required output schema.",
+                    fix="Retry; if persistent, inspect the system prompt for schema drift.",
+                )
             original = seg.get("original_zh")
             reason = seg.get("reason")
-            if isinstance(original, str) and isinstance(reason, str):
-                removed.append(RemovedSegment(original_zh=original, reason=reason))
+            if not isinstance(original, str) or not isinstance(reason, str):
+                raise prompt_conflict(
+                    problem="Reconciler LLM returned a removed_segments item "
+                    "with a missing or non-string field "
+                    "(original_zh / reason).",
+                    cause="LLM did not honour the required output schema.",
+                    fix="Retry; if persistent, inspect the system prompt for schema drift.",
+                )
+            removed.append(RemovedSegment(original_zh=original, reason=reason))
         return reconciled, tuple(removed)
 
     def _compose_output(

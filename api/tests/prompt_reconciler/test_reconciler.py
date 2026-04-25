@@ -159,6 +159,43 @@ async def test_non_object_llm_response_raises_prompt_conflict(
     assert info.value.error.code == "PROMPT_CONFLICT"
 
 
+async def test_malformed_removed_segment_item_raises_prompt_conflict(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Codex P2 round-3: a non-object entry inside removed_segments must
+    fail loud, not be silently dropped. Otherwise partial schema drift
+    gets cached as a 'successful' reconcile with missing audit data."""
+    client = FakeReconcilerClient(
+        lambda _s, _u: {
+            "reconciled_note_en": "ok",
+            "removed_segments": ["not-an-object"],
+        }
+    )
+    rec = PromptReconciler(redis=fake_redis, client=client)
+
+    with pytest.raises(AgentErrorException) as info:
+        await rec.reconcile(ReconcileInput(mode=ReconcileMode.CREATE_BASE, freeform_note="補述"))
+    assert info.value.error.code == "PROMPT_CONFLICT"
+
+
+async def test_removed_segment_missing_field_raises_prompt_conflict(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """A removed_segments item missing the `reason` field is partial
+    schema drift — must raise PROMPT_CONFLICT (Codex P2 round-3)."""
+    client = FakeReconcilerClient(
+        lambda _s, _u: {
+            "reconciled_note_en": "ok",
+            "removed_segments": [{"original_zh": "雜亂"}],  # `reason` missing
+        }
+    )
+    rec = PromptReconciler(redis=fake_redis, client=client)
+
+    with pytest.raises(AgentErrorException) as info:
+        await rec.reconcile(ReconcileInput(mode=ReconcileMode.CREATE_BASE, freeform_note="補述"))
+    assert info.value.error.code == "PROMPT_CONFLICT"
+
+
 async def test_constraint_version_bump_invalidates_cache(
     fake_redis: fakeredis.aioredis.FakeRedis,
     monkeypatch: pytest.MonkeyPatch,

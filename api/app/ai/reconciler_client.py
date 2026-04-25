@@ -27,6 +27,7 @@ from app.ai.errors import (
     map_exception_to_agent_error,
     map_response_to_agent_error,
     parse_retry_after_seconds,
+    prompt_content_policy,
 )
 from app.core.errors import AgentErrorException
 
@@ -197,7 +198,35 @@ class Gpt5MiniClient:
             raise map_exception_to_agent_error(
                 self.model, RuntimeError("response.choices[0].message missing")
             )
+
+        # Refusal field — gpt-5 family declines via this when JSON-mode would
+        # otherwise force a fabrication. Content is typically `null`/empty in
+        # this shape. Treat as a content-policy event (non-retryable) so it
+        # short-circuits the retry loop AND does NOT contribute to opening
+        # the breaker. Codex P1 round-3: previously fell into the
+        # not-a-string branch and got mapped to MODEL_UNAVAILABLE
+        # (retryable), so refused prompts could have been retried multiple
+        # times and counted toward circuit failures, opening `reconciler`
+        # for unrelated users.
+        refusal = message.get("refusal")
+        if isinstance(refusal, str) and refusal.strip():
+            raise prompt_content_policy(self.model)
+
+        # Content can be a string (typical for json_object mode) or a list
+        # of content parts (`[{type: "text", text: "..."}, ...]`). Extract
+        # the concatenated text from parts when the array form arrives so
+        # we don't misclassify a structurally valid response as unavailable.
         content = message.get("content")
+        if isinstance(content, list):
+            text_parts = [
+                part["text"]
+                for part in content
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ]
+            content = "".join(text_parts) if text_parts else None
+
         if not isinstance(content, str):
             raise map_exception_to_agent_error(
                 self.model,
