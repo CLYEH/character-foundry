@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import (
@@ -39,6 +40,25 @@ from app.utils.slug import generate_unique_slug
 _logger = logging.getLogger(__name__)
 
 RESTORE_WINDOW_DAYS = 30
+
+# Names of the partial UNIQUE indexes that map to CONFLICT_DUPLICATE_NAME.
+# When a `name_exists_for_owner` pre-check passes but a concurrent insert
+# wins the race, Postgres raises an IntegrityError carrying one of these
+# constraint names — translate it to the structured AgentError instead of
+# bubbling a 500 (Codex P2 review).
+_NAME_CONFLICT_CONSTRAINTS = ("uq_characters_owner_name", "uq_characters_owner_slug")
+
+
+def _is_duplicate_name_violation(exc: IntegrityError) -> bool:
+    """Best-effort match against the partial UNIQUE indexes that guard
+    `(owner_id, name)` and `(owner_id, slug)` (planning/data/db-schema.md
+    §3.3). We sniff the rendered exception text rather than reach into
+    asyncpg internals — both `pgcode='23505'` and the constraint name
+    appear in the message regardless of driver version, and the string
+    match keeps us decoupled from psycopg/asyncpg differences.
+    """
+    message = str(exc.orig) if exc.orig is not None else str(exc)
+    return any(name in message for name in _NAME_CONFLICT_CONSTRAINTS)
 
 
 @dataclass(frozen=True)
@@ -85,32 +105,47 @@ async def create_character(
 
     slug = await generate_unique_slug(name, is_taken=_is_taken)
 
-    # Step 1: insert character (no creation_session_id yet — the FK is
-    # ALTER-added at migration time with `use_alter=True` so we don't
-    # need a deferred constraint here).
-    character = Character(
-        team_id=user.team_id,
-        owner_id=user.id,
-        name=name,
-        slug=slug,
-    )
-    db.add(character)
-    await db.flush()  # populates character.id
+    # Steps 1–3 in one try/except: the partial UNIQUE indexes on
+    # `(owner_id, name)` and `(owner_id, slug)` can fire at the FIRST
+    # `await db.flush()` (asyncpg+RETURNING raises before commit), so
+    # the handler must wrap the whole insert sequence — not just commit
+    # — to catch the race the pre-check missed (Codex P2 review).
+    try:
+        # Step 1: insert character (no creation_session_id yet — the
+        # FK is ALTER-added at migration time with `use_alter=True` so
+        # we don't need a deferred constraint here).
+        character = Character(
+            team_id=user.team_id,
+            owner_id=user.id,
+            name=name,
+            slug=slug,
+        )
+        db.add(character)
+        await db.flush()  # populates character.id
 
-    # Step 2: insert session pointing at the brand-new character.
-    session = CreationSession(
-        character_id=character.id,
-        initiator_id=user.id,
-        input_mode=input_mode,
-    )
-    db.add(session)
-    await db.flush()  # populates session.id
+        # Step 2: insert session pointing at the brand-new character.
+        session = CreationSession(
+            character_id=character.id,
+            initiator_id=user.id,
+            input_mode=input_mode,
+        )
+        db.add(session)
+        await db.flush()  # populates session.id
 
-    # Step 3: back-reference the session on the character. SQLAlchemy
-    # turns this into a single UPDATE on commit.
-    character.creation_session_id = session.id
+        # Step 3: back-reference the session on the character.
+        # SQLAlchemy turns this into a single UPDATE on commit.
+        character.creation_session_id = session.id
 
-    await db.commit()
+        await db.commit()
+    except IntegrityError as exc:
+        # Pre-check + insert is racy: two concurrent POSTs with the
+        # same `(owner_id, name)` (or pinyin-equal slugs) can both
+        # pass `name_exists_for_owner` and only fail in the DB. We
+        # translate the driver error into the structured 409.
+        await db.rollback()
+        if _is_duplicate_name_violation(exc):
+            raise conflict_duplicate_name() from exc
+        raise
     await db.refresh(character)
     await db.refresh(session)
 
@@ -214,7 +249,13 @@ async def update_character_name(
         raise conflict_duplicate_name()
 
     character.name = new_name
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        if _is_duplicate_name_violation(exc):
+            raise conflict_duplicate_name() from exc
+        raise
     await db.refresh(character)
     return character
 
@@ -274,6 +315,12 @@ async def restore_character(
         raise conflict_duplicate_name()
 
     character.deleted_at = None
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        if _is_duplicate_name_violation(exc):
+            raise conflict_duplicate_name() from exc
+        raise
     await db.refresh(character)
     return character

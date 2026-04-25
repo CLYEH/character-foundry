@@ -135,6 +135,86 @@ def test_create_invalid_chars_returns_400(client: TestClient, access_token: str)
     assert resp.json()["error"]["code"] == "VALIDATION_INVALID_CHARS"
 
 
+def test_create_with_u3007_rejected_at_app_layer(client: TestClient, access_token: str) -> None:
+    """Codex P2: the API regex must match the DB CHECK constraint
+    byte-for-byte. The DB allows only U+4E00–U+9FFF + ASCII alnum +
+    `_-`, so `〇` (U+3007) must 400 at the API layer rather than slip
+    through and trip a 500 IntegrityError on INSERT."""
+    resp = client.post(
+        "/v1/characters",
+        json={"name": "〇", "input_mode": "template"},
+        headers=auth_headers(access_token),
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_INVALID_CHARS"
+
+
+def test_create_translates_unique_violation_race_to_409(
+    client: TestClient,
+    access_token: str,
+    seeded_user: dict[str, Any],
+    database_url: str,
+) -> None:
+    """Codex P2: the read-then-insert pre-check is racy. If a
+    concurrent insert wins between our `name_exists_for_owner` probe
+    and our commit, the partial UNIQUE index raises IntegrityError —
+    the service must translate that into CONFLICT_DUPLICATE_NAME, not
+    a 500. We simulate the race by stubbing `name_exists_for_owner` to
+    always say "no" while a row with the same name already exists in
+    the DB."""
+    from sqlalchemy import text as sql_text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.repositories import character_repo
+
+    # Plant the existing row directly so the route's pre-check would
+    # normally 409, but we'll patch the pre-check to bypass it.
+    async def _plant_row() -> None:
+        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                team_id = (
+                    await conn.execute(sql_text("SELECT id FROM teams WHERE name='default'"))
+                ).scalar_one()
+                await conn.execute(
+                    sql_text(
+                        "INSERT INTO characters (team_id, owner_id, name, slug) "
+                        "VALUES (:t, :o, :n, :s)"
+                    ),
+                    {
+                        "t": team_id,
+                        "o": seeded_user["id"],
+                        "n": "RaceyName",
+                        "s": "racey-name",
+                    },
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_plant_row())
+
+    original = character_repo.name_exists_for_owner
+
+    async def _liar(db: Any, *, owner_id: Any, name: Any, exclude_id: Any = None) -> bool:
+        return False
+
+    # The service calls `character_repo.name_exists_for_owner(...)`
+    # via the module reference, so swapping the attribute is enough
+    # — no need to patch the service's local name.
+    character_repo.name_exists_for_owner = _liar  # type: ignore[assignment]
+    try:
+        resp = client.post(
+            "/v1/characters",
+            json={"name": "RaceyName", "input_mode": "template"},
+            headers=auth_headers(access_token),
+        )
+    finally:
+        character_repo.name_exists_for_owner = original  # type: ignore[assignment]
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "CONFLICT_DUPLICATE_NAME"
+
+
 def test_create_too_long_name_returns_422(client: TestClient, access_token: str) -> None:
     """Pydantic enforces the 1–50 length cap at the parse layer.
 

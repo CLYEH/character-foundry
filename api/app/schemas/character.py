@@ -16,11 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.schemas.creation_session import CreationSessionDTO
 
-# Mirrors the DB CHECK constraint (`chk_characters_name_chars`): CJK
-# Unified Ideographs U+4E00–U+9FFF + ASCII alphanumerics + `_-`. Kept
-# as a Python regex so we can surface a friendly 400 instead of letting
-# the constraint trip a generic IntegrityError.
-_NAME_RE = re.compile(r"^[一-鿿〇a-zA-Z0-9_\-]+$")
+# Mirrors the DB CHECK constraint (`chk_characters_name_chars`) byte-for-byte:
+# CJK Unified Ideographs U+4E00–U+9FFF + ASCII alphanumerics + `_-`. Kept as a
+# Python regex so we can surface a friendly 400 instead of letting the
+# constraint trip a generic IntegrityError. If you change one side, change
+# the other — drift means a name passes the API check but trips a 500 at
+# INSERT (Codex review caught `〇` U+3007 here previously).
+_NAME_RE = re.compile(r"^[一-鿿a-zA-Z0-9_\-]+$")
 NameStr = Annotated[
     str,
     StringConstraints(min_length=1, max_length=50, strip_whitespace=True),
