@@ -236,11 +236,16 @@ async def test_alias_mode_includes_base_constraints(
     assert not any("inherits" in c for c in output.applied_constraints)
 
 
-async def test_menu_selection_order_does_not_affect_cache_key(
+async def test_menu_selection_order_isolates_cache_slots(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
-    """Cache key sorts menu_selections so callers passing the same data in
-    a different dict-iteration order share a single cache entry."""
+    """Codex P2 round-3: menu_selections insertion order is preserved in
+    the cache key. resolve_menu_fragments() iterates the dict in insertion
+    order, so two requests with the same key/value pairs in different
+    orders compose different fragment orders — they MUST get distinct
+    cache slots, otherwise whichever request wrote first would dictate
+    fragment order for both regardless of caller intent.
+    """
     client = FakeReconcilerClient(_no_conflict_response)
     rec = PromptReconciler(redis=fake_redis, client=client)
 
@@ -255,9 +260,13 @@ async def test_menu_selection_order_does_not_affect_cache_key(
         freeform_note="補述",
     )
 
-    await rec.reconcile(a)
-    await rec.reconcile(b)
-    assert len(client.calls) == 1
+    out_a = await rec.reconcile(a)
+    out_b = await rec.reconcile(b)
+
+    assert len(client.calls) == 2
+    assert out_a.menu_fragments_en != out_b.menu_fragments_en
+    assert out_a.menu_fragments_en[0] == "adult woman"
+    assert out_b.menu_fragments_en[0] == "anime style, 2D illustration"
 
 
 async def test_cache_key_isolates_stub_and_real_clients(

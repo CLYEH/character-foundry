@@ -171,9 +171,17 @@ class PromptReconciler:
         # the cache key — no manual version-bump needed. Without this, a
         # product fix to the mapping would still serve old entries for up
         # to 24h. Codex P2 round-2.
+        # `menu_selections_ordered` is a list-of-pairs (NOT a sorted dict) so
+        # the cache key preserves insertion order. resolve_menu_fragments()
+        # composes the final prompt in insertion order, so two callers with
+        # the same key/value pairs in different orders MUST get distinct
+        # cache slots — otherwise whichever request writes first determines
+        # the returned fragment order for both (Codex P2 round-3). Lists
+        # serialise positionally in JSON; dicts get re-sorted by sort_keys
+        # below, which would defeat the fix.
         payload = {
             "mode": inp.mode.value,
-            "menu_selections": dict(sorted((inp.menu_selections or {}).items())),
+            "menu_selections_ordered": list((inp.menu_selections or {}).items()),
             "freeform_note": (inp.freeform_note or "").strip(),
             "has_reference_image": bool(inp.has_reference_image),
             "has_inpaint_mask": bool(inp.has_inpaint_mask),
