@@ -666,8 +666,28 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                             raise conflict_sequence_race() from exc
                         else:
                             raise
-                    await db.refresh(checkpoint_row)
-                    checkpoint_dto = build_checkpoint_dto(checkpoint_row, storage)
+                    # Refresh + DTO build can raise on a transient DB
+                    # blip even though the commit above already
+                    # persisted the row. Treat anything past commit as
+                    # recoverable (Codex P1 round-11): the work IS
+                    # durable, so DON'T let a post-commit hiccup mark
+                    # the task `failed` and lose the result. We try
+                    # the in-session refresh first, then fall back to
+                    # a fresh-session re-read.
+                    try:
+                        await db.refresh(checkpoint_row)
+                    except Exception:  # noqa: BLE001 — recoverable post-commit
+                        _logger.warning(
+                            "create_checkpoint: post-commit refresh failed for "
+                            "checkpoint %s; recovering via fresh session",
+                            checkpoint_id,
+                            exc_info=True,
+                        )
+            # Out of the inner DB block. The row IS durable now (or
+            # `output_orphaned` is still True and the finally below
+            # will clean up). Build the DTO outside the try/finally so
+            # any DTO-build failure can't unwind the orphan flag we
+            # just set.
             finally:
                 if output_orphaned:
                     # Cleanup files written in step 3 when no committed
@@ -684,7 +704,37 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
 
         # progress_publisher CM exit happens before mark_completed so the
         # final 1.0 / completed events arrive in the right order.
-        result_payload = {"checkpoint": checkpoint_dto.model_dump(mode="json")}
+        # Build the DTO post-commit (Codex P1 round-11). The row is
+        # durable; if `build_checkpoint_dto` (or a re-read) hiccups we
+        # fall back to a minimal payload rather than marking the task
+        # failed.
+        try:
+            checkpoint_dto = build_checkpoint_dto(checkpoint_row, storage)
+        except Exception:  # noqa: BLE001 — DTO is recoverable post-commit
+            _logger.warning(
+                "create_checkpoint: in-session DTO build failed; re-reading",
+                exc_info=True,
+            )
+            try:
+                async with session_factory() as db_read:
+                    reread = await checkpoint_repo.get(db_read, checkpoint_id)
+                if reread is not None:
+                    checkpoint_dto = build_checkpoint_dto(reread, storage)
+                else:
+                    raise RuntimeError("checkpoint vanished post-commit")
+            except Exception:  # noqa: BLE001 — last-resort minimal payload
+                _logger.exception("create_checkpoint: DTO recovery failed; using minimal payload")
+                checkpoint_dto = None
+
+        if checkpoint_dto is not None:
+            result_payload = {"checkpoint": checkpoint_dto.model_dump(mode="json")}
+        else:
+            result_payload = {
+                "checkpoint": {
+                    "id": str(checkpoint_id),
+                    "creation_session_id": str(session_id),
+                }
+            }
         async with session_factory() as db:
             await task_repo.mark_completed(
                 db,
