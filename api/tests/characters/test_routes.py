@@ -360,6 +360,32 @@ def test_list_pagination_with_cursor(client: TestClient, access_token: str) -> N
     assert p1_ids.isdisjoint(p2_ids)
 
 
+def test_list_naive_datetime_cursor_degrades_to_page_1(
+    client: TestClient, access_token: str
+) -> None:
+    """Codex round-4 P2: a naive (no tzinfo) datetime in the cursor
+    must be rejected as malformed. Without the guard the naive value
+    flows into a `timestamptz` comparison and asyncpg either errors or
+    silently coerces to server-local TZ. Behavior we want: the bad
+    cursor degrades to "first page" silently, just like any other
+    decode failure."""
+    import base64 as _b64
+
+    _create(client, access_token, "OnlyOne")
+
+    # Hand-craft a cursor with a naive ISO timestamp (no offset).
+    raw = f"2026-01-01T00:00:00|{uuid.uuid4()}"
+    bad = _b64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+    resp = client.get(
+        f"/v1/characters?owner_id=me&cursor={bad}",
+        headers=auth_headers(access_token),
+    )
+    assert resp.status_code == 200
+    # Cursor was rejected → page 1 returned, the seeded character is in it.
+    assert len(resp.json()["items"]) == 1
+
+
 # ---------------------------------------------------------------------------
 # Cross-user permission
 # ---------------------------------------------------------------------------

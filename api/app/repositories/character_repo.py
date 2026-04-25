@@ -52,16 +52,30 @@ def decode_cursor(value: str) -> Cursor | None:
     """Best-effort cursor decode. Returns None for malformed input —
     treats a bad cursor like "first page" rather than 400ing, so a
     client that lost track of state can recover by sending an empty
-    cursor instead of needing to handle a new error code."""
+    cursor instead of needing to handle a new error code.
+
+    Naive datetimes (no tzinfo) are treated as malformed: `Cursor.encode`
+    always emits an aware ISO string (DB stores `timestamptz`), and
+    asyncpg rejects naive datetimes when comparing against a timestamptz
+    column. Letting one through would either driver-error mid-query or
+    silently coerce to the server's local TZ — Codex round-4 P2.
+    """
     try:
         # Re-pad to a multiple of 4 chars (base64.urlsafe_b64decode is
         # strict about padding, but we strip it for cleaner URLs).
         padded = value + "=" * (-len(value) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
         ts_str, id_str = raw.split("|", 1)
-        return Cursor(updated_at=datetime.fromisoformat(ts_str), id=uuid.UUID(id_str))
+        parsed_at = datetime.fromisoformat(ts_str)
     except (ValueError, binascii.Error, UnicodeDecodeError):
         return None
+    if parsed_at.tzinfo is None:
+        return None
+    try:
+        parsed_id = uuid.UUID(id_str)
+    except ValueError:
+        return None
+    return Cursor(updated_at=parsed_at, id=parsed_id)
 
 
 # ---------------------------------------------------------------------------
