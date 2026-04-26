@@ -289,7 +289,7 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
             # too-late cancel.
             payload_snapshot: dict[str, Any] = dict(task.input_payload)
             existing = await _existing_checkpoint_for_payload(session_factory, payload_snapshot)
-            if existing is not None and task.status == "running" and not task.entity_id:
+            if existing is not None and task.status == "running" and task.entity_id is None:
                 # Build the DTO + complete the task. Storage backend
                 # used for signed-URL minting.
                 storage_for_dto = _resolve_storage_from_ctx(ctx)
@@ -540,9 +540,12 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                 try:
                     input_image_bytes = ensure_png_bytes(input_image_bytes)
                 except ValueError as exc:
+                    # File is in storage; we just can't decode it. Don't
+                    # mislabel as STORAGE_NOT_FOUND — that's the wrong
+                    # signal for ops triage and for client retry decisions.
                     raise AgentErrorException(
                         AgentError(
-                            code="STORAGE_NOT_FOUND",
+                            code="VALIDATION_REFERENCE_IMAGE_UNDECODABLE",
                             message="參考圖無法解碼",
                             problem="Reference image bytes could not be decoded by PIL.",
                             cause=str(exc),
