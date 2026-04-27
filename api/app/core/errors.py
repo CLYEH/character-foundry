@@ -270,6 +270,210 @@ def validation_name_invalid() -> AgentErrorException:
     )
 
 
+def not_found_checkpoint() -> AgentErrorException:
+    """Returned by GET /v1/checkpoints/{id} for unknown ids OR for ids
+    whose row hasn't been written yet (worker still running or task
+    failed). Frontend doesn't poll this endpoint directly — UI follows
+    the task SSE stream — so the missing-row window is invisible to
+    real users; agent callers see the standard 404 envelope.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_CHECKPOINT",
+            message="找不到此候選圖",
+            problem="No checkpoint with the given id is visible to the caller, "
+            "or the worker has not yet committed the row.",
+            cause="Either the id is wrong, the generation task is still in "
+            "progress / failed, or the parent session belongs to another team.",
+            fix="Subscribe to the create_checkpoint task via "
+            "GET /v1/tasks/{task_id}/stream and read the result there.",
+            retryable=False,
+        ),
+        status_code=404,
+    )
+
+
+def not_found_reference_image() -> AgentErrorException:
+    """One or more `reference_image_ids` on a checkpoint create request
+    don't exist or don't belong to the session. We collapse both shapes
+    to one code so the response can't distinguish "wrong id" from
+    "id from a sibling session" — leaking the second would let a
+    malicious caller probe other sessions' references."""
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_REFERENCE_IMAGE",
+            message="找不到此參考圖",
+            problem="One or more reference_image_ids do not match an upload for this session.",
+            cause="The upload id is wrong, was created against a different "
+            "session, or the upload row has been cascade-deleted along with "
+            "its session.",
+            fix="Re-upload via POST /v1/creation-sessions/{id}/reference-images "
+            "and use the returned reference_image_id.",
+            retryable=False,
+        ),
+        status_code=404,
+    )
+
+
+def validation_checkpoint_mode() -> AgentErrorException:
+    """The `mode` + `base_checkpoint_id` combination on the request body
+    is invalid. The constraints (per planning T-017 ticket):
+      - retry_same → base_checkpoint_id required
+      - remix      → base_checkpoint_id required
+      - fresh      → base_checkpoint_id MUST be absent
+    """
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_CHECKPOINT_MODE",
+            message="生成模式與來源候選圖不相符",
+            problem="`mode` and `base_checkpoint_id` are inconsistent: "
+            "retry_same and remix require a base_checkpoint_id, fresh forbids it.",
+            cause="Caller assembled the request body without honoring the "
+            "mode-vs-base contract from api-shape §5.2.",
+            fix="Send base_checkpoint_id together with retry_same / remix, or omit it for fresh.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
+def validation_reference_image_required() -> AgentErrorException:
+    """`input_mode=reference` sessions can't fire a fresh generation
+    without at least one reference image — the whole point of the mode
+    is image-conditioning."""
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_REFERENCE_IMAGE_REQUIRED",
+            message="此模式必須上傳至少一張參考圖",
+            problem="The session is in reference input mode but no "
+            "reference_image_ids were supplied for a fresh checkpoint.",
+            cause="Reference-mode sessions condition every fresh generation on "
+            "uploaded imagery; without one there is nothing to vary against.",
+            fix="Upload at least one reference image first, then include its "
+            "id in reference_image_ids.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
+def validation_reference_image_unsupported_type() -> AgentErrorException:
+    """Reject MIME types other than PNG / JPEG / WebP (T-017 ticket spec)."""
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_REFERENCE_IMAGE_TYPE",
+            message="參考圖格式不支援，請上傳 PNG / JPEG / WebP",
+            problem="Reference image upload has an unsupported MIME type.",
+            cause="Phase 1 only supports image/png, image/jpeg, and image/webp.",
+            fix="Re-export the reference as PNG, JPEG, or WebP and re-upload.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
+def validation_reference_image_undecodable() -> AgentErrorException:
+    """The uploaded multipart bytes weren't actually a decodable image,
+    even though the `Content-Type` header said they were. Catching at
+    upload time means the failure surfaces as a 400 next to the upload
+    itself instead of a delayed task failure when the worker tries
+    `ensure_png_bytes` (Codex P2 round-2)."""
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_REFERENCE_IMAGE_UNDECODABLE",
+            message="參考圖檔案損毀或格式不正確",
+            problem="Reference image upload could not be decoded by PIL.",
+            cause="Content-Type claimed PNG / JPEG / WebP but the bytes "
+            "were truncated, corrupted, or a different encoding entirely.",
+            fix="Re-export the reference from a working image editor and re-upload.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
+def validation_reference_image_too_large(
+    *, size_bytes: int, limit_bytes: int
+) -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_REFERENCE_IMAGE_TOO_LARGE",
+            message="參考圖檔案過大（上限 10 MB）",
+            problem=f"Reference image is {size_bytes} bytes; the limit is {limit_bytes} bytes.",
+            cause="Phase 1 caps reference uploads at 10 MB to bound storage "
+            "and worker memory pressure.",
+            fix="Compress the reference (lower resolution, optimise PNG, or "
+            "convert to WebP) and re-upload.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
+def queue_unavailable(*, task_id: str | None = None) -> AgentErrorException:
+    """Raised when the arq queue can't accept a job — usually Redis is
+    down or unreachable. The DB row has already been marked `failed`
+    with the same code by `task_service.create_task`; we surface this
+    AgentError to the caller so the response is structured (not a 500)
+    and includes the reserved `task_id` so the caller can still inspect
+    the failed row (Codex P1 round-7).
+    """
+    return AgentErrorException(
+        AgentError(
+            code="QUEUE_UNAVAILABLE",
+            message="任務佇列暫時不可用，請稍後再試",
+            problem="arq enqueue_job raised; the task row was marked "
+            "failed to avoid a stuck queued orphan." + (f" Task id: {task_id}." if task_id else ""),
+            cause="Redis or the arq worker pool is unreachable.",
+            fix="Retry shortly. If the issue persists, check infra / "
+            "Redis status and the worker process.",
+            retryable=True,
+        ),
+        status_code=503,
+    )
+
+
+def conflict_session_not_active() -> AgentErrorException:
+    """Mutating endpoints (`/checkpoints`, `/reference-images`) refuse
+    to act on a session that's already `completed` or `abandoned` —
+    the session's lifecycle is supposed to end the moment Base is
+    selected or the user gives up."""
+    return AgentErrorException(
+        AgentError(
+            code="CONFLICT_SESSION_NOT_ACTIVE",
+            message="此建立流程已結束，無法繼續",
+            problem="The creation session is no longer in_progress; "
+            "no further checkpoints or references can be added.",
+            cause="The caller attempted to mutate a session that has been "
+            "completed (Base selected) or abandoned.",
+            fix="Start a new creation session via POST /v1/characters.",
+            retryable=False,
+        ),
+        status_code=409,
+    )
+
+
+def conflict_sequence_race() -> AgentErrorException:
+    """A checkpoint INSERT collided with the `(creation_session_id,
+    sequence)` UNIQUE constraint. Phase 1 accepts this as a rare race
+    between Redis recovery and DB commit (planning §3.5 殘餘 race) and
+    surfaces it as retryable so the user just hits "重試"."""
+    return AgentErrorException(
+        AgentError(
+            code="CONFLICT_SEQUENCE_RACE",
+            message="生成衝突，請重試",
+            problem="Checkpoint INSERT failed on the (creation_session_id, "
+            "sequence) UNIQUE constraint.",
+            cause="The Redis sequence allocator and a concurrent worker "
+            "raced; both reserved the same sequence value before the row "
+            "committed (planning/backend/task-queue.md §3.5).",
+            fix="Retry the request; the allocator will re-reserve a new sequence on the next call.",
+            retryable=True,
+        ),
+        status_code=409,
+    )
+
+
 def conflict_task_already_terminal() -> AgentErrorException:
     return AgentErrorException(
         AgentError(

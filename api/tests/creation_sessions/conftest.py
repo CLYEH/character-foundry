@@ -28,9 +28,13 @@ JWT_SECRET = "test-jwt-secret-dont-use-in-prod"
 _TABLES_TO_CLEAN = (
     "refresh_tokens",
     "tasks",
+    # generation_logs has FK to users(RESTRICT) — clean before users so
+    # rows left by the T-017 worker don't block the user delete.
+    "generation_logs",
     "motions",
     "aliases",
     "bases",
+    "reference_images",
     "checkpoints",
     "creation_sessions",
     "characters",

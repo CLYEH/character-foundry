@@ -23,6 +23,12 @@ dependencies = [
     "arq>=0.26",
     # Slug generation: Chinese → pinyin transliteration (T-016).
     "pypinyin>=0.51",
+    # PIL for thumbnail generation in the create_checkpoint worker (T-017).
+    "Pillow>=10.4",
+    # FastAPI multipart parser — required by UploadFile / File() in the
+    # T-017 reference-image upload route. Not a transitive dep of FastAPI
+    # (CI stripped Python environments don't have it), so pin it explicitly.
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
