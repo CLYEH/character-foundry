@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-28
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-019 done，T-020 ~ T-027 開單中）
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-020 done，T-021 ~ T-027 開單中）
 
 ---
 
@@ -50,7 +50,7 @@
 | T-017 | Backend Checkpoint generation flow | DONE |
 | T-018 | Backend Select Base / Fork / Abandon | DONE |
 | T-019 | Backend Prompt preview endpoint | DONE |
-| T-020 | Frontend Dashboard (grid + empty state) | TODO |
+| T-020 | Frontend Dashboard (grid + empty state) | DONE |
 | T-021 | Frontend New Character page (mode picker) | TODO |
 | T-022 | Frontend Creation Session — template mode | TODO |
 | T-023 | Frontend Creation Session — reference mode | TODO |

@@ -1,6 +1,6 @@
 # T-020: Frontend — Dashboard Character grid + empty state
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 2
 **Est:** S (1h)
 **Depends on:** T-008 (auth guard), T-010 (TopNav), T-016 (GET /v1/characters)
