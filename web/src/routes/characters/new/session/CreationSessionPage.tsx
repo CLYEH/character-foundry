@@ -15,11 +15,13 @@ import type { TaskEvent } from '@/api/endpoints/tasks'
 import {
   CheckpointLightbox,
   CheckpointList,
+  PromptPreviewModal,
   ReferenceInputPanel,
   TemplateInputPanel,
   type CheckpointCardModel,
   type RemixContext,
 } from '@/components/creation'
+import type { PromptPreviewRequest } from '@/api/endpoints/prompt'
 import { GenericErrorPage } from '@/components/composite/ErrorPage'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -59,6 +61,7 @@ export default function CreationSessionPage() {
   const [remixContext, setRemixContext] = useState<RemixContext>(null)
   const [placeholders, setPlaceholders] = useState<Map<string, PlaceholderState>>(() => new Map())
   const [lightboxCheckpointId, setLightboxCheckpointId] = useState<string | null>(null)
+  const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
   const referenceUpload = useReferenceUpload(sessionId ?? '')
 
   // Monotonic counter so a placeholder's render slot is stable even if state
@@ -230,10 +233,19 @@ export default function CreationSessionPage() {
   }, [resetReferences])
 
   const handleAdvancedView = useCallback(() => {
-    // T-024 owns the Advanced Prompt modal (M-01). Until then the toast is
-    // the visible "open" event the ticket asks us to wire.
-    toast.info('進階檢視即將上線（T-024）')
+    setPromptPreviewOpen(true)
   }, [])
+
+  const promptPreviewRequest = useMemo<PromptPreviewRequest>(() => {
+    const trimmedNote = freeformNote.trim()
+    const isReference = inputMode === 'reference'
+    return {
+      mode: 'create_base',
+      menu_selections: !isReference && hasAnyMenuValue(menuSelections) ? menuSelections : null,
+      freeform_note: trimmedNote.length > 0 ? trimmedNote : null,
+      reference_image_ids: isReference && referenceImageIds.length > 0 ? referenceImageIds : null,
+    }
+  }, [freeformNote, inputMode, menuSelections, referenceImageIds])
 
   const handleRemix = useCallback(
     (checkpointId: string, sequence: number | null) => {
@@ -450,6 +462,12 @@ export default function CreationSessionPage() {
       <CheckpointLightbox
         checkpoint={lightboxCheckpoint}
         onClose={() => setLightboxCheckpointId(null)}
+      />
+
+      <PromptPreviewModal
+        isOpen={promptPreviewOpen}
+        onClose={() => setPromptPreviewOpen(false)}
+        request={promptPreviewRequest}
       />
     </section>
   )

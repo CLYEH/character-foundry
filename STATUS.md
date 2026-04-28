@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-28
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-023 done，T-024 ~ T-027 開單中）
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-024 done，T-025 ~ T-028 開單中）
 
 ---
 
@@ -54,7 +54,7 @@
 | T-021 | Frontend New Character page (mode picker) | DONE |
 | T-022 | Frontend Creation Session — template mode | DONE |
 | T-023 | Frontend Creation Session — reference mode | DONE |
-| T-024 | Frontend Prompt preview modal (M-01) | TODO |
+| T-024 | Frontend Prompt preview modal (M-01) | DONE |
 | T-025 | Frontend Select Base + Character Detail (Base only) | TODO |
 | T-026 | E2E Character creation smoke test (template) | TODO |
 | T-027 | CharacterDetail DTO + frontend resume in-progress session | TODO |

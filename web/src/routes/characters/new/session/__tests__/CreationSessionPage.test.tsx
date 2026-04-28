@@ -36,6 +36,16 @@ vi.mock('@/api/endpoints/tasks', async () => {
   return { ...actual, cancelTask: vi.fn() }
 })
 
+vi.mock('@/api/endpoints/prompt', async () => {
+  const actual =
+    await vi.importActual<typeof import('@/api/endpoints/prompt')>('@/api/endpoints/prompt')
+  // The advanced-view button click only needs the modal to open; deeper
+  // prompt-preview behaviour is covered in PromptPreviewModal.test.tsx. Stub
+  // the network call so the modal's pending state is the visible end state
+  // here without leaking a real fetch into jsdom.
+  return { ...actual, previewPrompt: vi.fn(() => new Promise(() => {})) }
+})
+
 // Mocking @microsoft/fetch-event-source lets the real useTaskStream run with
 // a synthetic transport — `pushSse` below drives messages into the captured
 // onmessage callback so tests assert on real placeholder → final transitions.
@@ -665,14 +675,15 @@ describe('CreationSessionPage', () => {
     )
   })
 
-  it('進階檢視 fires a placeholder toast (T-024 owner)', async () => {
+  it('進階檢視 opens the prompt-preview modal (T-024)', async () => {
     getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
     renderPage()
     await screen.findByRole('button', { name: '生成新候選' })
 
     fireEvent.click(screen.getByRole('button', { name: '進階檢視 Prompt' }))
 
-    expect(sonnerCalls.find((c) => c.kind === 'info')?.message).toMatch(/T-024/)
+    // Modal title only renders once the dialog is open.
+    expect(await screen.findByRole('dialog', { name: '進階檢視 Prompt' })).toBeInTheDocument()
   })
 
   it('completed checkpoint with null thumbnail still exposes the lightbox via output_image_url', async () => {
