@@ -3,13 +3,18 @@
 Pulled out of the schema module so the schema stays import-clean (no
 storage imports). Both the GET checkpoint route and the worker's SSE
 result publisher call into here so the DTO shape is identical.
+
+Also hosts `build_base_dto` (T-018) for the same reason — Base DTOs
+need signed URLs minted from `bases.image_key`.
 """
 
 from __future__ import annotations
 
 import logging
 
+from app.models.base import BaseAsset
 from app.models.checkpoint import Checkpoint
+from app.schemas.base import BaseDTO
 from app.schemas.checkpoint import CheckpointDTO
 from app.storage.backend import StorageBackend
 from app.utils.prompt_summary import build_prompt_summary
@@ -43,6 +48,28 @@ def thumbnail_key_for(output_image_key: str) -> str:
     if output_image_key.endswith(".png"):
         return output_image_key[: -len(".png")] + _THUMBNAIL_SUFFIX
     return output_image_key + _THUMBNAIL_SUFFIX
+
+
+def build_base_dto(base: BaseAsset, storage: StorageBackend) -> BaseDTO:
+    """Mint signed URLs for a Base row. Same `image_key` ↔ `_thumb.png`
+    convention as checkpoints — the Base row inherits the source
+    checkpoint's storage key (no copy), so the same thumbnail file
+    serves both."""
+    image_url = _signed_url_or_none(storage, base.image_key)
+    thumb_key = thumbnail_key_for(base.image_key)
+    thumb_url: str | None
+    if storage.exists(thumb_key):
+        thumb_url = _signed_url_or_none(storage, thumb_key)
+    else:
+        thumb_url = None
+    return BaseDTO(
+        id=base.id,
+        character_id=base.character_id,
+        image_url=image_url,
+        thumbnail_url=thumb_url,
+        from_checkpoint_id=base.from_checkpoint_id,
+        created_at=base.created_at,
+    )
 
 
 def build_checkpoint_dto(checkpoint: Checkpoint, storage: StorageBackend) -> CheckpointDTO:

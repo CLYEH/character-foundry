@@ -16,6 +16,22 @@ async def get(db: AsyncSession, session_id: uuid.UUID) -> CreationSession | None
     return await db.get(CreationSession, session_id)
 
 
+async def get_for_update(db: AsyncSession, session_id: uuid.UUID) -> CreationSession | None:
+    """Lock the row for the duration of the current transaction.
+
+    Used by select-base + abandon to serialize terminal-state
+    transitions on the same session: without this, two writers can
+    both observe `status='in_progress'` and commit conflicting end
+    states (Codex T-018 round-2 P2). `SELECT ... FOR UPDATE` blocks
+    the second caller until the first commits or rolls back, after
+    which the loser sees the new terminal status and bails with the
+    documented 409.
+    """
+    stmt = select(CreationSession).where(CreationSession.id == session_id).with_for_update()
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def list_checkpoints(
     db: AsyncSession,
     *,

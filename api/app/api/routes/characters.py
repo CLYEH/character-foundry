@@ -16,10 +16,11 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import db_session, get_current_user
+from app.api.deps import db_session, get_current_user, get_storage
 from app.core.redis_client import get_redis
 from app.models.character import Character
 from app.models.user import User
+from app.repositories import base_repo
 from app.schemas.character import (
     CharacterDetailDTO,
     CharacterDetailResponse,
@@ -32,8 +33,10 @@ from app.schemas.character import (
     OwnerSummary,
     PatchCharacterRequest,
 )
+from app.schemas.checkpoint_builder import build_base_dto, thumbnail_key_for
 from app.schemas.creation_session import CreationSessionDTO
 from app.services import character_service
+from app.storage.backend import StorageBackend
 
 router = APIRouter(prefix="/v1/characters", tags=["characters"])
 _logger = logging.getLogger(__name__)
@@ -98,20 +101,51 @@ def _owner_summary_from(owner_id: uuid.UUID, owners: dict[uuid.UUID, User]) -> O
     return OwnerSummary(id=owner_id, name=name)
 
 
-def _character_to_dto_with_owners(
-    character: Character, owners: dict[uuid.UUID, User]
+def _base_thumb_url(
+    storage: StorageBackend | None,
+    image_key: str | None,
+) -> str | None:
+    """Mint the Base thumbnail signed URL for the list / DTO surfaces.
+
+    Returns None when:
+    - No Base is selected yet (image_key is None).
+    - Storage was not provided (callers that don't need URLs).
+    - The thumbnail file doesn't exist (Phase 1 worker writes it on
+      every checkpoint commit, but we still preflight `exists` for
+      defensive symmetry with `build_checkpoint_dto`).
+    - Signed URL minting raises (logged, swallowed).
+    """
+    if storage is None or image_key is None:
+        return None
+    thumb_key = thumbnail_key_for(image_key)
+    if not storage.exists(thumb_key):
+        return None
+    try:
+        return storage.get_signed_url(thumb_key, expires_in_seconds=3600)
+    except Exception:  # noqa: BLE001 — defensive parity with checkpoint DTO
+        _logger.exception("character DTO: thumbnail signed URL mint failed for %s", thumb_key)
+        return None
+
+
+def build_character_list_dto_with_owners(
+    character: Character,
+    owners: dict[uuid.UUID, User],
+    *,
+    base_image_key: str | None = None,
+    storage: StorageBackend | None = None,
 ) -> CharacterDTO:
     """List-path DTO builder — synchronous; takes a pre-fetched owner
     lookup so the caller can amortize the user query across the page.
-    Single-character paths still go through `_character_to_dto` which
-    does its own `_resolve_owner` lookup."""
+    `base_image_key` is supplied by the caller (list endpoint batches
+    a `bases` query keyed by `character_id`) so we don't re-fetch per
+    row; the helper is sync to keep the per-row cost predictable.
+    """
     return CharacterDTO(
         id=character.id,
         name=character.name,
         slug=character.slug,
         owner=_owner_summary_from(character.owner_id, owners),
-        # Sprint 2 placeholder — T-018 backfills via the bases table.
-        base_thumbnail_url=None,
+        base_thumbnail_url=_base_thumb_url(storage, base_image_key),
         # Sprint 2 placeholders — T-019 / T-020 backfill these.
         alias_count=0,
         motion_count=0,
@@ -120,15 +154,27 @@ def _character_to_dto_with_owners(
     )
 
 
-async def _character_to_dto(db: AsyncSession, character: Character) -> CharacterDTO:
+async def build_character_list_dto(
+    db: AsyncSession,
+    character: Character,
+    *,
+    storage: StorageBackend | None = None,
+) -> CharacterDTO:
+    """Single-character DTO. Looks up the linked Base on demand —
+    the route hits this only for create / detail / patch / restore,
+    so one-extra-query is fine. List endpoint uses the bulk path."""
     owner = await _resolve_owner(db, character.owner_id)
+    base_image_key: str | None = None
+    if character.base_id is not None:
+        base = await base_repo.get_by_character_id(db, character.id)
+        if base is not None:
+            base_image_key = base.image_key
     return CharacterDTO(
         id=character.id,
         name=character.name,
         slug=character.slug,
         owner=OwnerSummary(id=owner.id, name=owner.name),
-        # Sprint 2 placeholder — T-018 backfills via the bases table.
-        base_thumbnail_url=None,
+        base_thumbnail_url=_base_thumb_url(storage, base_image_key),
         # Sprint 2 placeholders — T-019 / T-020 backfill these.
         alias_count=0,
         motion_count=0,
@@ -140,6 +186,8 @@ async def _character_to_dto(db: AsyncSession, character: Character) -> Character
 async def _character_to_detail_dto(
     db: AsyncSession,
     character: Character,
+    *,
+    storage: StorageBackend | None = None,
 ) -> CharacterDetailDTO:
     owner = await _resolve_owner(db, character.owner_id)
     copied_from: CopiedFromSummary | None = None
@@ -147,13 +195,21 @@ async def _character_to_detail_dto(
         src = await db.get(Character, character.copied_from_character_id)
         if src is not None:
             copied_from = CopiedFromSummary(character_id=src.id, name=src.name)
+    base_payload: dict[str, object] | None = None
+    if character.base_id is not None and storage is not None:
+        base = await base_repo.get_by_character_id(db, character.id)
+        if base is not None:
+            # Use the same builder the select-base response uses so the
+            # detail surface stays identical to the immediate-after-
+            # select payload.
+            base_payload = build_base_dto(base, storage).model_dump(mode="json")
     return CharacterDetailDTO(
         id=character.id,
         name=character.name,
         slug=character.slug,
         owner=OwnerSummary(id=owner.id, name=owner.name),
-        # Sprint 2: base + aliases + motions all empty until T-018.
-        base=None,
+        base=base_payload,
+        # Aliases + motions still placeholders until T-019 / T-020.
         aliases=[],
         copied_from=copied_from,
         created_at=character.created_at,
@@ -183,10 +239,34 @@ def _session_to_dto(session: object, checkpoint_count: int = 0) -> CreationSessi
 # ---------------------------------------------------------------------------
 
 
+async def _bases_for_characters(
+    db: AsyncSession,
+    characters: list[Character],
+) -> dict[uuid.UUID, str]:
+    """Bulk-fetch `image_key` for the bases of a page of characters.
+    Returns a `{character_id: image_key}` map; characters without a
+    Base are absent from the map (caller treats missing as None).
+
+    One query per page — cheap because `bases.character_id` is UNIQUE
+    so the lookup hits the column's implicit btree index. Avoiding the
+    N+1 a per-row `base_repo.get_by_character_id` would create."""
+    from sqlalchemy import select
+
+    from app.models.base import BaseAsset
+
+    base_ids = {c.base_id for c in characters if c.base_id is not None}
+    if not base_ids:
+        return {}
+    stmt = select(BaseAsset).where(BaseAsset.id.in_(base_ids))
+    result = await db.execute(stmt)
+    return {row.character_id: row.image_key for row in result.scalars().all()}
+
+
 @router.get("", response_model=CharacterListResponse)
 async def list_characters(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
     owner_id: Annotated[
         str | None,
         Query(
@@ -223,7 +303,16 @@ async def list_characters(
     # is O(1) DB work, not O(page size). Codex round-7 P2.
     owner_ids = {c.owner_id for c in result.items}
     owners = await _owners_by_ids(db, owner_ids)
-    items = [_character_to_dto_with_owners(c, owners) for c in result.items]
+    base_keys = await _bases_for_characters(db, list(result.items))
+    items = [
+        build_character_list_dto_with_owners(
+            c,
+            owners,
+            base_image_key=base_keys.get(c.id),
+            storage=storage,
+        )
+        for c in result.items
+    ]
     return CharacterListResponse(items=items, next_cursor=result.next_cursor)
 
 
@@ -232,6 +321,7 @@ async def create_character(
     body: CreateCharacterRequest,
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
     redis: Annotated[Redis | None, Depends(_maybe_redis)] = None,
 ) -> CreateCharacterResponse:
     created = await character_service.create_character(
@@ -241,7 +331,7 @@ async def create_character(
         name=body.name,
         input_mode=body.input_mode,
     )
-    character_dto = await _character_to_dto(db, created.character)
+    character_dto = await build_character_list_dto(db, created.character, storage=storage)
     session_dto = _session_to_dto(created.creation_session, checkpoint_count=0)
     return CreateCharacterResponse(character=character_dto, creation_session=session_dto)
 
@@ -251,11 +341,14 @@ async def get_character(
     character_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
 ) -> CharacterDetailResponse:
     character = await character_service.get_character_for_read(
         db, user=user, character_id=character_id
     )
-    return CharacterDetailResponse(character=await _character_to_detail_dto(db, character))
+    return CharacterDetailResponse(
+        character=await _character_to_detail_dto(db, character, storage=storage),
+    )
 
 
 @router.patch("/{character_id}", response_model=CharacterResponse)
@@ -264,11 +357,14 @@ async def patch_character(
     body: PatchCharacterRequest,
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
 ) -> CharacterResponse:
     character = await character_service.update_character_name(
         db, user=user, character_id=character_id, new_name=body.name
     )
-    return CharacterResponse(character=await _character_to_dto(db, character))
+    return CharacterResponse(
+        character=await build_character_list_dto(db, character, storage=storage)
+    )
 
 
 @router.delete("/{character_id}", status_code=204)
@@ -288,6 +384,9 @@ async def restore_character(
     character_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
 ) -> CharacterResponse:
     character = await character_service.restore_character(db, user=user, character_id=character_id)
-    return CharacterResponse(character=await _character_to_dto(db, character))
+    return CharacterResponse(
+        character=await build_character_list_dto(db, character, storage=storage)
+    )
