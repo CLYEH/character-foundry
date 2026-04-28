@@ -564,3 +564,271 @@ async def test_worker_orphan_storage_cleanup_on_db_failure(
         assert not thumb.exists()
     finally:
         await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# T-028 — post-lock checkpoint guard
+#
+# Scenario the guard protects against: a `create_checkpoint` task is
+# in flight when the user picks a Base (or abandons the session). The
+# AI call has already been spent — the pipeline reaches the INSERT step
+# while `creation_sessions.status` has gone terminal. Without the guard,
+# we'd commit a stray checkpoint row into a `completed` / `abandoned`
+# session, breaking the "completed means locked" contract from T-018.
+#
+# The guard takes `SELECT ... FOR UPDATE` on the session row before
+# any DB write. select-base / abandon also lock the row that way, so
+# the two paths serialize: the loser sees the new terminal status and
+# bails (task → cancelled, storage cleaned up, no row written).
+# ---------------------------------------------------------------------------
+
+
+async def _terminate_session_with_lock(factory: Any, session_id: uuid.UUID, status: str) -> None:
+    """Mimic select-base / abandon: lock the row, flip status, commit.
+
+    We bypass the service so the test doesn't need to instantiate a
+    User ORM object — the worker's guard cares about
+    `creation_sessions.status` and the FOR UPDATE serialization, not
+    who flipped the bit.
+    """
+    from app.repositories import creation_session_repo as csr
+
+    async with factory() as db:
+        sess = await csr.get_for_update(db, session_id)
+        assert sess is not None
+        sess.status = status
+        if status == "completed":
+            sess.completed_at = datetime.now(UTC)
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_worker_aborts_after_session_completed(
+    database_url: str,
+    seeded_user: dict[str, Any],
+    default_team_id: uuid.UUID,
+    fake_redis: Any,
+    fake_arq_pool: FakeArqPool,
+    storage_root: Path,
+) -> None:
+    """T-028 acceptance #1: queued worker after select-base writes no
+    new row, leaves no orphan files, and ends as `cancelled` (not
+    failed — this is user-initiated termination).
+
+    Setup mimics "user queued a checkpoint, then picked a Base on an
+    earlier one before this task ran": session is `completed` by the
+    time the worker reaches the post-lock guard.
+    """
+    engine, factory = _factory_for(database_url)
+    try:
+        ids = await _create_session_for_user(
+            factory,
+            user_id=seeded_user["id"],
+            team_id=default_team_id,
+            name="PostLockCompletedChar",
+        )
+        # Flip session terminal BEFORE driving the worker. The AI call
+        # + storage put still run (worker doesn't know yet), then the
+        # post-lock guard catches the terminal status and aborts.
+        await _terminate_session_with_lock(factory, ids["session_id"], "completed")
+
+        checkpoint_id = uuid.uuid4()
+        async with factory() as db:
+            created = await task_service.create_task(
+                db,
+                fake_arq_pool,  # type: ignore[arg-type]
+                user_id=seeded_user["id"],
+                task_type="create_checkpoint",
+                input_payload=_payload_for(
+                    session_id=ids["session_id"],
+                    character_id=ids["character_id"],
+                    checkpoint_id=checkpoint_id,
+                ),
+            )
+
+        ctx = _ctx_for(factory, fake_redis, storage_root, ai_client=StubAIClient())
+        result = await run_create_checkpoint(ctx, str(created.task.id))
+        assert result["ok"] is False
+        assert result["reason"] == "session_terminal"
+
+        async with factory() as db:
+            task = await task_repo.get(db, created.task.id)
+            assert task is not None
+            assert task.status == "cancelled"  # NOT failed
+            assert task.error is None  # cancellation, not an AgentError
+
+            # No checkpoint row was written into the terminal session.
+            ckpt = await db.get(Checkpoint, checkpoint_id)
+            assert ckpt is None
+
+        # Storage orphan cleanup ran in the outer `finally` — files
+        # we put in step 3 of the worker are gone.
+        full = storage_root / "checkpoints" / str(ids["session_id"]) / f"{checkpoint_id}.png"
+        thumb = storage_root / "checkpoints" / str(ids["session_id"]) / f"{checkpoint_id}_thumb.png"
+        assert not full.exists()
+        assert not thumb.exists()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_aborts_after_session_abandoned(
+    database_url: str,
+    seeded_user: dict[str, Any],
+    default_team_id: uuid.UUID,
+    fake_redis: Any,
+    fake_arq_pool: FakeArqPool,
+    storage_root: Path,
+) -> None:
+    """T-028 acceptance #2: queued worker after abandon writes no row
+    and the task ends `cancelled`. Same shape as the completed test —
+    the guard treats both terminal statuses identically.
+    """
+    engine, factory = _factory_for(database_url)
+    try:
+        ids = await _create_session_for_user(
+            factory,
+            user_id=seeded_user["id"],
+            team_id=default_team_id,
+            name="PostLockAbandonedChar",
+        )
+        await _terminate_session_with_lock(factory, ids["session_id"], "abandoned")
+
+        checkpoint_id = uuid.uuid4()
+        async with factory() as db:
+            created = await task_service.create_task(
+                db,
+                fake_arq_pool,  # type: ignore[arg-type]
+                user_id=seeded_user["id"],
+                task_type="create_checkpoint",
+                input_payload=_payload_for(
+                    session_id=ids["session_id"],
+                    character_id=ids["character_id"],
+                    checkpoint_id=checkpoint_id,
+                ),
+            )
+
+        ctx = _ctx_for(factory, fake_redis, storage_root, ai_client=StubAIClient())
+        result = await run_create_checkpoint(ctx, str(created.task.id))
+        assert result["ok"] is False
+        assert result["reason"] == "session_terminal"
+
+        async with factory() as db:
+            task = await task_repo.get(db, created.task.id)
+            assert task is not None
+            assert task.status == "cancelled"
+            ckpt = await db.get(Checkpoint, checkpoint_id)
+            assert ckpt is None
+
+        full = storage_root / "checkpoints" / str(ids["session_id"]) / f"{checkpoint_id}.png"
+        thumb = storage_root / "checkpoints" / str(ids["session_id"]) / f"{checkpoint_id}_thumb.png"
+        assert not full.exists()
+        assert not thumb.exists()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_concurrent_with_terminator_serializes(
+    database_url: str,
+    seeded_user: dict[str, Any],
+    default_team_id: uuid.UUID,
+    fake_redis: Any,
+    fake_arq_pool: FakeArqPool,
+    storage_root: Path,
+) -> None:
+    """T-028 acceptance #3: when a session-terminator runs concurrently
+    with the worker, the FOR UPDATE on `creation_sessions` serializes
+    them cleanly — no orphan rows, no orphan files, no deadlock.
+
+    Whichever side reaches `SELECT ... FOR UPDATE` first wins; the
+    other observes the post-commit state and behaves consistently.
+    asyncio.gather doesn't enforce an ordering — under different
+    scheduler / connection-pool / DB-latency conditions either path
+    can land first — so we assert the invariant rather than a fixed
+    outcome:
+
+    - terminator wins → worker sees `completed`, aborts cleanly
+      (task=cancelled, no row, no orphan files, reason=session_terminal).
+    - worker wins   → checkpoint row commits while session is still
+      `in_progress`; terminator then locks, flips to completed, commits.
+      Final session=completed, row exists, task=completed.
+
+    Either is acceptable; what matters is that we never end up with
+    the cross-product (e.g. row committed AND task cancelled). Codex
+    P2 on PR #33 — earlier hard-coded outcome was flake-prone.
+    """
+    import asyncio
+
+    engine, factory = _factory_for(database_url)
+    try:
+        ids = await _create_session_for_user(
+            factory,
+            user_id=seeded_user["id"],
+            team_id=default_team_id,
+            name="RaceChar",
+        )
+        worker_checkpoint_id = uuid.uuid4()
+        async with factory() as db:
+            created = await task_service.create_task(
+                db,
+                fake_arq_pool,  # type: ignore[arg-type]
+                user_id=seeded_user["id"],
+                task_type="create_checkpoint",
+                input_payload=_payload_for(
+                    session_id=ids["session_id"],
+                    character_id=ids["character_id"],
+                    checkpoint_id=worker_checkpoint_id,
+                ),
+            )
+
+        ctx = _ctx_for(factory, fake_redis, storage_root, ai_client=StubAIClient())
+
+        async def _run_worker() -> dict[str, Any]:
+            return await run_create_checkpoint(ctx, str(created.task.id))
+
+        async def _run_terminator() -> None:
+            await _terminate_session_with_lock(factory, ids["session_id"], "completed")
+
+        worker_result, _ = await asyncio.gather(_run_worker(), _run_terminator())
+
+        full = storage_root / "checkpoints" / str(ids["session_id"]) / f"{worker_checkpoint_id}.png"
+        thumb = (
+            storage_root
+            / "checkpoints"
+            / str(ids["session_id"])
+            / f"{worker_checkpoint_id}_thumb.png"
+        )
+
+        async with factory() as db:
+            from app.models.creation_session import CreationSession
+
+            session = await db.get(CreationSession, ids["session_id"])
+            assert session is not None
+            # Terminator always commits its status flip eventually,
+            # regardless of order — it's never blocked by anything
+            # that could fail in this test.
+            assert session.status == "completed"
+
+            task = await task_repo.get(db, created.task.id)
+            assert task is not None
+            row = await db.get(Checkpoint, worker_checkpoint_id)
+
+            if task.status == "completed":
+                # Worker won the race: row committed while session
+                # was still `in_progress`, terminator then ran. This
+                # IS allowed — T-018's normal select-base flow.
+                assert worker_result.get("ok") is True
+                assert row is not None
+                assert full.is_file()
+            else:
+                # Terminator won: worker observed the terminal status
+                # and aborted via the post-lock guard.
+                assert task.status == "cancelled"
+                assert task.error is None  # cancellation, not failure
+                assert worker_result["reason"] == "session_terminal"
+                assert row is None
+                assert not full.exists()
+                assert not thumb.exists()
+    finally:
+        await engine.dispose()
