@@ -52,6 +52,7 @@ from app.prompt.reconciler import (
 )
 from app.repositories import (
     checkpoint_repo,
+    creation_session_repo,
     generation_log_repo,
     task_repo,
 )
@@ -609,6 +610,40 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
 
             try:
                 async with session_factory() as db:
+                    # T-028 post-lock guard: SELECT ... FOR UPDATE on the
+                    # session row before any write. select-base / abandon
+                    # also hold this row with FOR UPDATE for the duration
+                    # of their commit, so the two paths serialize: if a
+                    # terminal transition committed first we observe the
+                    # new status here and abort cleanly; if we win the
+                    # lock, our INSERTs land before the terminal flip
+                    # gets to evaluate `session.status` and the checkpoint
+                    # is allowed by the contract. Either way: at most one
+                    # writer succeeds, no orphan rows in terminal sessions.
+                    locked_session = await creation_session_repo.get_for_update(db, session_id)
+                    if locked_session is None or locked_session.status != "in_progress":
+                        # Release the FOR UPDATE lock before opening the
+                        # mark-cancelled session — `_commit_cancelled`
+                        # uses its own transaction, but holding two locks
+                        # on the same engine can deadlock under load.
+                        await db.rollback()
+                        terminal = locked_session.status if locked_session else "missing"
+                        _logger.info(
+                            "create_checkpoint: session %s no longer in_progress "
+                            "(status=%s); aborting task %s as cancelled (T-028)",
+                            session_id,
+                            terminal,
+                            task_uuid,
+                        )
+                        # output_orphaned stays True → outer `finally`
+                        # cleans up the PNG + thumbnail we just wrote.
+                        await _commit_cancelled(session_factory, task_uuid, redis)
+                        return {
+                            "task_id": task_id,
+                            "ok": False,
+                            "reason": "session_terminal",
+                        }
+
                     log_row = await generation_log_repo.insert_success(
                         db,
                         user_id=user_id,

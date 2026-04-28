@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-04-28
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-024 done，T-025 ~ T-028 開單中）
+> **Last updated:** 2026-04-29
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-024 + T-028 done，T-025 ~ T-027 開單中）
 
 ---
 
@@ -58,7 +58,7 @@
 | T-025 | Frontend Select Base + Character Detail (Base only) | TODO |
 | T-026 | E2E Character creation smoke test (template) | TODO |
 | T-027 | CharacterDetail DTO + frontend resume in-progress session | TODO |
-| T-028 | Worker post-lock checkpoint guard（從 T-018 PR #23 拆出來，Codex round-2 P1） | TODO |
+| T-028 | Worker post-lock checkpoint guard（從 T-018 PR #23 拆出來，Codex round-2 P1） | DONE |
 
 ### Sprint 3 — Aliases + Motions（尚未開單）
 三合一 Alias 輸入（含 Inpaint）、Preset + Custom motion。
