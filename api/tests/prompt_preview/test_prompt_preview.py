@@ -218,9 +218,7 @@ async def test_preview_reads_cache_populated_by_prior_reconcile(
     test_loop_redis = fakeredis.aioredis.FakeRedis(server=fake_server, decode_responses=True)
     rec = PromptReconciler(redis=test_loop_redis, client=fake_reconciler_client)
 
-    await rec.reconcile(
-        ReconcileInput(mode=ReconcileMode.CREATE_BASE, freeform_note="一致的補述")
-    )
+    await rec.reconcile(ReconcileInput(mode=ReconcileMode.CREATE_BASE, freeform_note="一致的補述"))
     assert len(fake_reconciler_client.calls) == 1
 
     keys_before = list(sync_redis.scan_iter("reconciler:*"))
