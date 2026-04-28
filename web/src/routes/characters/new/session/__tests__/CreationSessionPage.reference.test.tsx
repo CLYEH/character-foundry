@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import type { ReactNode } from 'react'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import CreationSessionPage from '../CreationSessionPage'
@@ -137,7 +138,7 @@ function makeCheckpoint(overrides: Partial<Checkpoint> = {}): Checkpoint {
   }
 }
 
-function renderPage() {
+function renderPage(extraRouteElement?: ReactNode) {
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false, refetchOnWindowFocus: false, gcTime: 0 },
@@ -150,11 +151,28 @@ function renderPage() {
         <MemoryRouter initialEntries={[`/characters/new/session/${SESSION_ID}`]}>
           <Routes>
             <Route path="/" element={<div>dashboard</div>} />
-            <Route path="/characters/new/session/:id" element={<CreationSessionPage />} />
+            <Route
+              path="/characters/new/session/:id"
+              element={
+                <>
+                  <CreationSessionPage />
+                  {extraRouteElement}
+                </>
+              }
+            />
           </Routes>
         </MemoryRouter>
       </TooltipProvider>
     </QueryClientProvider>,
+  )
+}
+
+function NavigateButton({ to, label }: { to: string; label: string }) {
+  const navigate = useNavigate()
+  return (
+    <button type="button" onClick={() => navigate(to)} data-testid={`nav-${label}`}>
+      {label}
+    </button>
   )
 }
 
@@ -407,6 +425,56 @@ describe('CreationSessionPage — reference mode', () => {
       await Promise.resolve()
     })
     await waitFor(() => expect(generate).toBeEnabled())
+  })
+
+  it('clears reference upload state when sessionId changes (cross-session leak guard)', async () => {
+    const OTHER_SESSION_ID = '77777777-7777-7777-7777-777777777777'
+    // The same CreationSessionPage component stays mounted across `:id`
+    // changes (same route pattern). Without the per-sessionId reset,
+    // session A's reference_image_ids would leak into session B's
+    // submit payload — the backend would reject those ids with
+    // NOT_FOUND_REFERENCE_IMAGE.
+    getCreationSessionMock.mockImplementation((id: string) =>
+      Promise.resolve({
+        ...makeReferenceSession(),
+        session: { ...makeReferenceSession().session, id },
+      }),
+    )
+    uploadReferenceImageMock.mockResolvedValue({
+      reference_image_id: 'ref-leak',
+      url: 'https://signed/leak',
+    })
+    createCheckpointMock.mockResolvedValue({ task_id: 'task-x', checkpoint_id: 'cp-x' })
+    renderPage(
+      <NavigateButton
+        to={`/characters/new/session/${OTHER_SESSION_ID}`}
+        label="other-session"
+      />,
+    )
+
+    await screen.findByTestId('reference-image-dropzone')
+    const input = screen.getByTestId('reference-image-input') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [makePngFile('a.png')] } })
+    })
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^reference-image-preview-/)).toHaveLength(1)
+    })
+    // Wait for the upload to settle so the id is in `referenceImageIds`.
+    await waitFor(() => {
+      const preview = screen.getByTestId(/^reference-image-preview-/)
+      expect(preview).toHaveAttribute('data-status', 'ready')
+    })
+
+    // Navigate to a different session — same route pattern, same
+    // mounted component instance.
+    fireEvent.click(screen.getByTestId('nav-other-session'))
+
+    // The session-detail query refetches on the new key, so the page
+    // briefly shows Skeleton; wait for the new dropzone to mount.
+    await screen.findByTestId('reference-image-dropzone')
+    expect(screen.queryByTestId(/^reference-image-preview-/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '生成新候選' })).toBeDisabled()
   })
 
   it('completed-checkpoint sanity: surfaces existing checkpoints in reference mode too', async () => {

@@ -73,6 +73,19 @@ export function useReferenceUpload(sessionId: string) {
     }
   }, [])
 
+  // Reset every time the active session id changes. The page component
+  // stays mounted across `:id`-only navigations (same route pattern),
+  // so without this, `filesRef` / `referenceImageIds` from session A
+  // would leak into session B's submit payload and the backend would
+  // reject the cross-session ids with `NOT_FOUND_REFERENCE_IMAGE`.
+  // Initial mount runs this with empty state — harmless no-op.
+  useEffect(() => {
+    reset()
+    // `reset` is a stable useCallback with no deps; gating only on
+    // `sessionId` keeps the effect from re-firing on unrelated rerenders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
+
   const revokeObjectUrl = useCallback((localId: string) => {
     const url = objectUrlsRef.current.get(localId)
     if (url) {
