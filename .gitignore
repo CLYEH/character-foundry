@@ -68,4 +68,13 @@ chroma.sqlite3
 entities.json
 mempalace.yaml
 .mempalace/
-.claude/
+
+# .claude/: ignore everything by default, but track the project-shared
+# settings, agents, and hooks (per-user state like settings.local.json
+# and scheduled_tasks.lock stay out).
+.claude/*
+!.claude/settings.json
+!.claude/agents
+!.claude/agents/**
+!.claude/hooks
+!.claude/hooks/**
