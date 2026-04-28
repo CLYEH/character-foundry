@@ -109,6 +109,22 @@ function makeUnsupportedFile(name: string): File {
   return new File([body], name, { type: 'image/gif' })
 }
 
+function makeEmptyMimePngFile(name: string): File {
+  // Bytes are a valid PNG signature, but `File.type` is empty — the
+  // drag-drop edge case where the OS didn't supply a MIME.
+  const body = new Uint8Array(PNG_SIGNATURE.length)
+  body.set(PNG_SIGNATURE, 0)
+  return new File([body], name, { type: '' })
+}
+
+function makeMismatchedMimeFile(name: string): File {
+  // PNG signature inside, but the declared MIME claims JPEG — classic
+  // extension-rename spoof attempt.
+  const body = new Uint8Array(PNG_SIGNATURE.length)
+  body.set(PNG_SIGNATURE, 0)
+  return new File([body], name, { type: 'image/jpeg' })
+}
+
 function makeReferenceSession(): CreationSessionDetail {
   return {
     session: {
@@ -425,6 +441,46 @@ describe('CreationSessionPage — reference mode', () => {
       await Promise.resolve()
     })
     await waitFor(() => expect(generate).toBeEnabled())
+  })
+
+  it('rejects a file with empty File.type even when bytes are a valid PNG', async () => {
+    // Backend gates on multipart `Content-Type` (sourced from `File.type`).
+    // A drag-drop file with empty MIME would round-trip and fail
+    // server-side; reject it client-side to short-circuit the wasted
+    // call (Codex P2 round 4 on PR #31).
+    getCreationSessionMock.mockResolvedValue(makeReferenceSession())
+    renderPage()
+
+    await screen.findByTestId('reference-image-dropzone')
+    const input = screen.getByTestId('reference-image-input') as HTMLInputElement
+
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [makeEmptyMimePngFile('a.png')] } })
+    })
+
+    expect(uploadReferenceImageMock).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(sonnerCalls.find((c) => c.kind === 'error')?.message).toMatch(/格式不支援/),
+    )
+  })
+
+  it('rejects a file whose declared MIME disagrees with the sniffed type (spoof attempt)', async () => {
+    // PNG bytes inside a file declared as JPEG — classic rename spoof.
+    // Belt+suspenders should catch the mismatch.
+    getCreationSessionMock.mockResolvedValue(makeReferenceSession())
+    renderPage()
+
+    await screen.findByTestId('reference-image-dropzone')
+    const input = screen.getByTestId('reference-image-input') as HTMLInputElement
+
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [makeMismatchedMimeFile('spoofed.jpg')] } })
+    })
+
+    expect(uploadReferenceImageMock).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(sonnerCalls.find((c) => c.kind === 'error')?.message).toMatch(/格式不一致|格式不支援/),
+    )
   })
 
   it('post-await capacity recheck blocks a 4th file from two concurrent addFiles batches', async () => {

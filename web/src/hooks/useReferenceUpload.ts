@@ -273,16 +273,25 @@ async function validateFile(file: File): Promise<string | null> {
   if (file.size > MAX_REFERENCE_IMAGE_BYTES) {
     return '檔案過大（上限 10 MB）'
   }
-  // `File.type` is set from the OS-reported MIME and is trivially
-  // spoofable via extension renames. Sniff the first bytes so we don't
-  // hand the server a JPEG masquerading as PNG just to be rejected on
-  // round-trip.
-  const sniffed = await sniffImageType(file)
-  if (!sniffed) {
+  // Belt: `File.type` must be in the allowlist. The backend sets the
+  // multipart part's Content-Type from this value, and rejects with
+  // VALIDATION_REFERENCE_IMAGE_TYPE if it isn't PNG/JPEG/WebP. Empty
+  // `File.type` (drag-drop from sources where the OS didn't fill in
+  // the MIME) would otherwise round-trip and fail server-side.
+  const declared = (file.type || '').toLowerCase()
+  if (!ALLOWED_REFERENCE_MIME_TYPES.includes(declared)) {
     return '檔案格式不支援（PNG / JPEG / WebP）'
   }
-  if (!ALLOWED_REFERENCE_MIME_TYPES.includes(sniffed)) {
+  // Suspenders: sniff the magic bytes — `File.type` is OS-reported and
+  // trivially spoofable via a `.png` rename of a JPEG. The sniff must
+  // also agree with the declared type; if the bytes say one thing and
+  // the header says another, treat that as a spoof attempt.
+  const sniffed = await sniffImageType(file)
+  if (!sniffed || !ALLOWED_REFERENCE_MIME_TYPES.includes(sniffed)) {
     return '檔案格式不支援（PNG / JPEG / WebP）'
+  }
+  if (sniffed !== declared) {
+    return '檔案格式不一致（內容與副檔名不符）'
   }
   return null
 }
