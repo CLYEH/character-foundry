@@ -18,6 +18,16 @@ export interface PromptPreviewModalProps {
   isOpen: boolean
   onClose: () => void
   request: PromptPreviewRequest
+  /**
+   * When set, the modal skips the API call and renders an inline notice
+   * instead. Used when the *next* generation will diverge from what
+   * `POST /v1/prompt/preview` can faithfully represent — currently remix
+   * mode, where the worker reconciles with `has_reference_image=True`
+   * (sourced from the parent checkpoint) but the preview endpoint has no
+   * `base_checkpoint_id` field to mirror that signal. Better to be honest
+   * about the gap than to render a misleading "audit" prompt.
+   */
+  unsupportedReason?: string | null
 }
 
 /**
@@ -33,7 +43,7 @@ export interface PromptPreviewModalProps {
  * API"); the backend Redis cache absorbs duplicate work so this is cheap.
  */
 export function PromptPreviewModal(props: PromptPreviewModalProps) {
-  const { isOpen, onClose, request } = props
+  const { isOpen, onClose, request, unsupportedReason } = props
 
   return (
     <Dialog
@@ -49,9 +59,25 @@ export function PromptPreviewModal(props: PromptPreviewModalProps) {
             送進 gpt-image-2 的最終 prompt。組合自平台 constraints、選單片段，與 LLM 重寫後的補述。
           </DialogDescription>
         </DialogHeader>
-        <PromptPreviewBody request={request} />
+        {unsupportedReason ? (
+          <UnsupportedNotice reason={unsupportedReason} />
+        ) : (
+          <PromptPreviewBody request={request} />
+        )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+function UnsupportedNotice({ reason }: { reason: string }) {
+  return (
+    <div
+      role="status"
+      data-testid="prompt-preview-unsupported"
+      className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/50 dark:text-amber-100"
+    >
+      {reason}
+    </div>
   )
 }
 

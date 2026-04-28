@@ -204,6 +204,31 @@ describe('PromptPreviewModal', () => {
     await waitFor(() => expect(previewPromptMock).toHaveBeenCalledTimes(2))
   })
 
+  it('renders the unsupported-reason notice and skips the API call', async () => {
+    const onClose = vi.fn()
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, refetchOnWindowFocus: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <PromptPreviewModal
+          isOpen
+          onClose={onClose}
+          request={REQUEST}
+          unsupportedReason="進階檢視 暫不支援 remix 模式"
+        />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByTestId('prompt-preview-unsupported')).toHaveTextContent(
+      '進階檢視 暫不支援 remix 模式',
+    )
+    expect(previewPromptMock).not.toHaveBeenCalled()
+  })
+
   it('toasts an error when clipboard write fails', async () => {
     previewPromptMock.mockResolvedValue(HAPPY_RESPONSE)
     Object.defineProperty(navigator, 'clipboard', {

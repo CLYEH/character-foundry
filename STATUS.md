@@ -104,6 +104,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | S3-1 | `POST /v1/prompt/preview` 的 `mask: {}` 應比照 `reference_image_ids: []` 視為 empty 拒掉（T-019 reviewer 提的 🟡，今天的 `dict[str, Any]` 內部 endpoint 不擋；Sprint 3 inpaint 用真正 `MaskInput` schema 時一起處理）| Sprint 3 alias inpaint ticket 落地時 |
 | S2-3 | Dashboard 分頁 / infinite scroll（T-020 首版用 `limit=100` 平鋪，未做 cursor pagination）| Character 數逼近 100 或 UX 反饋時 |
 | S2-4 | `Checkpoint` DTO 不含 `menu_selections` / `freeform_note`，所以 server-loaded checkpoint 點 `[用這張再改]` 無法 prefill form（T-022 placeholder 期間靠 client-side 記憶；reload 後就只設 remix base、form 留白）| Backend 加欄位後 Frontend 移除 placeholder fallback |
+| S2-5 | `/v1/prompt/preview` 沒有 `base_checkpoint_id` 欄位，所以 remix 模式的 [進階檢視] 沒辦法 faithful 呈現（worker 會以 parent checkpoint 走 image2image + `has_reference_image=True`，preview 端點接到的訊號是 `False`）。T-024 PR #32 codex P2 議題；目前在 frontend disabled 並顯示「remix 模式暫不支援」notice。Backend 加欄位後 frontend 移除 unsupported notice。| 開新 ticket 擴充 `/v1/prompt/preview` schema |
 
 ---
 

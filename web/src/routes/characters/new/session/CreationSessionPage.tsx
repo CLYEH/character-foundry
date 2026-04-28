@@ -472,6 +472,11 @@ export default function CreationSessionPage() {
         isOpen={promptPreviewOpen}
         onClose={() => setPromptPreviewOpen(false)}
         request={promptPreviewRequest}
+        unsupportedReason={
+          remixContext
+            ? `進階檢視 暫不支援 remix 模式（基於 #${remixContext.baseSequence ?? '?'}）。worker 會以該 checkpoint 為 image-to-image 來源，但 /v1/prompt/preview 還沒有對應的 base_checkpoint_id 欄位，預覽結果會與實際生成不一致。先點「從頭」清空後再開即可預覽。`
+            : null
+        }
       />
     </section>
   )
