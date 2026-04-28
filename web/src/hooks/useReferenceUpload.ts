@@ -62,6 +62,14 @@ export function useReferenceUpload(sessionId: string) {
   // would otherwise warn and the orphan row is collected by the 7-day
   // cleanup job.
   const isMountedRef = useRef(true)
+  // Mirror of `sessionId` we can read after an await without going
+  // through the closure. Stale continuations (from `addFiles` /
+  // `startUpload`) compare their captured sessionId against this ref
+  // and bail if the active session has moved on — otherwise an upload
+  // initiated in session A could land its `reference_image_id` in
+  // session B's items array (Codex P2 round 2 on PR #31).
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
 
   useEffect(() => {
     isMountedRef.current = true
@@ -103,7 +111,11 @@ export function useReferenceUpload(sessionId: string) {
       // independent state slots.
       void uploadReferenceImage(sessionId, file)
         .then((response) => {
-          if (!isMountedRef.current) return
+          // Bail if the hook has unmounted OR the session has changed
+          // since this upload was kicked off. Otherwise a session-A
+          // upload could write its `reference_image_id` into session B's
+          // items array.
+          if (!isMountedRef.current || sessionIdRef.current !== sessionId) return
           revokeObjectUrl(localId)
           setItems((prev) =>
             prev.map((item) =>
@@ -120,7 +132,7 @@ export function useReferenceUpload(sessionId: string) {
           )
         })
         .catch((err: unknown) => {
-          if (!isMountedRef.current) return
+          if (!isMountedRef.current || sessionIdRef.current !== sessionId) return
           const agent = AgentError.from(err)
           setItems((prev) =>
             prev.map((item) =>
@@ -149,6 +161,13 @@ export function useReferenceUpload(sessionId: string) {
       const accepted: PendingUpload[] = []
       let rejectedTooMany = 0
       const initiallyFull = filesRef.current.size >= MAX_REFERENCE_IMAGES
+      // Pin the session active when this batch entered. After every
+      // `await validateFile(...)` we bail if the hook has unmounted or
+      // the active session has moved on — otherwise the post-await
+      // continuation would create object URLs / set state in the new
+      // context and the upload would post under the old sessionId
+      // (Codex P2 round 2 on PR #31).
+      const enteredSessionId = sessionId
 
       for (const file of incoming) {
         if (filesRef.current.size >= MAX_REFERENCE_IMAGES) {
@@ -156,6 +175,7 @@ export function useReferenceUpload(sessionId: string) {
           continue
         }
         const reason = await validateFile(file)
+        if (!isMountedRef.current || sessionIdRef.current !== enteredSessionId) return
         if (reason) {
           toast.error(`${file.name}：${reason}`)
           continue
@@ -184,7 +204,7 @@ export function useReferenceUpload(sessionId: string) {
 
       for (const pending of accepted) startUpload(pending)
     },
-    [startUpload],
+    [sessionId, startUpload],
   )
 
   const remove = useCallback(
