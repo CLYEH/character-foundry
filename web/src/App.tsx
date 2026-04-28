@@ -16,6 +16,10 @@ const router = createBrowserRouter([
     element: <AppLayout />,
     children: [
       { path: '/', element: <DashboardPage /> },
+      // /characters/new lands in T-021 (NewCharacterPage), /characters/:id
+      // lands in T-025 (CharacterDetailPage). Until those tickets ship, the
+      // dashboard's CTA + card links fall through to the catch-all below by
+      // design — see T-020 ticket Related section + STATUS.md Sprint 2.
       { path: '*', element: <NotFoundPage /> },
     ],
   },
