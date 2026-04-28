@@ -621,7 +621,16 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                     # is allowed by the contract. Either way: at most one
                     # writer succeeds, no orphan rows in terminal sessions.
                     locked_session = await creation_session_repo.get_for_update(db, session_id)
-                    if locked_session is None or locked_session.status != "in_progress":
+                    # Capture the status BEFORE rollback. Async SQLAlchemy
+                    # expires attributes on rollback, and a subsequent
+                    # sync attribute access would trigger an implicit
+                    # lazy-load with no greenlet bridge → MissingGreenlet
+                    # → caught by the outer Exception handler → task
+                    # ends up `failed` instead of `cancelled`.
+                    terminal_status: str | None = (
+                        locked_session.status if locked_session is not None else None
+                    )
+                    if terminal_status != "in_progress":
                         # Release the FOR UPDATE on creation_sessions
                         # promptly. `_commit_cancelled` opens its own
                         # connection to write `tasks` — the lock isn't
@@ -631,12 +640,11 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                         # select-base call would block on a row whose
                         # consumer has already moved on.
                         await db.rollback()
-                        terminal = locked_session.status if locked_session else "missing"
                         _logger.info(
                             "create_checkpoint: session %s no longer in_progress "
                             "(status=%s); aborting task %s as cancelled (T-028)",
                             session_id,
-                            terminal,
+                            terminal_status if terminal_status is not None else "missing",
                             task_uuid,
                         )
                         # output_orphaned stays True → outer `finally`
