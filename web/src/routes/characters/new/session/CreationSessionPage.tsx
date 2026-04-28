@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
-import { Link, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { creationSessionQueryKey, useCreationSession } from '@/api/queries/useCreationSession'
@@ -17,10 +17,12 @@ import {
   CheckpointList,
   PromptPreviewModal,
   ReferenceInputPanel,
+  SelectBaseConfirmDialog,
   TemplateInputPanel,
   type CheckpointCardModel,
   type RemixContext,
 } from '@/components/creation'
+import { useSelectBase } from '@/hooks/useSelectBase'
 import type { PromptPreviewRequest } from '@/api/endpoints/prompt'
 import { GenericErrorPage } from '@/components/composite/ErrorPage'
 import { Button } from '@/components/ui/button'
@@ -54,7 +56,9 @@ export default function CreationSessionPage() {
   const sessionQuery = useCreationSession(sessionId)
   const createCheckpoint = useCreateCheckpoint(sessionId ?? '')
   const cancelTaskMutation = useCancelTask()
+  const selectBaseMutation = useSelectBase(sessionId)
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
 
   const [menuSelections, setMenuSelections] = useState<MenuSelections>(EMPTY_SELECTIONS)
   const [freeformNote, setFreeformNote] = useState<string>('')
@@ -62,6 +66,10 @@ export default function CreationSessionPage() {
   const [placeholders, setPlaceholders] = useState<Map<string, PlaceholderState>>(() => new Map())
   const [lightboxCheckpointId, setLightboxCheckpointId] = useState<string | null>(null)
   const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
+  const [pendingSelectBase, setPendingSelectBase] = useState<{
+    checkpointId: string
+    sequence: number | null
+  } | null>(null)
   const referenceUpload = useReferenceUpload(sessionId ?? '')
 
   // Monotonic counter so a placeholder's render slot is stable even if state
@@ -276,12 +284,45 @@ export default function CreationSessionPage() {
     [placeholders],
   )
 
-  const handleSelectAsBase = useCallback(() => {
-    // T-025 lands the actual select-base flow + redirect to /characters/:id.
-    // We surface the action so the smoke test can assert the button exists,
-    // but route the click to a toast until T-025 wires it up.
-    toast.info('選作 Base 即將上線（T-025）')
+  const handleSelectAsBase = useCallback(
+    (checkpointId: string) => {
+      const model = models.find((m) => m.checkpointId === checkpointId)
+      // Only completed checkpoints expose the "選作 Base" button; guard
+      // anyway so a stale click during a status transition can't open
+      // the confirm dialog with a non-completed checkpoint.
+      if (!model || model.status !== 'completed') return
+      setPendingSelectBase({ checkpointId, sequence: model.sequence })
+    },
+    [models],
+  )
+
+  const handleSelectBaseCancel = useCallback(() => {
+    setPendingSelectBase(null)
   }, [])
+
+  const handleSelectBaseConfirm = useCallback(() => {
+    if (!pendingSelectBase) return
+    selectBaseMutation.mutate(
+      { checkpoint_id: pendingSelectBase.checkpointId },
+      {
+        onSuccess: ({ character }) => {
+          setPendingSelectBase(null)
+          navigate(`/characters/${character.id}`)
+        },
+        onError: (err) => {
+          // CONFLICT_BASE_LOCKED is terminal — Base already exists, retrying
+          // can't recover it — and even VALIDATION_* failures shouldn't leave
+          // a destructive confirm sitting open for the user to mash. Close
+          // the dialog and surface the failure as a toast so the user can
+          // re-open via the card's "選作 Base" button if they want to try
+          // a different checkpoint.
+          setPendingSelectBase(null)
+          const agent = AgentError.from(err)
+          toast.error(agent.message || '無法確立 Base')
+        },
+      },
+    )
+  }, [navigate, pendingSelectBase, selectBaseMutation])
 
   const handleRetryFailed = useCallback(
     (checkpointId: string) => {
@@ -480,6 +521,18 @@ export default function CreationSessionPage() {
         request={promptPreviewRequest}
         unsupportedReason={
           remixContext ? buildRemixUnsupportedReason(remixContext.baseSequence) : null
+        }
+      />
+
+      <SelectBaseConfirmDialog
+        isOpen={pendingSelectBase !== null}
+        onClose={handleSelectBaseCancel}
+        onConfirm={handleSelectBaseConfirm}
+        isPending={selectBaseMutation.isPending}
+        sequenceLabel={
+          pendingSelectBase?.sequence !== null && pendingSelectBase?.sequence !== undefined
+            ? `#${pendingSelectBase.sequence}`
+            : null
         }
       />
     </section>

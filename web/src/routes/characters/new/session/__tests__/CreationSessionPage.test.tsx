@@ -4,14 +4,18 @@ import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import CreationSessionPage from '../CreationSessionPage'
+import { ApiError } from '@/api/client'
 import { cancelTask, type CancelTaskResponse, type TaskEvent } from '@/api/endpoints/tasks'
 import {
   createCheckpoint,
   getCreationSession,
+  selectBase,
   type Checkpoint,
   type CreateCheckpointResponse,
   type CreationSessionDetail,
+  type SelectBaseResponse,
 } from '@/api/endpoints/checkpoints'
+import type { Character } from '@/api/endpoints/characters'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -27,6 +31,7 @@ vi.mock('@/api/endpoints/checkpoints', async () => {
     ...actual,
     getCreationSession: vi.fn(),
     createCheckpoint: vi.fn(),
+    selectBase: vi.fn(),
   }
 })
 
@@ -82,6 +87,7 @@ vi.mock('sonner', async () => {
 const getCreationSessionMock = vi.mocked(getCreationSession)
 const createCheckpointMock = vi.mocked(createCheckpoint)
 const cancelTaskMock = vi.mocked(cancelTask)
+const selectBaseMock = vi.mocked(selectBase)
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -145,6 +151,10 @@ function renderPage() {
           <Routes>
             <Route path="/" element={<div>dashboard</div>} />
             <Route path="/characters/new/session/:id" element={<CreationSessionPage />} />
+            <Route
+              path="/characters/:id"
+              element={<div data-testid="character-detail-stub">detail</div>}
+            />
           </Routes>
         </MemoryRouter>
       </TooltipProvider>
@@ -176,6 +186,7 @@ beforeEach(() => {
   getCreationSessionMock.mockReset()
   createCheckpointMock.mockReset()
   cancelTaskMock.mockReset()
+  selectBaseMock.mockReset()
 })
 
 afterEach(() => {
@@ -725,5 +736,100 @@ describe('CreationSessionPage', () => {
 
     expect(await screen.findByTestId('checkpoint-lightbox')).toBeInTheDocument()
     expect(screen.getByText('紅旗袍版本')).toBeInTheDocument()
+  })
+
+  // -------------------------------------------------------------------------
+  // Select Base flow (T-025)
+  // -------------------------------------------------------------------------
+
+  function makeCharacter(): Character {
+    return {
+      id: 'char-promoted',
+      name: '小雅',
+      slug: 'xiao-ya',
+      owner: { id: ME_ID, name: 'Leo' },
+      base_thumbnail_url: 'https://img/base-thumb.png',
+      alias_count: 0,
+      motion_count: 0,
+      created_at: '2026-04-28T08:15:00Z',
+      updated_at: '2026-04-28T10:00:00Z',
+    }
+  }
+
+  function makeSelectBaseResponse(): SelectBaseResponse {
+    return {
+      character: makeCharacter(),
+      base: {
+        id: 'base-1',
+        character_id: 'char-promoted',
+        image_url: 'https://img/base.png',
+        thumbnail_url: 'https://img/base-thumb.png',
+        from_checkpoint_id: 'cp-final',
+        created_at: '2026-04-28T10:00:00Z',
+      },
+    }
+  }
+
+  it('選作 Base 開啟 confirm dialog 並可取消而不打 API', async () => {
+    getCreationSessionMock.mockResolvedValue(
+      makeSessionDetail([makeCheckpoint({ id: 'cp-final', sequence: 1 })]),
+    )
+    renderPage()
+    const card = await screen.findByTestId('checkpoint-card-cp-final')
+    fireEvent.click(within(card).getByRole('button', { name: '選作 Base' }))
+
+    expect(await screen.findByTestId('select-base-confirm')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('select-base-confirm')).not.toBeInTheDocument(),
+    )
+    expect(selectBaseMock).not.toHaveBeenCalled()
+  })
+
+  it('確認後呼叫 select-base API 成功跳到 character detail', async () => {
+    getCreationSessionMock.mockResolvedValue(
+      makeSessionDetail([makeCheckpoint({ id: 'cp-final', sequence: 1 })]),
+    )
+    selectBaseMock.mockResolvedValue(makeSelectBaseResponse())
+    renderPage()
+    const card = await screen.findByTestId('checkpoint-card-cp-final')
+    fireEvent.click(within(card).getByRole('button', { name: '選作 Base' }))
+
+    await screen.findByTestId('select-base-confirm')
+    fireEvent.click(screen.getByTestId('select-base-confirm-action'))
+
+    expect(await screen.findByTestId('character-detail-stub')).toBeInTheDocument()
+    expect(selectBaseMock).toHaveBeenCalledWith(SESSION_ID, { checkpoint_id: 'cp-final' })
+  })
+
+  it('confirm 後遇到 409 CONFLICT_BASE_LOCKED → toast 錯誤、不跳頁、dialog 關閉', async () => {
+    getCreationSessionMock.mockResolvedValue(
+      makeSessionDetail([makeCheckpoint({ id: 'cp-final', sequence: 1 })]),
+    )
+    selectBaseMock.mockRejectedValue(
+      new ApiError(409, 'CONFLICT_BASE_LOCKED', 'Base 已確立，無法重複選擇', {
+        error: { code: 'CONFLICT_BASE_LOCKED', message: 'Base 已確立，無法重複選擇' },
+      }),
+    )
+    renderPage()
+    const card = await screen.findByTestId('checkpoint-card-cp-final')
+    fireEvent.click(within(card).getByRole('button', { name: '選作 Base' }))
+
+    await screen.findByTestId('select-base-confirm')
+    fireEvent.click(screen.getByTestId('select-base-confirm-action'))
+
+    await waitFor(() =>
+      expect(sonnerCalls.find((c) => c.kind === 'error')?.message).toBe(
+        'Base 已確立，無法重複選擇',
+      ),
+    )
+    // No redirect — the detail stub is never mounted.
+    expect(screen.queryByTestId('character-detail-stub')).not.toBeInTheDocument()
+    // Dialog closes on terminal error so the user can't mash the confirm
+    // button into stacked toasts.
+    await waitFor(() =>
+      expect(screen.queryByTestId('select-base-confirm')).not.toBeInTheDocument(),
+    )
   })
 })

@@ -1,5 +1,5 @@
 import { apiFetch } from '@/api/client'
-import type { CreationSession } from '@/api/endpoints/characters'
+import type { Base, Character, CreationSession } from '@/api/endpoints/characters'
 import type { MenuSelections } from '@/constants/menu_options'
 
 export interface Checkpoint {
@@ -42,6 +42,25 @@ export function createCheckpoint(
   body: CreateCheckpointRequest,
 ): Promise<CreateCheckpointResponse> {
   return apiFetch<CreateCheckpointResponse>(`/v1/creation-sessions/${sessionId}/checkpoints`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export interface SelectBaseRequest {
+  checkpoint_id: string
+}
+
+export interface SelectBaseResponse {
+  character: Character
+  base: Base
+}
+
+export function selectBase(
+  sessionId: string,
+  body: SelectBaseRequest,
+): Promise<SelectBaseResponse> {
+  return apiFetch<SelectBaseResponse>(`/v1/creation-sessions/${sessionId}/select-base`, {
     method: 'POST',
     body: JSON.stringify(body),
   })
