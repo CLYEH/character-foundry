@@ -180,6 +180,17 @@ export function useReferenceUpload(sessionId: string) {
           toast.error(`${file.name}：${reason}`)
           continue
         }
+        // Re-check capacity AFTER validation — `addFiles` is invoked
+        // fire-and-forget by the dropzone, so two concurrent batches
+        // can each pass the pre-await check while both are in
+        // `validateFile`, then both fall through and exceed the cap.
+        // The post-await recheck reads `filesRef` synchronously, which
+        // a concurrent batch's earlier-resuming `filesRef.current.set`
+        // has already mutated (Codex P2 round 3 on PR #31).
+        if (filesRef.current.size >= MAX_REFERENCE_IMAGES) {
+          rejectedTooMany += 1
+          continue
+        }
         const localId = generateLocalId()
         const previewUrl = URL.createObjectURL(file)
         objectUrlsRef.current.set(localId, previewUrl)

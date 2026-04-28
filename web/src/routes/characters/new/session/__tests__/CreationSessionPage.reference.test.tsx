@@ -427,6 +427,51 @@ describe('CreationSessionPage — reference mode', () => {
     await waitFor(() => expect(generate).toBeEnabled())
   })
 
+  it('post-await capacity recheck blocks a 4th file from two concurrent addFiles batches', async () => {
+    // Two concurrent addFiles invocations both pass the pre-await
+    // capacity check before either mutates `filesRef`. Without the
+    // post-await recheck (Codex P2 round 3), both would fall through
+    // and the cap (3) would be exceeded.
+    getCreationSessionMock.mockResolvedValue(makeReferenceSession())
+    uploadReferenceImageMock.mockImplementation((_sessionId, file) =>
+      Promise.resolve({
+        reference_image_id: `ref-${file.name}`,
+        url: `https://signed/${file.name}`,
+      }),
+    )
+    renderPage()
+
+    await screen.findByTestId('reference-image-dropzone')
+    const input = screen.getByTestId('reference-image-input') as HTMLInputElement
+
+    // Pre-fill 2 of the 3 slots.
+    await act(async () => {
+      fireEvent.change(input, {
+        target: { files: [makePngFile('a.png'), makePngFile('b.png')] },
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^reference-image-preview-/)).toHaveLength(2)
+    })
+
+    sonnerCalls.length = 0
+
+    // Fire two concurrent batches in the same tick. Both pre-await
+    // capacity checks see `filesRef.current.size === 2`, both pass.
+    // Only the post-await recheck on the second-resuming batch keeps
+    // the cap at 3.
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [makePngFile('c.png')] } })
+      fireEvent.change(input, { target: { files: [makePngFile('d.png')] } })
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^reference-image-preview-/)).toHaveLength(3)
+    })
+    // Exactly one of c/d should have been rejected with the cap toast.
+    expect(sonnerCalls.find((c) => c.kind === 'error')?.message).toMatch(/最多 3 張/)
+  })
+
   it('clears reference upload state when sessionId changes (cross-session leak guard)', async () => {
     const OTHER_SESSION_ID = '77777777-7777-7777-7777-777777777777'
     // The same CreationSessionPage component stays mounted across `:id`
