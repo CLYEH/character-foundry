@@ -102,6 +102,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | S2-1 | Slug-based URL（目前 `/characters/:id`）| Sprint 3/4 衡量 SEO/可分享性需求再做 |
 | ~~S2-2~~ | ~~CharacterDetail DTO 加 `creation_session` 欄位~~ | ✅ 升為 Sprint 2 ticket T-027 |
 | S3-1 | `POST /v1/prompt/preview` 的 `mask: {}` 應比照 `reference_image_ids: []` 視為 empty 拒掉（T-019 reviewer 提的 🟡，今天的 `dict[str, Any]` 內部 endpoint 不擋；Sprint 3 inpaint 用真正 `MaskInput` schema 時一起處理）| Sprint 3 alias inpaint ticket 落地時 |
+| S2-3 | Dashboard 分頁 / infinite scroll（T-020 首版用 `limit=100` 平鋪，未做 cursor pagination）| Character 數逼近 100 或 UX 反饋時 |
 
 ---
 

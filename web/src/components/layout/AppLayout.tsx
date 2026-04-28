@@ -4,6 +4,7 @@ import { DegradedBanner } from '@/components/composite/DegradedBanner'
 import { ErrorBoundary } from '@/components/composite/ErrorBoundary'
 import { TopNav } from '@/components/composite/TopNav'
 import { Toaster } from '@/components/ui/sonner'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAuthStore } from '@/stores/authStore'
 
 export default function AppLayout() {
@@ -16,15 +17,17 @@ export default function AppLayout() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-background text-foreground">
-      <TopNav />
-      <DegradedBanner />
-      <main className="flex-1 p-6">
-        <ErrorBoundary>
-          <Outlet />
-        </ErrorBoundary>
-      </main>
-      <Toaster position="bottom-right" richColors closeButton />
-    </div>
+    <TooltipProvider>
+      <div className="flex min-h-screen flex-col bg-background text-foreground">
+        <TopNav />
+        <DegradedBanner />
+        <main className="flex-1 p-6">
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
+        </main>
+        <Toaster position="bottom-right" richColors closeButton />
+      </div>
+    </TooltipProvider>
   )
 }

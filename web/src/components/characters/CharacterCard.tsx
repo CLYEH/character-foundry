@@ -3,7 +3,7 @@ import { Link } from 'react-router'
 import type { Character } from '@/api/endpoints/characters'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/cn'
 
 export interface CharacterCardProps {
@@ -25,6 +25,8 @@ export function CharacterCard({ character, isOwner }: CharacterCardProps) {
         <Card className="gap-0 overflow-hidden py-0 transition hover:shadow-md">
           <div className="aspect-[3/4] w-full bg-muted">
             {character.base_thumbnail_url ? (
+              // alt="" — decorative; character.name is the visible label
+              // below, so giving the img a name would double-read in SR.
               <img
                 src={character.base_thumbnail_url}
                 alt=""
@@ -46,27 +48,30 @@ export function CharacterCard({ character, isOwner }: CharacterCardProps) {
       </Link>
       {!isOwner && (
         <div className="absolute right-2 top-2">
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                {/* The disabled button is wrapped so the tooltip still
-                    fires on hover (Radix forwards events through the
-                    span). */}
-                <span className={cn('inline-flex')}>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="xs"
-                    disabled
-                    aria-label={`複製 ${character.name}`}
-                  >
-                    Copy
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="left">Sprint 4 再做</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {/* The disabled button is wrapped so the tooltip still
+                  fires on hover (Radix forwards events through the
+                  span). */}
+              <span className={cn('inline-flex')}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="xs"
+                  disabled
+                  aria-label={`複製 ${character.name}`}
+                  // TODO(Sprint 4): when this button is enabled, the
+                  // onClick handler must call e.stopPropagation() (and
+                  // e.preventDefault() if it sits over the Link) so the
+                  // surrounding card link doesn't navigate as a side-
+                  // effect of clicking Copy.
+                >
+                  Copy
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="left">Sprint 4 再做</TooltipContent>
+          </Tooltip>
         </div>
       )}
     </div>

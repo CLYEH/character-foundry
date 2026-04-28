@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useParams } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import DashboardPage from '../DashboardPage'
 import { listCharacters, type Character } from '@/api/endpoints/characters'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAuthStore } from '@/stores/authStore'
 
 vi.mock('@/api/endpoints/characters', async () => {
@@ -53,13 +54,15 @@ function renderDashboard() {
   })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/']}>
-        <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/characters/new" element={<NewCharacterStub />} />
-          <Route path="/characters/:id" element={<CharacterDetailStub />} />
-        </Routes>
-      </MemoryRouter>
+      <TooltipProvider>
+        <MemoryRouter initialEntries={['/']}>
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/characters/new" element={<NewCharacterStub />} />
+            <Route path="/characters/:id" element={<CharacterDetailStub />} />
+          </Routes>
+        </MemoryRouter>
+      </TooltipProvider>
     </QueryClientProvider>,
   )
 }
@@ -114,8 +117,11 @@ describe('DashboardPage', () => {
   it('navigates to /characters/new when the empty-state CTA is clicked', async () => {
     listCharactersMock.mockResolvedValue({ items: [], next_cursor: null })
     renderDashboard()
-    const cta = await screen.findByRole('link', { name: '建立 Character' })
-    fireEvent.click(cta)
+    // Scope to the empty container — DashboardPage also renders a header
+    // CTA with the same accessible name, and we want to assert that the
+    // empty-state CTA itself wires to /characters/new.
+    const empty = await screen.findByTestId('dashboard-empty')
+    fireEvent.click(within(empty).getByRole('link', { name: '建立 Character' }))
     expect(await screen.findByTestId('new-character-page')).toBeInTheDocument()
   })
 
