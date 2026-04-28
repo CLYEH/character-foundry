@@ -234,7 +234,59 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 
 這些是**選用**，通常用在 push PR 前自己先過一輪、或人類 reviewer 想要第二意見時。不取代人類 approve 也不取代 Codex 自動 review。
 
-### 4.4 Request changes vs Comment
+### 4.5 Codex 溝通：什麼時候可以 push back 而不是照 review 改
+
+Codex 是有用的第二意見，但**不是專案規則的最終裁判**。它讀靜態 diff + 通用工程慣例，沒讀過 `tickets/`、`STATUS.md`、`planning/`、不知道 sprint 怎麼切。100% 採納率是 red flag —— 代表你已經在用 Codex 蓋過自己的判斷。
+
+下面是判斷「採納 vs 駁回 vs defer」的具體準則。三種都是 §4.3 列出的合法處理；差別在判斷 Codex 的具體意見**對不對**、**有沒有跟專案結構衝突**。
+
+#### 4.5.1 什麼時候**直接採納**（不要 push back）
+
+- **真實 correctness / 安全問題**：race condition、PII / 跨 session cache leak、資料完整性、SQL 注入、auth bypass、明確的邏輯 bug。
+- **Codex 的建議與 repo 既有 convention 對齊**：例如 reviewer 說「應該用 `useMe` 那種 user-id-scoped queryKey」，而 `useMe.ts` 真的就是這樣寫的 → 直接採。
+- **改動小、明顯改善 quality**：DRY、可讀性、命名、補測試覆蓋一個真實 edge case。沒有 scope creep。
+- **Codex 點到測試是錯的或缺的**：例如 T-020 第一輪，reviewer 指出 empty-state CTA 測試其實在斷言 page-header CTA（兩個 link 同名 + findByRole exactly-one match + async render 的 footgun）—— 這是測試寫錯，馬上修。
+
+#### 4.5.2 什麼時候**可以 push back（駁回 / defer）**
+
+下面任何一條成立就值得寫 thread reply 而不是直接改 code：
+
+- **Codex 技術上沒錯，但跟 ticket scope 衝突**：ticket 在 Related / Depends-on / Not-in-scope 已經把這個 concern 交給另一張單。例：T-020 dashboard PR 被 Codex flag「`/characters/new` 路由不存在會 404」，但 T-020 ticket Related 段就明寫「T-021（Dashboard 的「建立 Character」CTA 跳過去）」，T-021 / T-025 已經在 STATUS.md 排好下一兩張單做 —— 那是 incremental 設計，不是 regression。
+- **採納會違反 repo 既有 convention**：例如前端慣例「每張 ticket owns 自己的 route」（T-007 → `/`、T-008 → `/login`、T-020 → `/`）；採納等於倒退這條 convention。
+- **採納會製造 throwaway code**：stub route / placeholder page / temporary type，下一張 ticket 上來就要刪掉。除非那段 stub 本身有獨立價值，否則別塞。
+- **採納等於 scope creep**：碰到「一張 ticket = 一個 branch = 一個 PR」這條核心原則（§0）。把下一張 ticket 的工作拉進這張 PR 不是省事，是模糊 scope。
+- **Codex 的意見跟 planning / CONTRIBUTING / observable behavior 衝突**：repo 自家文件 / 自家 spec / 自家測試是權威，generic reviewer 不是。
+
+⚠ **每次 push back 都要 cross-check**。要去讀 ticket、STATUS.md、planning 對應段落、相關檔案，**確定**你比 Codex 更了解這個情境。理由站不住就採納；只是「我覺得我對」不夠。
+
+#### 4.5.3 怎麼 push back
+
+Thread reply 三段式：
+
+1. **Acknowledge Codex 對的部分**——技術觀察通常真的成立（例：「你沒錯，這個 commit 上 `/characters/new` 確實會 404」）。先把 reviewer 的論點覆述一遍，避免誤解。
+2. **解釋為什麼採納會跟專案結構衝突**——具體 reference，**不是**「我們不想做」。常見可引：
+   - Ticket Related / Depends-on 段（誰擁有這個 concern）
+   - STATUS.md 上的下一張 ticket（這個 concern 何時會處理）
+   - Repo convention（其他 ticket 怎麼做）
+   - planning/ 裡的 spec
+   - CONTRIBUTING 的 §0 / §1 原則
+3. **證明 defer 不是丟掉**——指向已存在的 ticket、STATUS.md backlog 列、in-code TODO comment。三個 anchor 越完整，「deferred」越站得住。
+
+#### 4.5.4 機制細節（避坑）
+
+- **Codex 看靜態 state，不讀你的 thread reply**。下一次 push 它會基於新 commit 重 review，可能再次 flag 同樣的 concern。
+- **Defer 要有 in-code anchor**。光靠 thread 留言不夠 sticky —— 在相關檔案放一條 TODO comment 點名目標 ticket（如 T-020 的 `App.tsx:23` 註解指 T-021 / T-025）。這樣下次 reviewer / Codex 看到的時候，code 本身就會 surface 這是已知的 deferred state。
+- **Substantive thread reply 真的能改變 Codex 的立場**。T-020 PR #27 經驗：第一輪 defer 加 in-code 註解後，Codex 在下一個 commit 再次 flag 同樣的 P1；補一篇詳細 thread reply（acknowledge + 三條 reference + 直接問它「你的 P1 是針對 sprint scoping 本身還是只是針對當下 snapshot 的 dead links？」）後，Codex 改成 `+1`。所以面對 sticky 的 P1，**substantive 不等於冗長 —— 是「直接點出立場分歧的本質並要求 Codex 回應」**。
+- **Phase 1 solo 下，Codex `+1` 是 merge gate**（§4.1 + auto-loop spec）。push back 是合法路徑但**沒拿到 `+1` 之前 auto-merge 不會 fire** —— 確定要 push back 後就要承擔這條 trade-off：要嘛說服 Codex 改 reaction、要嘛人類維護者手動 merge 並在 thread 留下「override 理由」（後者是 last resort，不要當常規）。
+
+#### 4.5.5 Anti-patterns
+
+- 反射性 100% 採納（接受率 100% 是 red flag）。
+- Push back 但沒 cross-check（理由只是 vibe）。
+- Defer 沒 anchor（只有 thread reply、沒 in-code 註解、沒指向具體 ticket）。
+- 拿 admin override 跳過 Codex 卻不留書面理由（未來看 git history 的人會搞不懂）。
+
+### 4.6 Request changes vs Comment
 
 - **Request changes**：有 blocker（測試錯、方向錯、安全問題）
 - **Comment**：建議、疑問、小錯字
