@@ -65,8 +65,13 @@ async def select_base(
       pick again" is genuine misuse and we surface that distinctly.
     - Session abandoned → 409 CONFLICT_BASE_LOCKED. The session is
       terminal; the user should start a new one.
+
+    Concurrency: the session row is loaded with `SELECT ... FOR UPDATE`
+    so a concurrent `abandon_session` blocks until this transaction
+    finishes. Without the lock, both callers could read `in_progress`
+    and commit conflicting end states (Codex round-2 P2).
     """
-    session = await creation_session_repo.get(db, session_id)
+    session = await creation_session_repo.get_for_update(db, session_id)
     if session is None:
         raise not_found_creation_session()
 
@@ -154,8 +159,13 @@ async def abandon_session(
 
     Checkpoints stay alive — the scheduled cleanup that cascade-deletes
     them after 7 days is Sprint 5's job (lifecycle.md line 63).
+
+    Concurrency: same `SELECT ... FOR UPDATE` lock as `select_base` so
+    abandon-vs-select-base races serialize cleanly. Whoever wins
+    commits its terminal state; the loser sees the new status and
+    bails (409 from select-base, 409 here for completed → abandon).
     """
-    session = await creation_session_repo.get(db, session_id)
+    session = await creation_session_repo.get_for_update(db, session_id)
     if session is None:
         raise not_found_creation_session()
 

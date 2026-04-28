@@ -58,6 +58,7 @@
 | T-025 | Frontend Select Base + Character Detail (Base only) | TODO |
 | T-026 | E2E Character creation smoke test (template) | TODO |
 | T-027 | CharacterDetail DTO + frontend resume in-progress session | TODO |
+| T-028 | Worker post-lock checkpoint guard（從 T-018 PR #23 拆出來，Codex round-2 P1） | TODO |
 
 ### Sprint 3 — Aliases + Motions（尚未開單）
 三合一 Alias 輸入（含 Inpaint）、Preset + Custom motion。
