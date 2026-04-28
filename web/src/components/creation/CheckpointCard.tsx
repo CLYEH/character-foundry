@@ -30,7 +30,10 @@ export function CheckpointCard({
   onOpenLightbox,
 }: CheckpointCardProps) {
   const sequenceLabel = model.sequence !== null ? `#${model.sequence}` : '生成中'
-  const errorMessage = model.event?.error?.message ?? null
+  // Error lives on the model (not on event) because cancel-mutation synthetic
+  // events for `too_late_failed` never enter the SSE events map. The model is
+  // the merged source of truth — see buildCardModels in CreationSessionPage.
+  const errorMessage = model.error?.message ?? null
   const queuePosition = model.event?.queue_position ?? null
   const progress = model.event?.progress ?? null
   const cancelling =

@@ -55,8 +55,19 @@ export interface TaskEvent {
   error?: AgentErrorPayload | null
 }
 
-export function getTask(taskId: string): Promise<Task> {
-  return apiFetch<Task>(`/v1/tasks/${taskId}`)
+interface TaskEnvelope {
+  task: Task
+}
+
+/**
+ * `/v1/tasks/{id}` returns `{ task: Task }` per api-shape.md §5.5; unwrap
+ * the envelope so callers get the bare `Task` they expect (Codex P2 round
+ * 3 on PR #30 — the unwrapped helper is also what the future polling
+ * fallback will lean on).
+ */
+export async function getTask(taskId: string): Promise<Task> {
+  const envelope = await apiFetch<TaskEnvelope>(`/v1/tasks/${taskId}`)
+  return envelope.task
 }
 
 export function cancelTask(taskId: string): Promise<CancelTaskResponse> {

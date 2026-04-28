@@ -14,6 +14,13 @@ export interface CheckpointCardModel {
   event: TaskEvent | null
   /** Final checkpoint DTO once available (either from initial GET or SSE result). */
   checkpoint: Checkpoint | null
+  /**
+   * Error payload for failed cards. Lifted onto the model (rather than read
+   * from `event.error`) so synthetic terminal events from the cancel mutation
+   * (`too_late_failed`) — which never enter the SSE `events` map — still
+   * surface the error message.
+   */
+  error: AgentErrorPayload | null
   /** Inputs that produced this card; required to support [重試] / [用這張再改] prefill. */
   request: CreateCheckpointRequest | null
   /** task_id for the in-flight stream; null after terminal status. */

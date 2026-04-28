@@ -24,7 +24,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { FREEFORM_MAX_LENGTH, type MenuKey, type MenuSelections } from '@/constants/menu_options'
 import { useTaskStream } from '@/hooks/useTaskStream'
-import { AgentError } from '@/lib/agentError'
+import { AgentError, type AgentErrorPayload } from '@/lib/agentError'
 import { toast } from '@/stores/toastStore'
 
 interface PlaceholderState {
@@ -34,6 +34,12 @@ interface PlaceholderState {
   sequence: number | null
   cancelRequested: boolean
   checkpoint: Checkpoint | null
+  /**
+   * Mirrors `event.error` for the lifetime of the placeholder. Required for
+   * cancel-mutation synthetic events (`too_late_failed`) that never enter
+   * the SSE `events` map (Codex P2 round 3 on PR #30).
+   */
+  error: AgentErrorPayload | null
   insertionIndex: number
 }
 
@@ -75,6 +81,7 @@ export default function CreationSessionPage() {
             sequence: finalCheckpoint?.sequence ?? placeholder.sequence,
             checkpoint: finalCheckpoint ?? placeholder.checkpoint,
             cancelRequested: false,
+            error: event.error ?? placeholder.error,
           })
           break
         }
@@ -145,6 +152,7 @@ export default function CreationSessionPage() {
               sequence: null,
               cancelRequested: false,
               checkpoint: null,
+              error: null,
               insertionIndex,
             })
             return next
@@ -449,6 +457,7 @@ function buildCardModels(
       status: 'completed',
       event: null,
       checkpoint,
+      error: null,
       request: null,
       taskId: null,
       cancelRequested: false,
@@ -477,6 +486,7 @@ function buildCardModels(
       status,
       event,
       checkpoint,
+      error: placeholder.error ?? event?.error ?? null,
       request: placeholder.request,
       taskId: isTerminalStatus(status) ? null : placeholder.taskId,
       cancelRequested: placeholder.cancelRequested,

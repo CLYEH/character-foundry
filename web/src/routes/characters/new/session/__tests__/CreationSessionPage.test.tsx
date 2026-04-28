@@ -610,6 +610,38 @@ describe('CreationSessionPage', () => {
     expect(within(card).getByRole('img')).toHaveAttribute('src', 'https://img/tlc-thumb.png')
   })
 
+  it('too_late_failed surfaces task.error message on the failed card without a trailing SSE', async () => {
+    getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
+    createCheckpointMock.mockResolvedValue({ task_id: 'task-tlf', checkpoint_id: 'cp-tlf' })
+    cancelTaskMock.mockResolvedValue({
+      task: {
+        id: 'task-tlf',
+        status: 'failed',
+        error: {
+          code: 'MODEL_RATE_LIMIT',
+          message: '模型超出速率限制',
+          retryable: true,
+        },
+      } as unknown as CancelTaskResponse['task'],
+      cancel_outcome: 'too_late_failed',
+    })
+    renderPage()
+    await screen.findByRole('button', { name: '生成新候選' })
+
+    fireEvent.click(screen.getByRole('button', { name: '生成新候選' }))
+    const card = await screen.findByTestId('checkpoint-card-cp-tlf')
+    pushSse('task-tlf', { status: 'running', progress: 0.95 })
+
+    fireEvent.click(within(card).getByRole('button', { name: /取消/ }))
+
+    // No trailing SSE pushed — the failed message must come from task.error
+    // surfaced via the synthetic event into `model.error`.
+    await waitFor(() => expect(card).toHaveAttribute('data-status', 'failed'))
+    expect(within(card).getByTestId('checkpoint-error-message')).toHaveTextContent(
+      '模型超出速率限制',
+    )
+  })
+
   it('cancel_outcome too_late_completed surfaces 來不及取消 toast', async () => {
     getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
     createCheckpointMock.mockResolvedValue({ task_id: 'task-late', checkpoint_id: 'cp-late' })
