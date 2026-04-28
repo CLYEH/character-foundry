@@ -48,19 +48,29 @@ export function CheckpointCard({
       </header>
 
       <div className="relative aspect-square w-full overflow-hidden rounded bg-muted">
-        {model.status === 'completed' && model.checkpoint?.thumbnail_url ? (
+        {model.status === 'completed' ? (
+          // Always render a click target so the lightbox is reachable even if
+          // the thumbnail URL is null (Checkpoint DTO allows it). Fall back to
+          // the full-resolution `output_image_url`, then to a "no preview"
+          // placeholder if both are missing.
           <button
             type="button"
             className="block size-full"
             onClick={() => onOpenLightbox(model.checkpointId)}
             aria-label={`開啟 Checkpoint ${sequenceLabel} 大圖`}
           >
-            <img
-              src={model.checkpoint.thumbnail_url}
-              alt={`Checkpoint ${sequenceLabel}`}
-              className="size-full object-cover"
-              loading="lazy"
-            />
+            {completedImageSrc(model) ? (
+              <img
+                src={completedImageSrc(model) as string}
+                alt={`Checkpoint ${sequenceLabel}`}
+                className="size-full object-cover"
+                loading="lazy"
+              />
+            ) : (
+              <div className="flex size-full items-center justify-center text-xs text-muted-foreground">
+                無預覽
+              </div>
+            )}
           </button>
         ) : model.status === 'failed' ? (
           <div className="flex size-full flex-col items-center justify-center gap-1 text-destructive">
@@ -134,6 +144,10 @@ export function CheckpointCard({
       </footer>
     </article>
   )
+}
+
+function completedImageSrc(model: CheckpointCardModel): string | null {
+  return model.checkpoint?.thumbnail_url ?? model.checkpoint?.output_image_url ?? null
 }
 
 function statusLabel(model: CheckpointCardModel): string {

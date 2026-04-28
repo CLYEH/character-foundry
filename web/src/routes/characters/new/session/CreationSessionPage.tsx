@@ -61,7 +61,9 @@ export default function CreationSessionPage() {
     (taskId: string, event: TaskEvent) => {
       // The backend only writes `event.result.checkpoint` on `completed`; on
       // `failed` / `cancelled` we keep the placeholder image but flip status
-      // so the card can render the error / strikethrough state.
+      // so the card can render the error / strikethrough state. Terminal
+      // status also clears the optimistic `cancelRequested` flag — the
+      // task has settled, so the "取消中…" badge no longer applies.
       setPlaceholders((prev) => {
         const next = new Map(prev)
         for (const [checkpointId, placeholder] of next) {
@@ -72,6 +74,7 @@ export default function CreationSessionPage() {
             status: event.status === 'completed' ? 'completed' : event.status,
             sequence: finalCheckpoint?.sequence ?? placeholder.sequence,
             checkpoint: finalCheckpoint ?? placeholder.checkpoint,
+            cancelRequested: false,
           })
           break
         }
@@ -241,27 +244,37 @@ export default function CreationSessionPage() {
         return next
       })
       cancelTaskMutation.mutate(taskId, {
-        onSuccess: ({ cancel_outcome }) => {
+        onSuccess: ({ cancel_outcome, task }) => {
+          // Route every outcome through `handleTerminal` with a synthetic
+          // event so the placeholder picks up the task's `result.checkpoint`
+          // (or `error`) rather than just flipping a status flag. Without
+          // this, `too_late_completed` would settle to status='completed'
+          // but with `checkpoint=null` / `sequence=null` and the card stays
+          // visually stuck (Codex P1 on PR #30).
           switch (cancel_outcome) {
             case 'cancelled_immediately':
               // Backend already removed the task from the queue and may not
-              // emit a trailing SSE — settle the placeholder now (api-shape
-              // §5.5: "立即顯示「已取消」"). Otherwise the card sits in the
-              // optimistic "取消中…" state forever.
-              settlePlaceholderForTask(setPlaceholders, taskId, 'cancelled')
+              // emit a trailing SSE (api-shape §5.5: "立即顯示「已取消」").
+              handleTerminal(taskId, { status: 'cancelled' })
               toast.success('已取消')
               break
             case 'cancel_pending':
-              // Server is still trying to abort mid-run; SSE will deliver the
-              // final status and `handleTerminal` will settle the card.
+              // Server is still trying to abort mid-run; SSE will deliver
+              // the final status and `handleTerminal` will settle the card.
               toast.info('取消中…')
               break
             case 'too_late_completed':
-              settlePlaceholderForTask(setPlaceholders, taskId, 'completed')
+              handleTerminal(taskId, {
+                status: 'completed',
+                result: (task.result as { checkpoint?: Checkpoint } | null) ?? null,
+              })
               toast.warning('來不及取消')
               break
             case 'too_late_failed':
-              settlePlaceholderForTask(setPlaceholders, taskId, 'failed')
+              handleTerminal(taskId, {
+                status: 'failed',
+                error: task.error ?? null,
+              })
               toast.warning('來不及取消')
               break
           }
@@ -281,7 +294,7 @@ export default function CreationSessionPage() {
         },
       })
     },
-    [cancelTaskMutation],
+    [cancelTaskMutation, handleTerminal],
   )
 
   const handleMenuChange = useCallback((key: MenuKey, value: string) => {
@@ -398,28 +411,6 @@ function pickRetrySource(models: CheckpointCardModel[]): CheckpointCardModel | n
     if (models[i].status === 'completed') return models[i]
   }
   return null
-}
-
-/**
- * Settle a placeholder card to its final status synchronously, used by the
- * cancel mutation when the SSE stream may not deliver another event (queued
- * tasks removed at cancel-time, or `too_late_*` outcomes).
- */
-function settlePlaceholderForTask(
-  setPlaceholders: React.Dispatch<React.SetStateAction<Map<string, PlaceholderState>>>,
-  taskId: string,
-  status: PlaceholderState['status'],
-): void {
-  setPlaceholders((prev) => {
-    const next = new Map(prev)
-    for (const [id, placeholder] of next) {
-      if (placeholder.taskId === taskId) {
-        next.set(id, { ...placeholder, status, cancelRequested: false })
-        break
-      }
-    }
-    return next
-  })
 }
 
 function buildCardModels(

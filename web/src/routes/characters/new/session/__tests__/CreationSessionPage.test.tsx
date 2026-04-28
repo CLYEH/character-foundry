@@ -492,6 +492,38 @@ describe('CreationSessionPage', () => {
     expect(sonnerCalls.find((c) => c.kind === 'error')?.message).toBe('連線中斷')
   })
 
+  it('too_late_completed hydrates checkpoint from task.result so the card lands on the final image', async () => {
+    getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
+    createCheckpointMock.mockResolvedValue({ task_id: 'task-tlc', checkpoint_id: 'cp-tlc' })
+    const finalCheckpoint = makeCheckpoint({
+      id: 'cp-tlc',
+      sequence: 9,
+      thumbnail_url: 'https://img/tlc-thumb.png',
+    })
+    cancelTaskMock.mockResolvedValue({
+      task: {
+        id: 'task-tlc',
+        status: 'completed',
+        result: { checkpoint: finalCheckpoint },
+      } as unknown as CancelTaskResponse['task'],
+      cancel_outcome: 'too_late_completed',
+    })
+    renderPage()
+    await screen.findByRole('button', { name: '生成新候選' })
+
+    fireEvent.click(screen.getByRole('button', { name: '生成新候選' }))
+    const card = await screen.findByTestId('checkpoint-card-cp-tlc')
+    pushSse('task-tlc', { status: 'running', progress: 0.9 })
+
+    fireEvent.click(within(card).getByRole('button', { name: /取消/ }))
+
+    // No trailing SSE pushed — the card must still land on the completed
+    // image purely from the cancel mutation's task payload.
+    await waitFor(() => expect(card).toHaveAttribute('data-status', 'completed'))
+    expect(within(card).getByText('#9')).toBeInTheDocument()
+    expect(within(card).getByRole('img')).toHaveAttribute('src', 'https://img/tlc-thumb.png')
+  })
+
   it('cancel_outcome too_late_completed surfaces 來不及取消 toast', async () => {
     getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
     createCheckpointMock.mockResolvedValue({ task_id: 'task-late', checkpoint_id: 'cp-late' })
@@ -523,6 +555,28 @@ describe('CreationSessionPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '進階檢視 Prompt' }))
 
     expect(sonnerCalls.find((c) => c.kind === 'info')?.message).toMatch(/T-024/)
+  })
+
+  it('completed checkpoint with null thumbnail still exposes the lightbox via output_image_url', async () => {
+    getCreationSessionMock.mockResolvedValue(
+      makeSessionDetail([
+        makeCheckpoint({
+          id: 'cp-noThumb',
+          sequence: 4,
+          thumbnail_url: null,
+          output_image_url: 'https://img/full-only.png',
+        }),
+      ]),
+    )
+    renderPage()
+    const card = await screen.findByTestId('checkpoint-card-cp-noThumb')
+
+    // Card should still render the lightbox button (using output_image_url
+    // as the visible image) instead of falling through to the spinner.
+    expect(card).toHaveAttribute('data-status', 'completed')
+    const openBtn = within(card).getByRole('button', { name: /Checkpoint #4/ })
+    expect(openBtn).toBeInTheDocument()
+    expect(within(openBtn).getByRole('img')).toHaveAttribute('src', 'https://img/full-only.png')
   })
 
   it('opens the lightbox with the checkpoint prompt summary on thumbnail click', async () => {
