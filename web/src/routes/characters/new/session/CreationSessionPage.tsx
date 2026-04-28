@@ -15,11 +15,13 @@ import type { TaskEvent } from '@/api/endpoints/tasks'
 import {
   CheckpointLightbox,
   CheckpointList,
+  PromptPreviewModal,
   ReferenceInputPanel,
   TemplateInputPanel,
   type CheckpointCardModel,
   type RemixContext,
 } from '@/components/creation'
+import type { PromptPreviewRequest } from '@/api/endpoints/prompt'
 import { GenericErrorPage } from '@/components/composite/ErrorPage'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -59,6 +61,7 @@ export default function CreationSessionPage() {
   const [remixContext, setRemixContext] = useState<RemixContext>(null)
   const [placeholders, setPlaceholders] = useState<Map<string, PlaceholderState>>(() => new Map())
   const [lightboxCheckpointId, setLightboxCheckpointId] = useState<string | null>(null)
+  const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
   const referenceUpload = useReferenceUpload(sessionId ?? '')
 
   // Monotonic counter so a placeholder's render slot is stable even if state
@@ -230,10 +233,29 @@ export default function CreationSessionPage() {
   }, [resetReferences])
 
   const handleAdvancedView = useCallback(() => {
-    // T-024 owns the Advanced Prompt modal (M-01). Until then the toast is
-    // the visible "open" event the ticket asks us to wire.
-    toast.info('進階檢視即將上線（T-024）')
+    setPromptPreviewOpen(true)
   }, [])
+
+  const promptPreviewRequest = useMemo<PromptPreviewRequest>(() => {
+    const trimmedNote = freeformNote.trim()
+    const isReference = inputMode === 'reference'
+    // This page only does base creation; alias / motion previews live on
+    // their own routes, so `mode` is hardcoded rather than threaded through
+    // session state. Recomputing per keystroke is harmless because the
+    // modal is closed (TanStack `enabled: false` blocks the fetch).
+    //
+    // Faithfulness: only `remixContext` makes the preview diverge from the
+    // worker's reconciler input (image2image with `has_reference_image=True`
+    // sourced from `base_checkpoint_id`). `retry_same` is dispatched from
+    // its own button and never opens this modal, so we only guard remix
+    // here via `unsupportedReason` below.
+    return {
+      mode: 'create_base',
+      menu_selections: !isReference && hasAnyMenuValue(menuSelections) ? menuSelections : null,
+      freeform_note: trimmedNote.length > 0 ? trimmedNote : null,
+      reference_image_ids: isReference && referenceImageIds.length > 0 ? referenceImageIds : null,
+    }
+  }, [freeformNote, inputMode, menuSelections, referenceImageIds])
 
   const handleRemix = useCallback(
     (checkpointId: string, sequence: number | null) => {
@@ -451,6 +473,15 @@ export default function CreationSessionPage() {
         checkpoint={lightboxCheckpoint}
         onClose={() => setLightboxCheckpointId(null)}
       />
+
+      <PromptPreviewModal
+        isOpen={promptPreviewOpen}
+        onClose={() => setPromptPreviewOpen(false)}
+        request={promptPreviewRequest}
+        unsupportedReason={
+          remixContext ? buildRemixUnsupportedReason(remixContext.baseSequence) : null
+        }
+      />
     </section>
   )
 }
@@ -459,6 +490,14 @@ export default function CreationSessionPage() {
 
 function hasAnyMenuValue(selections: MenuSelections): boolean {
   return Object.values(selections).some((v) => typeof v === 'string' && v.length > 0)
+}
+
+function buildRemixUnsupportedReason(baseSequence: number | null): string {
+  // Server-loaded checkpoints can prefill remixContext without a known
+  // sequence (the DTO doesn't always carry it), so only render the
+  // parenthetical when we actually have one.
+  const anchor = baseSequence !== null ? `（基於 #${baseSequence}）` : ''
+  return `進階檢視 暫不支援 remix 模式${anchor}。worker 會以該 checkpoint 為 image-to-image 來源，但 /v1/prompt/preview 還沒有對應的 base_checkpoint_id 欄位，預覽結果會與實際生成不一致。先點「從頭」清空後再開即可預覽。`
 }
 
 const TERMINAL_CARD_STATUSES = new Set<CheckpointCardModel['status']>([
