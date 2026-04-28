@@ -169,4 +169,52 @@ describe('PromptPreviewModal', () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
+
+  it('re-fetches when the modal closes and reopens', async () => {
+    previewPromptMock.mockResolvedValue(HAPPY_RESPONSE)
+    const onClose = vi.fn()
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, refetchOnWindowFocus: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    })
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <PromptPreviewModal isOpen onClose={onClose} request={REQUEST} />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('最終 prompt')
+    expect(previewPromptMock).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <PromptPreviewModal isOpen={false} onClose={onClose} request={REQUEST} />
+      </QueryClientProvider>,
+    )
+    rerender(
+      <QueryClientProvider client={client}>
+        <PromptPreviewModal isOpen onClose={onClose} request={REQUEST} />
+      </QueryClientProvider>,
+    )
+
+    // Radix unmounts DialogContent on close, so reopening mounts a fresh
+    // useQuery — the ticket requires this so the user sees the latest
+    // reconciler output (backend Redis caches duplicate work).
+    await waitFor(() => expect(previewPromptMock).toHaveBeenCalledTimes(2))
+  })
+
+  it('toasts an error when clipboard write fails', async () => {
+    previewPromptMock.mockResolvedValue(HAPPY_RESPONSE)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('blocked')) },
+    })
+    renderModal()
+
+    const copyBtn = await screen.findByTestId('prompt-preview-copy')
+    fireEvent.click(copyBtn)
+
+    await waitFor(() => expect(sonnerCalls).toContainEqual({ kind: 'error', message: '複製失敗' }))
+  })
 })

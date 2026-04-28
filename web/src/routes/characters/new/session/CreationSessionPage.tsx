@@ -239,6 +239,10 @@ export default function CreationSessionPage() {
   const promptPreviewRequest = useMemo<PromptPreviewRequest>(() => {
     const trimmedNote = freeformNote.trim()
     const isReference = inputMode === 'reference'
+    // This page only does base creation; alias / motion previews live on
+    // their own routes, so `mode` is hardcoded rather than threaded through
+    // session state. Recomputing per keystroke is harmless because the
+    // modal is closed (TanStack `enabled: false` blocks the fetch).
     return {
       mode: 'create_base',
       menu_selections: !isReference && hasAnyMenuValue(menuSelections) ? menuSelections : null,

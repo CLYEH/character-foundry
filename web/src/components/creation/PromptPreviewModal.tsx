@@ -82,7 +82,10 @@ function PromptPreviewError({ error }: { error: AgentError }) {
   //   - VALIDATION_EMPTY_INPUT → friendly hint (caller forgot to fill form)
   //   - PROMPT_CONFLICT        → render AgentError detail (message + problem + fix)
   // Other codes still get the AgentError surface so unknown failures are
-  // legible rather than silently blank.
+  // legible rather than silently blank. This deliberately overrides the
+  // global `mapAgentErrorToUI` mapping (which sends PROMPT_* to a toast) —
+  // the modal is the right surface here because the user opened it
+  // explicitly to inspect prompt assembly.
   if (error.code === 'VALIDATION_EMPTY_INPUT') {
     return (
       <div
