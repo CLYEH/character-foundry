@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-28
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-019 done，T-020 ~ T-027 開單中）
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-020 done，T-021 ~ T-027 開單中）
 
 ---
 
@@ -50,7 +50,7 @@
 | T-017 | Backend Checkpoint generation flow | DONE |
 | T-018 | Backend Select Base / Fork / Abandon | DONE |
 | T-019 | Backend Prompt preview endpoint | DONE |
-| T-020 | Frontend Dashboard (grid + empty state) | TODO |
+| T-020 | Frontend Dashboard (grid + empty state) | DONE |
 | T-021 | Frontend New Character page (mode picker) | TODO |
 | T-022 | Frontend Creation Session — template mode | TODO |
 | T-023 | Frontend Creation Session — reference mode | TODO |
@@ -102,6 +102,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | S2-1 | Slug-based URL（目前 `/characters/:id`）| Sprint 3/4 衡量 SEO/可分享性需求再做 |
 | ~~S2-2~~ | ~~CharacterDetail DTO 加 `creation_session` 欄位~~ | ✅ 升為 Sprint 2 ticket T-027 |
 | S3-1 | `POST /v1/prompt/preview` 的 `mask: {}` 應比照 `reference_image_ids: []` 視為 empty 拒掉（T-019 reviewer 提的 🟡，今天的 `dict[str, Any]` 內部 endpoint 不擋；Sprint 3 inpaint 用真正 `MaskInput` schema 時一起處理）| Sprint 3 alias inpaint ticket 落地時 |
+| S2-3 | Dashboard 分頁 / infinite scroll（T-020 首版用 `limit=100` 平鋪，未做 cursor pagination）| Character 數逼近 100 或 UX 反饋時 |
 
 ---
 
