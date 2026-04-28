@@ -729,7 +729,7 @@ async def test_worker_aborts_after_session_abandoned(
 
 
 @pytest.mark.asyncio
-async def test_worker_and_session_terminator_race_invariant(
+async def test_worker_aborts_under_concurrent_terminator(
     database_url: str,
     seeded_user: dict[str, Any],
     default_team_id: uuid.UUID,
@@ -737,24 +737,26 @@ async def test_worker_and_session_terminator_race_invariant(
     fake_arq_pool: FakeArqPool,
     storage_root: Path,
 ) -> None:
-    """T-028 acceptance #3: concurrent worker + terminator never produce
-    an inconsistent state.
+    """T-028 acceptance #3: when a session-terminator runs concurrently
+    with the worker, the FOR UPDATE serializes them cleanly — no orphan
+    rows, no orphan files, no deadlock.
 
-    Both coroutines hit the same `creation_sessions` row with FOR
-    UPDATE. PostgreSQL serializes them. Whichever path commits first
-    wins; the other observes the post-commit state and behaves
-    consistently:
+    The other two T-028 tests cover the post-fact ordering (terminator
+    runs to completion, then the worker is invoked). This one checks
+    the live-concurrency case: both coroutines start on the same loop,
+    asyncio.gather schedules them, and PostgreSQL's row lock — not the
+    Python scheduler — is what decides the order.
 
-    - terminator wins → worker sees status=`completed`, aborts cleanly
-      (task=cancelled, no checkpoint row, no orphan files).
-    - worker wins   → checkpoint row commits while session is still
-      `in_progress`; terminator then locks, flips status, commits.
-      Final session=`completed`, new row exists, task=`completed`.
-
-    The invariant is the conjunction of the two: at the end, session
-    is `completed`, AND `task.status == "completed"` IFF the new
-    checkpoint row exists. We assert that conjunction without
-    mandating which side won — scheduler timing is non-deterministic.
+    In practice the terminator (one SELECT + one UPDATE + commit) is
+    much shorter than the worker pipeline (cancel checks, prompt
+    reconcile, AI stub call, storage put, then the FOR UPDATE), so the
+    terminator essentially always commits first. We assert that
+    deterministic outcome rather than wrap an `if` around both
+    branches: the worker-wins branch is structurally the same as the
+    happy-path test (a session.status flip after the worker commits is
+    just T-018's normal select-base path), and if scheduler timing
+    ever flipped the assertion, the pre-existing happy-path test
+    would still cover that side.
     """
     import asyncio
 
@@ -788,8 +790,6 @@ async def test_worker_and_session_terminator_race_invariant(
         async def _run_terminator() -> None:
             await _terminate_session_with_lock(factory, ids["session_id"], "completed")
 
-        # Run both. Either ordering is acceptable — we assert the
-        # invariant, not a specific schedule.
         worker_result, _ = await asyncio.gather(_run_worker(), _run_terminator())
 
         async with factory() as db:
@@ -801,40 +801,22 @@ async def test_worker_and_session_terminator_race_invariant(
 
             task = await task_repo.get(db, created.task.id)
             assert task is not None
-            row = await db.get(Checkpoint, worker_checkpoint_id)
+            assert task.status == "cancelled"
+            assert task.error is None  # cancellation, not failure
+            assert worker_result["reason"] == "session_terminal"
 
-            if task.status == "completed":
-                # Worker won the race — its row is committed and the
-                # task finalized normally.
-                assert row is not None
-                assert worker_result["ok"] is True
-                full = (
-                    storage_root
-                    / "checkpoints"
-                    / str(ids["session_id"])
-                    / f"{worker_checkpoint_id}.png"
-                )
-                assert full.exists()
-            else:
-                # Terminator won — worker aborted via the post-lock
-                # guard. Task is cancelled, row never committed, and
-                # storage was cleaned up.
-                assert task.status == "cancelled"
-                assert row is None
-                assert worker_result["reason"] == "session_terminal"
-                full = (
-                    storage_root
-                    / "checkpoints"
-                    / str(ids["session_id"])
-                    / f"{worker_checkpoint_id}.png"
-                )
-                thumb = (
-                    storage_root
-                    / "checkpoints"
-                    / str(ids["session_id"])
-                    / f"{worker_checkpoint_id}_thumb.png"
-                )
-                assert not full.exists()
-                assert not thumb.exists()
+            # No checkpoint row written, storage cleaned up.
+            row = await db.get(Checkpoint, worker_checkpoint_id)
+            assert row is None
+
+        full = storage_root / "checkpoints" / str(ids["session_id"]) / f"{worker_checkpoint_id}.png"
+        thumb = (
+            storage_root
+            / "checkpoints"
+            / str(ids["session_id"])
+            / f"{worker_checkpoint_id}_thumb.png"
+        )
+        assert not full.exists()
+        assert not thumb.exists()
     finally:
         await engine.dispose()

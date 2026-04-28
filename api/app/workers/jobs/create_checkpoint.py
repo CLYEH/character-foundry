@@ -622,10 +622,14 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                     # writer succeeds, no orphan rows in terminal sessions.
                     locked_session = await creation_session_repo.get_for_update(db, session_id)
                     if locked_session is None or locked_session.status != "in_progress":
-                        # Release the FOR UPDATE lock before opening the
-                        # mark-cancelled session — `_commit_cancelled`
-                        # uses its own transaction, but holding two locks
-                        # on the same engine can deadlock under load.
+                        # Release the FOR UPDATE on creation_sessions
+                        # promptly. `_commit_cancelled` opens its own
+                        # connection to write `tasks` — the lock isn't
+                        # contended with that write, but holding it
+                        # until the `async with` exits is needless and
+                        # widens the window where a sibling abandon /
+                        # select-base call would block on a row whose
+                        # consumer has already moved on.
                         await db.rollback()
                         terminal = locked_session.status if locked_session else "missing"
                         _logger.info(
