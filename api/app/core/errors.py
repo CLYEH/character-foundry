@@ -474,6 +474,29 @@ def conflict_sequence_race() -> AgentErrorException:
     )
 
 
+def conflict_base_locked() -> AgentErrorException:
+    """Returned by select-base / abandon when the session has already
+    been completed (a Base row exists). Phase 1 Base is immutable —
+    you can't re-pick or undo by abandoning. Surface a distinct code
+    from CONFLICT_SESSION_NOT_ACTIVE so the frontend can offer a
+    different remediation ("Base 已確立" → go to character detail)
+    rather than the generic "start a new session" copy.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="CONFLICT_BASE_LOCKED",
+            message="此角色的基礎形象已確立，無法重新選擇或放棄",
+            problem="The creation session is already completed; "
+            "a Base row exists for the character.",
+            cause="Base is immutable in Phase 1. To change the look you "
+            "must delete the character and start over.",
+            fix="Open the character detail page to view or edit the existing Base.",
+            retryable=False,
+        ),
+        status_code=409,
+    )
+
+
 def conflict_task_already_terminal() -> AgentErrorException:
     return AgentErrorException(
         AgentError(
