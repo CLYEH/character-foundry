@@ -1,6 +1,6 @@
 # T-028: Worker post-lock checkpoint guard
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 2
 **Est:** S (1–2h)
 **Depends on:** T-017, T-018
