@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { Link, useParams } from 'react-router'
+import { useQueryClient } from '@tanstack/react-query'
 
-import { useCreationSession } from '@/api/queries/useCreationSession'
+import { creationSessionQueryKey, useCreationSession } from '@/api/queries/useCreationSession'
 import { useCreateCheckpoint } from '@/api/mutations/useCreateCheckpoint'
 import { useCancelTask } from '@/api/mutations/useCancelTask'
 import type {
@@ -36,13 +37,14 @@ interface PlaceholderState {
   insertionIndex: number
 }
 
-const EMPTY_SELECTIONS: MenuSelections = {}
+const EMPTY_SELECTIONS: MenuSelections = Object.freeze({}) as MenuSelections
 
 export default function CreationSessionPage() {
   const { id: sessionId } = useParams<{ id: string }>()
   const sessionQuery = useCreationSession(sessionId)
   const createCheckpoint = useCreateCheckpoint(sessionId ?? '')
   const cancelTaskMutation = useCancelTask()
+  const queryClient = useQueryClient()
 
   const [menuSelections, setMenuSelections] = useState<MenuSelections>(EMPTY_SELECTIONS)
   const [freeformNote, setFreeformNote] = useState<string>('')
@@ -55,26 +57,41 @@ export default function CreationSessionPage() {
   // the same key is replaced mid-stream.
   const insertionCounterRef = useRef(0)
 
-  const handleTerminal = useCallback((taskId: string, event: TaskEvent) => {
-    // The backend only writes `event.result.checkpoint` on `completed`; on
-    // `failed` / `cancelled` we keep the placeholder image but flip status
-    // so the card can render the error / strikethrough state.
-    setPlaceholders((prev) => {
-      const next = new Map(prev)
-      for (const [checkpointId, placeholder] of next) {
-        if (placeholder.taskId !== taskId) continue
-        const finalCheckpoint = event.result?.checkpoint ?? null
-        next.set(checkpointId, {
-          ...placeholder,
-          status: event.status === 'completed' ? 'completed' : event.status,
-          sequence: finalCheckpoint?.sequence ?? placeholder.sequence,
-          checkpoint: finalCheckpoint ?? placeholder.checkpoint,
-        })
-        break
+  const handleTerminal = useCallback(
+    (taskId: string, event: TaskEvent) => {
+      // The backend only writes `event.result.checkpoint` on `completed`; on
+      // `failed` / `cancelled` we keep the placeholder image but flip status
+      // so the card can render the error / strikethrough state.
+      setPlaceholders((prev) => {
+        const next = new Map(prev)
+        for (const [checkpointId, placeholder] of next) {
+          if (placeholder.taskId !== taskId) continue
+          const finalCheckpoint = event.result?.checkpoint ?? null
+          next.set(checkpointId, {
+            ...placeholder,
+            status: event.status === 'completed' ? 'completed' : event.status,
+            sequence: finalCheckpoint?.sequence ?? placeholder.sequence,
+            checkpoint: finalCheckpoint ?? placeholder.checkpoint,
+          })
+          break
+        }
+        return next
+      })
+      // Invalidate the server snapshot when a checkpoint lands so a later
+      // remount / focus refetch lines up with what we just rendered locally
+      // (async-patterns.md §2.3 / §9.1).
+      if (event.status === 'completed' && sessionId) {
+        void queryClient.invalidateQueries({ queryKey: creationSessionQueryKey(sessionId) })
       }
-      return next
-    })
-  }, [])
+      // Failed events don't go through TanStack Query's mutation cache, so
+      // wire them to the same Layer-2 toast (`async-patterns.md` §7.2) that
+      // mutation failures use — gives the user the full problem/cause/fix.
+      if (event.status === 'failed' && event.error) {
+        toast.agentError(new AgentError(event.error))
+      }
+    },
+    [queryClient, sessionId],
+  )
 
   const { events, subscribe } = useTaskStream({ onTerminal: handleTerminal })
 
@@ -94,7 +111,13 @@ export default function CreationSessionPage() {
     return model?.checkpoint ?? null
   }, [lightboxCheckpointId, models])
 
-  const hasAnyCheckpoint = models.length > 0
+  // Panel-level [重試] uses `retry_same`, which the backend re-derives from a
+  // server-side prompt record. That record only exists for completed
+  // checkpoints — disable the button until one lands.
+  const hasCompletedCheckpoint = useMemo(
+    () => models.some((m) => m.status === 'completed'),
+    [models],
+  )
   const isSubmitting = createCheckpoint.isPending
 
   // ---- Mutations ----------------------------------------------------------
@@ -162,9 +185,8 @@ export default function CreationSessionPage() {
   }, [])
 
   const handleAdvancedView = useCallback(() => {
-    // T-024 owns the Advanced Prompt modal (M-01). For T-022 we only need to
-    // confirm the button is wired; toast doubles as a visible signal in the
-    // smoke-test path until T-024 lands.
+    // T-024 owns the Advanced Prompt modal (M-01). Until then the toast is
+    // the visible "open" event the ticket asks us to wire.
     toast.info('進階檢視即將上線（T-024）')
   }, [])
 
@@ -222,13 +244,24 @@ export default function CreationSessionPage() {
         onSuccess: ({ cancel_outcome }) => {
           switch (cancel_outcome) {
             case 'cancelled_immediately':
+              // Backend already removed the task from the queue and may not
+              // emit a trailing SSE — settle the placeholder now (api-shape
+              // §5.5: "立即顯示「已取消」"). Otherwise the card sits in the
+              // optimistic "取消中…" state forever.
+              settlePlaceholderForTask(setPlaceholders, taskId, 'cancelled')
               toast.success('已取消')
               break
             case 'cancel_pending':
+              // Server is still trying to abort mid-run; SSE will deliver the
+              // final status and `handleTerminal` will settle the card.
               toast.info('取消中…')
               break
             case 'too_late_completed':
+              settlePlaceholderForTask(setPlaceholders, taskId, 'completed')
+              toast.warning('來不及取消')
+              break
             case 'too_late_failed':
+              settlePlaceholderForTask(setPlaceholders, taskId, 'failed')
               toast.warning('來不及取消')
               break
           }
@@ -256,18 +289,14 @@ export default function CreationSessionPage() {
   }, [])
 
   const handleFreeformChange = useCallback((value: string) => {
-    if (value.length > FREEFORM_MAX_LENGTH) return
-    setFreeformNote(value)
+    // The textarea also enforces `maxLength` at the DOM layer; this just
+    // catches the paste-with-prevent-default edge case.
+    setFreeformNote(value.slice(0, FREEFORM_MAX_LENGTH))
   }, [])
 
-  // ---- Lifecycle: re-subscribe to in-flight checkpoints from initial GET --
-  // If the user reloads while tasks are still queued/running on the server,
-  // the GET payload doesn't currently carry task_ids. So this effect is a
-  // no-op — placeholders for backgrounded streams are a T-027 concern.
-  // (Documented here so future readers know the explicit non-handling.)
-  useEffect(() => {
-    /* intentionally empty — see comment above */
-  }, [sessionQuery.data])
+  // Re-subscribing to in-flight checkpoints loaded from a fresh GET is a
+  // T-027 concern (the DTO doesn't carry task_ids today). Documented for
+  // future readers; no effect needed now.
 
   // ---- Render -------------------------------------------------------------
 
@@ -319,7 +348,7 @@ export default function CreationSessionPage() {
           menuSelections={menuSelections}
           freeformNote={freeformNote}
           remixSequence={remixContext?.baseSequence ?? null}
-          hasAnyCheckpoint={hasAnyCheckpoint}
+          hasAnyCheckpoint={hasCompletedCheckpoint}
           isSubmitting={isSubmitting}
           onMenuChange={handleMenuChange}
           onFreeformChange={handleFreeformChange}
@@ -352,6 +381,16 @@ function hasAnyMenuValue(selections: MenuSelections): boolean {
   return Object.values(selections).some((v) => typeof v === 'string' && v.length > 0)
 }
 
+const TERMINAL_CARD_STATUSES = new Set<CheckpointCardModel['status']>([
+  'completed',
+  'failed',
+  'cancelled',
+])
+
+function isTerminalStatus(status: CheckpointCardModel['status']): boolean {
+  return TERMINAL_CARD_STATUSES.has(status)
+}
+
 function pickRetrySource(models: CheckpointCardModel[]): CheckpointCardModel | null {
   // Newest *completed* card is the safest anchor for retry_same; failed
   // checkpoints don't have a server-side prompt record yet.
@@ -359,6 +398,28 @@ function pickRetrySource(models: CheckpointCardModel[]): CheckpointCardModel | n
     if (models[i].status === 'completed') return models[i]
   }
   return null
+}
+
+/**
+ * Settle a placeholder card to its final status synchronously, used by the
+ * cancel mutation when the SSE stream may not deliver another event (queued
+ * tasks removed at cancel-time, or `too_late_*` outcomes).
+ */
+function settlePlaceholderForTask(
+  setPlaceholders: React.Dispatch<React.SetStateAction<Map<string, PlaceholderState>>>,
+  taskId: string,
+  status: PlaceholderState['status'],
+): void {
+  setPlaceholders((prev) => {
+    const next = new Map(prev)
+    for (const [id, placeholder] of next) {
+      if (placeholder.taskId === taskId) {
+        next.set(id, { ...placeholder, status, cancelRequested: false })
+        break
+      }
+    }
+    return next
+  })
 }
 
 function buildCardModels(
@@ -384,12 +445,17 @@ function buildCardModels(
 
   // 2. Local placeholders — newer truth than the server snapshot, so they
   //    win on collision (the SSE-derived state is more current than the
-  //    cached GET payload). Status is whichever is *latest*: the SSE event
-  //    if one has arrived, else the placeholder's locally-tracked status
-  //    (which captures terminal results from `onTerminal`).
+  //    cached GET payload). Status precedence:
+  //      a. Terminal `placeholder.status` (set by `handleTerminal` from SSE
+  //         result or by `settlePlaceholderForTask` from cancel outcomes) is
+  //         the final word — never let a stale `events.get()` payload bring
+  //         the card back to running / queued.
+  //      b. Otherwise the latest SSE event drives the visual status.
+  //      c. Fall back to whatever the placeholder was initialised with.
   for (const [checkpointId, placeholder] of placeholders) {
     const event = events.get(placeholder.taskId) ?? null
-    const status = event?.status ?? placeholder.status
+    const placeholderTerminal = isTerminalStatus(placeholder.status)
+    const status = placeholderTerminal ? placeholder.status : (event?.status ?? placeholder.status)
     byId.set(checkpointId, {
       checkpointId,
       sequence: placeholder.sequence ?? placeholder.checkpoint?.sequence ?? null,
@@ -397,7 +463,7 @@ function buildCardModels(
       event,
       checkpoint: placeholder.checkpoint,
       request: placeholder.request,
-      taskId: status === 'completed' ? null : placeholder.taskId,
+      taskId: isTerminalStatus(status) ? null : placeholder.taskId,
       cancelRequested: placeholder.cancelRequested,
     })
   }

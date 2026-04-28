@@ -51,10 +51,19 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
       controller.abort()
       controllersRef.current.delete(taskId)
     }
+    // Drop the stale terminal event so a future subscribe of the same task id
+    // doesn't see a previous lifetime's payload (and to bound memory).
+    setEvents((prev) => {
+      if (!prev.has(taskId)) return prev
+      const next = new Map(prev)
+      next.delete(taskId)
+      return next
+    })
   }, [])
 
   const subscribe = useCallback(
     (taskId: string) => {
+      if (!taskId) return
       // Idempotent — re-subscribing the same task is a no-op rather than a
       // double connection. Pages call this from effect-friendly code paths.
       if (controllersRef.current.has(taskId)) return
@@ -70,8 +79,28 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
         })
         if (TERMINAL_STATUSES.has(event.status)) {
           onTerminalRef.current?.(taskId, event)
-          closeStream(taskId)
+          // Don't call closeStream here — it would prune the event we just
+          // set. Just abort the network side; the event stays until the next
+          // subscribe for this task id (rare; usually never).
+          controller.abort()
+          controllersRef.current.delete(taskId)
         }
+      }
+
+      const surfaceFatal = (reason: string) => {
+        // Non-2xx response or stream rejected — surface as a synthetic failed
+        // event so the placeholder card flips to the failed state and the
+        // user can retry. JWT refresh inside SSE is a Phase-1 backlog item;
+        // for now the user clicks `[重試]` after re-auth lands a new token.
+        handleEvent({
+          status: 'failed',
+          error: {
+            code: 'SSE_ABORTED',
+            message: '連線中斷，請重試',
+            cause: reason,
+            retryable: true,
+          },
+        })
       }
 
       void fetchEventSource(`${BASE_URL}/v1/tasks/${taskId}/stream`, {
@@ -81,6 +110,12 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
         // task-switch while waiting.
         openWhenHidden: true,
         headers: buildAuthHeaders(),
+        onopen: async (response) => {
+          const ct = response.headers.get('content-type')?.toLowerCase() ?? ''
+          if (response.ok && ct.includes('text/event-stream')) return
+          // Fatal — let onerror translate to a synthetic failed event.
+          throw new FatalSseError(`status=${response.status}`)
+        },
         onmessage: (msg) => {
           if (!msg.data) return
           try {
@@ -91,18 +126,24 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
           }
         },
         onerror: (err) => {
-          // fetch-event-source retries on network blips by default; throwing
-          // FatalSseError opts out of the retry loop for non-recoverable
-          // failures (e.g. 401 after logout) so we don't busy-loop.
-          if (err instanceof FatalSseError) throw err
+          // FatalSseError is non-retriable (auth failure, 4xx, etc.). Surface
+          // the failure to the page and re-throw to abort the retry loop.
+          // Anything else (transient network blip) — let fetch-event-source
+          // retry by returning without throwing.
+          if (err instanceof FatalSseError) {
+            surfaceFatal(err.message)
+            throw err
+          }
         },
       }).catch(() => {
-        // Swallow — the stream is gone, the UI will fall back to whatever
-        // was last received and the page-level retry button is still wired
-        // through `[重試]` on the failed card.
+        // Promise resolves once fetchEventSource gives up (FatalSseError
+        // re-thrown above). The `surfaceFatal` call already updated UI
+        // state; nothing to do here.
       })
     },
-    [closeStream],
+    // No deps: this callback only reads from refs (controllersRef,
+    // onTerminalRef) and module-scope helpers, all of which are stable.
+    [],
   )
 
   const unsubscribe = useCallback(

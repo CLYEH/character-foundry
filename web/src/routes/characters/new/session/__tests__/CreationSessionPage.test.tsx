@@ -398,6 +398,100 @@ describe('CreationSessionPage', () => {
     await waitFor(() => expect(card).toHaveAttribute('data-status', 'cancelled'))
   })
 
+  it('cancel_outcome cancelled_immediately settles the card synchronously without SSE', async () => {
+    getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
+    createCheckpointMock.mockResolvedValue({ task_id: 'task-q', checkpoint_id: 'cp-q' })
+    cancelTaskMock.mockResolvedValue({
+      task: {} as unknown as CancelTaskResponse['task'],
+      cancel_outcome: 'cancelled_immediately',
+    })
+    renderPage()
+    await screen.findByRole('button', { name: '生成新候選' })
+
+    fireEvent.click(screen.getByRole('button', { name: '生成新候選' }))
+    const card = await screen.findByTestId('checkpoint-card-cp-q')
+    expect(card).toHaveAttribute('data-status', 'queued')
+
+    fireEvent.click(within(card).getByRole('button', { name: /取消/ }))
+
+    // No SSE event is pushed — the card should flip on the mutation success
+    // alone (api-shape §5.5: queued task removed from queue on this outcome).
+    await waitFor(() => expect(card).toHaveAttribute('data-status', 'cancelled'))
+    expect(sonnerCalls.find((c) => c.kind === 'success')?.message).toBe('已取消')
+  })
+
+  it('rolls back the optimistic cancel flag when the cancel mutation fails', async () => {
+    getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
+    createCheckpointMock.mockResolvedValue({ task_id: 'task-err', checkpoint_id: 'cp-err' })
+    cancelTaskMock.mockRejectedValue(new Error('network'))
+    renderPage()
+    await screen.findByRole('button', { name: '生成新候選' })
+
+    fireEvent.click(screen.getByRole('button', { name: '生成新候選' }))
+    await screen.findByTestId('checkpoint-card-cp-err')
+    pushSse('task-err', { status: 'running', progress: 0.3 })
+
+    const card = screen.getByTestId('checkpoint-card-cp-err')
+    fireEvent.click(within(card).getByRole('button', { name: /取消/ }))
+
+    // After the mutation rejects the cancel button text reverts to "取消".
+    await waitFor(() => {
+      const btn = within(card).getByRole('button', { name: /取消/ })
+      expect(btn).toHaveTextContent(/^取消$/)
+      expect(btn).toBeEnabled()
+    })
+  })
+
+  it('用同設定再試一次 is disabled until a completed checkpoint exists', async () => {
+    getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
+    createCheckpointMock
+      .mockResolvedValueOnce({ task_id: 'task-r1', checkpoint_id: 'cp-r1' })
+      .mockResolvedValueOnce({ task_id: 'task-r2', checkpoint_id: 'cp-r2' })
+    renderPage()
+    await screen.findByRole('button', { name: '生成新候選' })
+
+    const retryBtn = screen.getByRole('button', { name: '用同設定再試一次' })
+    expect(retryBtn).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: '生成新候選' }))
+    await screen.findByTestId('checkpoint-card-cp-r1')
+    pushSse('task-r1', {
+      status: 'completed',
+      result: { checkpoint: makeCheckpoint({ id: 'cp-r1', sequence: 1 }) },
+    })
+    await waitFor(() => expect(retryBtn).toBeEnabled())
+
+    fireEvent.click(retryBtn)
+    await waitFor(() => expect(createCheckpointMock).toHaveBeenCalledTimes(2))
+    const lastCall = createCheckpointMock.mock.calls.at(-1)?.[1]
+    expect(lastCall?.mode).toBe('retry_same')
+    expect(lastCall?.base_checkpoint_id).toBe('cp-r1')
+  })
+
+  it('non-2xx SSE response surfaces as a failed card with toast', async () => {
+    getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
+    createCheckpointMock.mockResolvedValue({
+      task_id: 'task-401',
+      checkpoint_id: 'cp-401',
+    })
+    renderPage()
+    await screen.findByRole('button', { name: '生成新候選' })
+
+    fireEvent.click(screen.getByRole('button', { name: '生成新候選' }))
+    const card = await screen.findByTestId('checkpoint-card-cp-401')
+
+    // Drive the synthetic failure path the hook produces when `onopen` rejects
+    // a non-event-stream response.
+    pushSse('task-401', {
+      status: 'failed',
+      error: { code: 'SSE_ABORTED', message: '連線中斷', retryable: true },
+    })
+
+    await waitFor(() => expect(card).toHaveAttribute('data-status', 'failed'))
+    expect(within(card).getByTestId('checkpoint-error-message')).toHaveTextContent('連線中斷')
+    expect(sonnerCalls.find((c) => c.kind === 'error')?.message).toBe('連線中斷')
+  })
+
   it('cancel_outcome too_late_completed surfaces 來不及取消 toast', async () => {
     getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
     createCheckpointMock.mockResolvedValue({ task_id: 'task-late', checkpoint_id: 'cp-late' })
