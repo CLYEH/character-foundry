@@ -4,6 +4,7 @@ import AppLayout from '@/components/layout/AppLayout'
 import AuthLayout from '@/components/layout/AuthLayout'
 import DashboardPage from '@/routes/dashboard/DashboardPage'
 import LoginPage from '@/routes/login'
+import NewCharacterPage from '@/routes/characters/new/NewCharacterPage'
 import NotFoundPage from '@/routes/not-found'
 import { queryClient } from '@/api/queryClient'
 
@@ -16,10 +17,11 @@ const router = createBrowserRouter([
     element: <AppLayout />,
     children: [
       { path: '/', element: <DashboardPage /> },
-      // /characters/new lands in T-021 (NewCharacterPage), /characters/:id
-      // lands in T-025 (CharacterDetailPage). Until those tickets ship, the
-      // dashboard's CTA + card links fall through to the catch-all below by
-      // design — see T-020 ticket Related section + STATUS.md Sprint 2.
+      { path: '/characters/new', element: <NewCharacterPage /> },
+      // /characters/new/session/:id lands in T-022 (CreationSessionPage),
+      // /characters/:id lands in T-025 (CharacterDetailPage). Until those
+      // tickets ship, links to those paths fall through to the catch-all
+      // below by design — see STATUS.md Sprint 2.
       { path: '*', element: <NotFoundPage /> },
     ],
   },
