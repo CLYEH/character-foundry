@@ -125,17 +125,13 @@ export default function CreationSessionPage() {
 
   // ---- Mutations ----------------------------------------------------------
 
+  // submit dispatches a fully-built request — `buildRequestFromForm` snapshots
+  // the live form state once at click time, so retry paths that need the
+  // *original* failed input (Codex P1 on PR #30) can pass it directly without
+  // having to silence the form snapshot inside submit.
   const submit = useCallback(
-    (mode: CreateCheckpointRequest['mode'], baseCheckpointId: string | null) => {
+    (request: CreateCheckpointRequest) => {
       if (!sessionId) return
-      const trimmedNote = freeformNote.trim()
-      const request: CreateCheckpointRequest = {
-        mode,
-        base_checkpoint_id: baseCheckpointId,
-        menu_selections: hasAnyMenuValue(menuSelections) ? menuSelections : null,
-        freeform_note: trimmedNote.length > 0 ? trimmedNote : null,
-        reference_image_ids: null,
-      }
       createCheckpoint.mutate(request, {
         onSuccess: ({ task_id, checkpoint_id }) => {
           insertionCounterRef.current += 1
@@ -166,20 +162,42 @@ export default function CreationSessionPage() {
         },
       })
     },
-    [createCheckpoint, freeformNote, menuSelections, sessionId, subscribe],
+    [createCheckpoint, sessionId, subscribe],
+  )
+
+  const buildRequestFromForm = useCallback(
+    (
+      mode: CreateCheckpointRequest['mode'],
+      baseCheckpointId: string | null,
+    ): CreateCheckpointRequest => {
+      const trimmedNote = freeformNote.trim()
+      return {
+        mode,
+        base_checkpoint_id: baseCheckpointId,
+        menu_selections: hasAnyMenuValue(menuSelections) ? menuSelections : null,
+        freeform_note: trimmedNote.length > 0 ? trimmedNote : null,
+        reference_image_ids: null,
+      }
+    },
+    [freeformNote, menuSelections],
   )
 
   const handleGenerate = useCallback(() => {
-    submit(remixContext ? 'remix' : 'fresh', remixContext?.baseCheckpointId ?? null)
-  }, [remixContext, submit])
+    submit(
+      buildRequestFromForm(
+        remixContext ? 'remix' : 'fresh',
+        remixContext?.baseCheckpointId ?? null,
+      ),
+    )
+  }, [buildRequestFromForm, remixContext, submit])
 
   const handleRetrySamePrompt = useCallback(() => {
     // [重試] uses retry_same when there's a checkpoint to anchor on; the
     // backend re-derives prompt server-side so menu/freeform are ignored.
     const newest = pickRetrySource(models)
     if (!newest) return
-    submit('retry_same', newest.checkpointId)
-  }, [models, submit])
+    submit(buildRequestFromForm('retry_same', newest.checkpointId))
+  }, [buildRequestFromForm, models, submit])
 
   const handleReset = useCallback(() => {
     setMenuSelections(EMPTY_SELECTIONS)
@@ -223,7 +241,10 @@ export default function CreationSessionPage() {
     (checkpointId: string) => {
       const placeholder = placeholders.get(checkpointId)
       if (!placeholder?.request) return
-      submit(placeholder.request.mode, placeholder.request.base_checkpoint_id)
+      // Replay the *original* request, not the current form state — failed
+      // retries must be deterministic regardless of edits to the panel
+      // since the failure (Codex P1 on PR #30).
+      submit(placeholder.request)
     },
     [placeholders, submit],
   )
@@ -434,25 +455,28 @@ function buildCardModels(
     })
   }
 
-  // 2. Local placeholders — newer truth than the server snapshot, so they
-  //    win on collision (the SSE-derived state is more current than the
-  //    cached GET payload). Status precedence:
+  // 2. Local placeholders — newer truth than the server snapshot for status,
+  //    BUT for the actual checkpoint payload (image URLs, sequence) prefer
+  //    server data when available so a refetched signed URL or a partial
+  //    SSE result is replaced by the full GET response (Codex P2 on PR #30).
+  //    Status precedence:
   //      a. Terminal `placeholder.status` (set by `handleTerminal` from SSE
-  //         result or by `settlePlaceholderForTask` from cancel outcomes) is
-  //         the final word — never let a stale `events.get()` payload bring
-  //         the card back to running / queued.
+  //         result or cancel outcomes) is the final word — never let a stale
+  //         `events.get()` payload bring the card back to running / queued.
   //      b. Otherwise the latest SSE event drives the visual status.
   //      c. Fall back to whatever the placeholder was initialised with.
   for (const [checkpointId, placeholder] of placeholders) {
     const event = events.get(placeholder.taskId) ?? null
     const placeholderTerminal = isTerminalStatus(placeholder.status)
     const status = placeholderTerminal ? placeholder.status : (event?.status ?? placeholder.status)
+    const serverCheckpoint = byId.get(checkpointId)?.checkpoint ?? null
+    const checkpoint = serverCheckpoint ?? placeholder.checkpoint
     byId.set(checkpointId, {
       checkpointId,
-      sequence: placeholder.sequence ?? placeholder.checkpoint?.sequence ?? null,
+      sequence: checkpoint?.sequence ?? placeholder.sequence ?? null,
       status,
       event,
-      checkpoint: placeholder.checkpoint,
+      checkpoint,
       request: placeholder.request,
       taskId: isTerminalStatus(status) ? null : placeholder.taskId,
       cancelRequested: placeholder.cancelRequested,

@@ -374,6 +374,92 @@ describe('CreationSessionPage', () => {
     expect(createCheckpointMock).toHaveBeenCalledTimes(2)
   })
 
+  it('failed-card 重試 replays the original request, ignoring later form edits', async () => {
+    getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
+    createCheckpointMock
+      .mockResolvedValueOnce({ task_id: 'task-orig', checkpoint_id: 'cp-orig' })
+      .mockResolvedValueOnce({ task_id: 'task-replay', checkpoint_id: 'cp-replay' })
+    renderPage()
+    await screen.findByRole('button', { name: '生成新候選' })
+
+    // Submit with original input "原本".
+    fireEvent.change(screen.getByLabelText('自由補述'), { target: { value: '原本' } })
+    fireEvent.click(screen.getByRole('button', { name: '生成新候選' }))
+    await screen.findByTestId('checkpoint-card-cp-orig')
+    pushSse('task-orig', {
+      status: 'failed',
+      error: { code: 'MODEL_TIMEOUT', message: '失敗', retryable: true },
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('checkpoint-card-cp-orig')).toHaveAttribute(
+        'data-status',
+        'failed',
+      ),
+    )
+
+    // User edits the form AFTER the failure but before clicking 重試.
+    fireEvent.change(screen.getByLabelText('自由補述'), { target: { value: '改過了' } })
+
+    fireEvent.click(
+      within(screen.getByTestId('checkpoint-card-cp-orig')).getByRole('button', { name: '重試' }),
+    )
+
+    // The replay must use the *original* freeform_note, not the edited one.
+    await waitFor(() => expect(createCheckpointMock).toHaveBeenCalledTimes(2))
+    const replayBody = createCheckpointMock.mock.calls.at(-1)?.[1]
+    expect(replayBody?.freeform_note).toBe('原本')
+  })
+
+  it('refetched server checkpoint wins over the local placeholder for image data', async () => {
+    let resolveSecondGet: (value: CreationSessionDetail) => void = () => {}
+    const secondGet = new Promise<CreationSessionDetail>((resolve) => {
+      resolveSecondGet = resolve
+    })
+    getCreationSessionMock
+      .mockResolvedValueOnce(makeSessionDetail([]))
+      .mockReturnValueOnce(secondGet)
+    createCheckpointMock.mockResolvedValue({
+      task_id: 'task-refresh',
+      checkpoint_id: 'cp-refresh',
+    })
+    renderPage()
+    await screen.findByRole('button', { name: '生成新候選' })
+
+    fireEvent.click(screen.getByRole('button', { name: '生成新候選' }))
+    await screen.findByTestId('checkpoint-card-cp-refresh')
+
+    // SSE delivers a checkpoint with a stale signed URL.
+    pushSse('task-refresh', {
+      status: 'completed',
+      result: {
+        checkpoint: makeCheckpoint({
+          id: 'cp-refresh',
+          sequence: 1,
+          thumbnail_url: 'https://img/stale.png',
+        }),
+      },
+    })
+    const card = screen.getByTestId('checkpoint-card-cp-refresh')
+    await waitFor(() => expect(card).toHaveAttribute('data-status', 'completed'))
+    expect(within(card).getByRole('img')).toHaveAttribute('src', 'https://img/stale.png')
+
+    // The completed event invalidates the session query → refetch lands with
+    // a fresh signed URL. Server data must win over the placeholder.
+    resolveSecondGet(
+      makeSessionDetail([
+        makeCheckpoint({
+          id: 'cp-refresh',
+          sequence: 1,
+          thumbnail_url: 'https://img/fresh.png',
+        }),
+      ]),
+    )
+
+    await waitFor(() =>
+      expect(within(card).getByRole('img')).toHaveAttribute('src', 'https://img/fresh.png'),
+    )
+  })
+
   it('cancel_pending shows 取消中… toast and the card flips on the cancel SSE', async () => {
     getCreationSessionMock.mockResolvedValue(makeSessionDetail([]))
     createCheckpointMock.mockResolvedValue({ task_id: 'task-c', checkpoint_id: 'cp-c' })
