@@ -38,3 +38,32 @@ export function listCharacters(params: ListCharactersParams = {}): Promise<Chara
   const suffix = qs.toString()
   return apiFetch<CharacterListResponse>(`/v1/characters${suffix ? `?${suffix}` : ''}`)
 }
+
+export type InputMode = 'template' | 'reference'
+
+export interface CreateCharacterRequest {
+  name: string
+  input_mode: InputMode
+}
+
+export interface CreationSession {
+  id: string
+  character_id: string | null
+  input_mode: InputMode
+  status: 'in_progress' | 'completed' | 'abandoned'
+  checkpoint_count: number
+  created_at: string
+  completed_at: string | null
+}
+
+export interface CreateCharacterResponse {
+  character: Character
+  creation_session: CreationSession
+}
+
+export function createCharacter(input: CreateCharacterRequest) {
+  return apiFetch<CreateCharacterResponse>('/v1/characters', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
