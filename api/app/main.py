@@ -6,6 +6,7 @@ from app.api.routes.checkpoints import router as checkpoints_router
 from app.api.routes.creation_sessions import router as creation_sessions_router
 from app.api.routes.health import router as health_router
 from app.api.routes.meta import router as meta_router
+from app.api.routes.prompt import router as prompt_router
 from app.api.routes.reference_images import router as reference_images_router
 from app.api.routes.storage import router as storage_router
 from app.api.routes.tasks import router as tasks_router
@@ -25,3 +26,4 @@ app.include_router(characters_router)
 app.include_router(creation_sessions_router)
 app.include_router(reference_images_router)
 app.include_router(checkpoints_router)
+app.include_router(prompt_router)

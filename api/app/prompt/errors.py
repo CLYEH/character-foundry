@@ -52,3 +52,27 @@ def prompt_reconcile_failed(*, cause: str | None = None) -> AgentErrorException:
         ),
         status_code=502,
     )
+
+
+def validation_empty_input() -> AgentErrorException:
+    """`POST /v1/prompt/preview` body has no signal to reconcile.
+
+    The reconciler still returns a valid output for an all-empty input
+    (constraints alone), but the endpoint guards against it because a
+    "preview with nothing" is almost always a frontend bug — the user
+    pressed 進階檢視 before filling anything in. Surfacing it as 400
+    keeps the contract honest.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_EMPTY_INPUT",
+            message="請至少提供選單、補述、參考圖或 inpaint 範圍其一",
+            problem="Prompt preview was called with no menu_selections, "
+            "freeform_note, reference_image_ids, or mask.",
+            cause="At least one input signal is required to compose a meaningful prompt.",
+            fix="Populate one of menu_selections / freeform_note / "
+            "reference_image_ids / mask before calling preview.",
+            retryable=False,
+        ),
+        status_code=400,
+    )

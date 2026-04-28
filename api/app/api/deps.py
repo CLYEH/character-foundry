@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, Header
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import JWTExpired, JWTInvalid, verify_access_token
@@ -17,8 +18,10 @@ from app.core.errors import (
     auth_invalid_token,
     auth_missing_token,
 )
+from app.core.redis_client import get_redis
 from app.db import get_db
 from app.models.user import User
+from app.prompt.reconciler import PromptReconciler, get_prompt_reconciler
 from app.storage.backend import StorageBackend
 from app.storage.local import LocalFilesystemBackend
 
@@ -81,6 +84,16 @@ async def get_current_user(
         # invalid rather than revealing account existence state.
         raise auth_invalid_token()
     return user
+
+
+async def get_prompt_reconciler_dep(
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> PromptReconciler:
+    """DI seam for `POST /v1/prompt/preview` so tests can swap in a
+    `FakeReconcilerClient` without touching `AI_STUB_MODE`. Production
+    composition stays in `app.prompt.reconciler.get_prompt_reconciler`.
+    """
+    return get_prompt_reconciler(redis)
 
 
 async def get_current_user_no_pin(
