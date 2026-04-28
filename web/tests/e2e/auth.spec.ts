@@ -5,7 +5,7 @@ test.describe('auth flow', () => {
     await loginAs(page, ALICE)
 
     await expect(page).toHaveURL('/')
-    await expect(page.getByRole('heading', { name: 'Hello' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '我的角色' })).toBeVisible()
 
     const userMenu = page.getByRole('button', { name: '使用者選單' })
     await expect(userMenu).toBeVisible()
