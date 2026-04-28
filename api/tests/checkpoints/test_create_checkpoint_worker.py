@@ -729,7 +729,7 @@ async def test_worker_aborts_after_session_abandoned(
 
 
 @pytest.mark.asyncio
-async def test_worker_aborts_under_concurrent_terminator(
+async def test_worker_concurrent_with_terminator_serializes(
     database_url: str,
     seeded_user: dict[str, Any],
     default_team_id: uuid.UUID,
@@ -738,25 +738,25 @@ async def test_worker_aborts_under_concurrent_terminator(
     storage_root: Path,
 ) -> None:
     """T-028 acceptance #3: when a session-terminator runs concurrently
-    with the worker, the FOR UPDATE serializes them cleanly — no orphan
-    rows, no orphan files, no deadlock.
+    with the worker, the FOR UPDATE on `creation_sessions` serializes
+    them cleanly — no orphan rows, no orphan files, no deadlock.
 
-    The other two T-028 tests cover the post-fact ordering (terminator
-    runs to completion, then the worker is invoked). This one checks
-    the live-concurrency case: both coroutines start on the same loop,
-    asyncio.gather schedules them, and PostgreSQL's row lock — not the
-    Python scheduler — is what decides the order.
+    Whichever side reaches `SELECT ... FOR UPDATE` first wins; the
+    other observes the post-commit state and behaves consistently.
+    asyncio.gather doesn't enforce an ordering — under different
+    scheduler / connection-pool / DB-latency conditions either path
+    can land first — so we assert the invariant rather than a fixed
+    outcome:
 
-    In practice the terminator (one SELECT + one UPDATE + commit) is
-    much shorter than the worker pipeline (cancel checks, prompt
-    reconcile, AI stub call, storage put, then the FOR UPDATE), so the
-    terminator essentially always commits first. We assert that
-    deterministic outcome rather than wrap an `if` around both
-    branches: the worker-wins branch is structurally the same as the
-    happy-path test (a session.status flip after the worker commits is
-    just T-018's normal select-base path), and if scheduler timing
-    ever flipped the assertion, the pre-existing happy-path test
-    would still cover that side.
+    - terminator wins → worker sees `completed`, aborts cleanly
+      (task=cancelled, no row, no orphan files, reason=session_terminal).
+    - worker wins   → checkpoint row commits while session is still
+      `in_progress`; terminator then locks, flips to completed, commits.
+      Final session=completed, row exists, task=completed.
+
+    Either is acceptable; what matters is that we never end up with
+    the cross-product (e.g. row committed AND task cancelled). Codex
+    P2 on PR #33 — earlier hard-coded outcome was flake-prone.
     """
     import asyncio
 
@@ -792,23 +792,6 @@ async def test_worker_aborts_under_concurrent_terminator(
 
         worker_result, _ = await asyncio.gather(_run_worker(), _run_terminator())
 
-        async with factory() as db:
-            from app.models.creation_session import CreationSession
-
-            session = await db.get(CreationSession, ids["session_id"])
-            assert session is not None
-            assert session.status == "completed"
-
-            task = await task_repo.get(db, created.task.id)
-            assert task is not None
-            assert task.status == "cancelled"
-            assert task.error is None  # cancellation, not failure
-            assert worker_result["reason"] == "session_terminal"
-
-            # No checkpoint row written, storage cleaned up.
-            row = await db.get(Checkpoint, worker_checkpoint_id)
-            assert row is None
-
         full = storage_root / "checkpoints" / str(ids["session_id"]) / f"{worker_checkpoint_id}.png"
         thumb = (
             storage_root
@@ -816,7 +799,36 @@ async def test_worker_aborts_under_concurrent_terminator(
             / str(ids["session_id"])
             / f"{worker_checkpoint_id}_thumb.png"
         )
-        assert not full.exists()
-        assert not thumb.exists()
+
+        async with factory() as db:
+            from app.models.creation_session import CreationSession
+
+            session = await db.get(CreationSession, ids["session_id"])
+            assert session is not None
+            # Terminator always commits its status flip eventually,
+            # regardless of order — it's never blocked by anything
+            # that could fail in this test.
+            assert session.status == "completed"
+
+            task = await task_repo.get(db, created.task.id)
+            assert task is not None
+            row = await db.get(Checkpoint, worker_checkpoint_id)
+
+            if task.status == "completed":
+                # Worker won the race: row committed while session
+                # was still `in_progress`, terminator then ran. This
+                # IS allowed — T-018's normal select-base flow.
+                assert worker_result.get("ok") is True
+                assert row is not None
+                assert full.is_file()
+            else:
+                # Terminator won: worker observed the terminal status
+                # and aborted via the post-lock guard.
+                assert task.status == "cancelled"
+                assert task.error is None  # cancellation, not failure
+                assert worker_result["reason"] == "session_terminal"
+                assert row is None
+                assert not full.exists()
+                assert not thumb.exists()
     finally:
         await engine.dispose()
