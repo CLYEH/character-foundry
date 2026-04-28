@@ -196,12 +196,9 @@ describe('NewCharacterPage', () => {
 
   it('shows the inline duplicate-name error on CONFLICT_DUPLICATE_NAME and stays on the page', async () => {
     createCharacterMock.mockRejectedValue(
-      new ApiError(
-        409,
-        'CONFLICT_DUPLICATE_NAME',
-        '此角色名稱已存在',
-        { error: { code: 'CONFLICT_DUPLICATE_NAME', message: '此角色名稱已存在' } },
-      ),
+      new ApiError(409, 'CONFLICT_DUPLICATE_NAME', '此角色名稱已存在', {
+        error: { code: 'CONFLICT_DUPLICATE_NAME', message: '此角色名稱已存在' },
+      }),
     )
     renderPage()
 
@@ -217,12 +214,9 @@ describe('NewCharacterPage', () => {
 
   it('surfaces VALIDATION_INVALID_CHARS inline on the name field', async () => {
     createCharacterMock.mockRejectedValue(
-      new ApiError(
-        400,
-        'VALIDATION_INVALID_CHARS',
-        '名稱含有不允許的字元',
-        { error: { code: 'VALIDATION_INVALID_CHARS', message: '名稱含有不允許的字元' } },
-      ),
+      new ApiError(400, 'VALIDATION_INVALID_CHARS', '名稱含有不允許的字元', {
+        error: { code: 'VALIDATION_INVALID_CHARS', message: '名稱含有不允許的字元' },
+      }),
     )
     renderPage()
 
@@ -243,12 +237,9 @@ describe('NewCharacterPage', () => {
 
   it('clears the inline duplicate error when the user retypes and successfully resubmits', async () => {
     createCharacterMock.mockRejectedValueOnce(
-      new ApiError(
-        409,
-        'CONFLICT_DUPLICATE_NAME',
-        '此角色名稱已存在',
-        { error: { code: 'CONFLICT_DUPLICATE_NAME', message: '此角色名稱已存在' } },
-      ),
+      new ApiError(409, 'CONFLICT_DUPLICATE_NAME', '此角色名稱已存在', {
+        error: { code: 'CONFLICT_DUPLICATE_NAME', message: '此角色名稱已存在' },
+      }),
     )
     createCharacterMock.mockResolvedValueOnce(makeResponse())
     renderPage()

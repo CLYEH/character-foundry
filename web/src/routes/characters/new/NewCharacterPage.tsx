@@ -38,25 +38,21 @@ export default function NewCharacterPage() {
   const name = watch('name')
   const inputMode = watch('input_mode')
   const trimmedLength = name.trim().length
-  const submitDisabled =
-    isPending || trimmedLength === 0 || trimmedLength > NAME_MAX || !inputMode
+  const submitDisabled = isPending || trimmedLength === 0 || trimmedLength > NAME_MAX || !inputMode
 
   return (
     <section className="mx-auto flex w-full max-w-3xl flex-col gap-8">
       <div>
         <Button asChild variant="ghost" size="sm" className="-ml-2">
           <Link to="/">
-            <ArrowLeft className="size-4" aria-hidden />
-            回 Dashboard
+            <ArrowLeft className="size-4" aria-hidden />回 Dashboard
           </Link>
         </Button>
       </div>
 
       <header className="flex flex-col gap-1">
         <h1 className="text-2xl font-semibold">新增角色</h1>
-        <p className="text-sm text-muted-foreground">
-          先為角色取個名字，再選擇建立方式。
-        </p>
+        <p className="text-sm text-muted-foreground">先為角色取個名字，再選擇建立方式。</p>
       </header>
 
       <form
@@ -125,11 +121,7 @@ export default function NewCharacterPage() {
 
         <fieldset className="flex flex-col gap-3">
           <legend className="text-sm font-medium">選擇建立方式</legend>
-          <div
-            role="radiogroup"
-            aria-label="建立方式"
-            className="grid gap-4 md:grid-cols-2"
-          >
+          <div role="radiogroup" aria-label="建立方式" className="grid gap-4 md:grid-cols-2">
             <InputModeCard
               value="template"
               label="選單式（Template）"
