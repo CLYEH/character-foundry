@@ -6,6 +6,7 @@ import DashboardPage from '@/routes/dashboard/DashboardPage'
 import LoginPage from '@/routes/login'
 import NewCharacterPage from '@/routes/characters/new/NewCharacterPage'
 import CreationSessionPage from '@/routes/characters/new/session/CreationSessionPage'
+import CharacterDetailPage from '@/routes/characters/detail/CharacterDetailPage'
 import NotFoundPage from '@/routes/not-found'
 import { queryClient } from '@/api/queryClient'
 
@@ -20,9 +21,7 @@ const router = createBrowserRouter([
       { path: '/', element: <DashboardPage /> },
       { path: '/characters/new', element: <NewCharacterPage /> },
       { path: '/characters/new/session/:id', element: <CreationSessionPage /> },
-      // /characters/:id lands in T-025 (CharacterDetailPage). Until that
-      // ticket ships, links to those paths fall through to the catch-all
-      // below by design — see STATUS.md Sprint 2.
+      { path: '/characters/:id', element: <CharacterDetailPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },
