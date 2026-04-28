@@ -121,6 +121,17 @@ def test_preview_rejects_only_whitespace_freeform_note(client: TestClient) -> No
     assert resp.json()["error"]["code"] == "VALIDATION_EMPTY_INPUT"
 
 
+def test_preview_rejects_non_string_menu_value(client: TestClient) -> None:
+    """`menu_selections` is `dict[str, str]` on the wire so the cache key
+    can't fragment between e.g. `{"age": 25}` and `{"age": "25"}` — pydantic
+    422s the bad shape upfront."""
+    resp = client.post(
+        "/v1/prompt/preview",
+        json={"mode": "create_base", "menu_selections": {"age": 25}},
+    )
+    assert resp.status_code == 422
+
+
 def test_preview_rejects_empty_reference_image_list(client: TestClient) -> None:
     """`reference_image_ids: []` is the same as "no reference"; require some
     other signal so the wire treats both as the same empty input."""

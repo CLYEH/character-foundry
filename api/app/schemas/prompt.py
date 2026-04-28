@@ -24,7 +24,15 @@ WirePromptMode = Literal["create_base", "create_alias", "create_motion"]
 
 class PromptPreviewRequest(BaseModel):
     mode: WirePromptMode
-    menu_selections: dict[str, Any] | None = None
+    # `dict[str, str]` (not `dict[str, Any]`) so the wire rejects e.g.
+    # `{"age": 25}` upfront. The reconciler tolerates non-strings via a
+    # `str(option)` fallback in `resolve_menu_fragments`, but the cache
+    # key serialises `25` and `"25"` to different JSON, so a sloppy
+    # frontend would fragment the cache for the same logical selection.
+    # `CreateCheckpointRequest` (T-016) still accepts `dict[str, Any]`
+    # — that's a separate hardening pass; the wire seam shouldn't loosen
+    # here just to match a known-loose sibling.
+    menu_selections: dict[str, str] | None = None
     freeform_note: str | None = None
     reference_image_ids: list[uuid.UUID] | None = None
     mask: dict[str, Any] | None = None

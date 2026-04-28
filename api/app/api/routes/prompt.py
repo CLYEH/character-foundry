@@ -59,7 +59,7 @@ async def preview_prompt(
     output = await reconciler.preview(
         ReconcileInput(
             mode=_resolve_mode(body.mode, has_reference=has_reference),
-            menu_selections=body.menu_selections,
+            menu_selections=body.menu_selections,  # wire schema enforces str values
             freeform_note=body.freeform_note,
             has_reference_image=has_reference,
             has_inpaint_mask=has_mask,
