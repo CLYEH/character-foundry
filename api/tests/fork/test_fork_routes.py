@@ -295,6 +295,37 @@ def test_fork_invalid_name_returns_400(
     assert resp.json()["error"]["code"] == "VALIDATION_INVALID_CHARS"
 
 
+def test_fork_oversized_name_returns_422(
+    client: TestClient,
+    access_token: str,
+    database_url: str,
+    storage_root: Path,
+) -> None:
+    """Codex round-1 P1: a 51+ character name must be rejected at the
+    wire layer (Pydantic NameStr length check) instead of slipping
+    past `name_pattern_ok` and tripping the DB CHECK constraint
+    `chk_characters_name_length` as a 500."""
+    src = _create_character(client, access_token)
+    src_cid, _ = seed_committed_checkpoint(
+        database_url,
+        src["creation_session"]["id"],
+        storage_root=storage_root,
+        write_image=True,
+    )
+    # 60 'a's — passes the regex but exceeds the 50-char cap.
+    long_name = "a" * 60
+
+    resp = client.post(
+        f"/v1/checkpoints/{src_cid}/fork",
+        json={"new_character_name": long_name},
+        headers=auth_headers(access_token),
+    )
+    # Pydantic's StringConstraints surfaces as 422; we don't (yet)
+    # remap to the 400 AgentError envelope for this case — the
+    # important thing is no 500 / DB integrity surface.
+    assert resp.status_code == 422
+
+
 def test_fork_after_source_session_abandoned_still_works(
     client: TestClient,
     access_token: str,

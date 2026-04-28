@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import (
@@ -99,26 +100,43 @@ async def select_base(
         # sibling session".
         raise not_found_checkpoint()
 
-    # Insert the Base row. `bases.character_id` is UNIQUE — a duplicate
-    # (e.g. retry hitting a stale-status race) would IntegrityError; the
-    # `session.status != 'in_progress'` guard above is the primary
-    # defence, the UNIQUE the structural backstop.
-    base = await base_repo.insert(
-        db,
-        character_id=character.id,
-        from_checkpoint_id=checkpoint.id,
-        image_key=checkpoint.output_image_key,
-        image_embedding=checkpoint.output_image_embedding,
-    )
+    # Insert the Base row + flip the back-references. Two callers
+    # hitting select-base concurrently can both read session.status
+    # == 'in_progress' before either commits (read-then-write race).
+    # The `bases.character_id` UNIQUE constraint catches the loser at
+    # flush/commit time; we translate that to CONFLICT_BASE_LOCKED so
+    # the response stays consistent with the documented terminal-
+    # session contract instead of surfacing as a generic 500
+    # (Codex round-1 P2).
+    try:
+        base = await base_repo.insert(
+            db,
+            character_id=character.id,
+            from_checkpoint_id=checkpoint.id,
+            image_key=checkpoint.output_image_key,
+            image_embedding=checkpoint.output_image_embedding,
+        )
 
-    # Wire the back-references + flip statuses. SQLAlchemy bundles
-    # everything into one COMMIT.
-    character.base_id = base.id
-    session.status = "completed"
-    session.completed_at = datetime.now(UTC)
-    checkpoint.selected_as_base = True
+        # SQLAlchemy bundles everything into one COMMIT.
+        character.base_id = base.id
+        session.status = "completed"
+        session.completed_at = datetime.now(UTC)
+        checkpoint.selected_as_base = True
 
-    await db.commit()
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        # `bases_character_id_key` is the auto-generated name for the
+        # column-level UNIQUE on `bases.character_id` (migration 007).
+        # Only this collision maps to the user-facing 409. Other
+        # IntegrityErrors (e.g. a FK violation from a concurrent
+        # character soft-delete + cleanup) bubble as their real type —
+        # they're not the "another writer already locked Base" case.
+        msg = str(exc.orig) if exc.orig is not None else str(exc)
+        if "bases_character_id_key" in msg:
+            raise conflict_base_locked() from exc
+        raise
+
     await db.refresh(character)
     await db.refresh(base)
 

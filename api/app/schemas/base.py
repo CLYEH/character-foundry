@@ -16,7 +16,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.schemas.character import CharacterDTO
+from app.schemas.character import CharacterDTO, NameStr
 from app.schemas.creation_session import CreationSessionDTO
 
 
@@ -42,12 +42,17 @@ class SelectBaseRequest(BaseModel):
 
 
 class ForkCheckpointRequest(BaseModel):
-    """`new_character_name` follows the same NameStr constraints used
-    by character create — enforced by the service layer rather than
-    Pydantic so the structured AgentError surfaces the right code on
-    bad input."""
+    """`new_character_name` shares the `NameStr` constraints used by
+    character create (1–50 chars, whitespace-stripped). Length is
+    enforced here at the wire so a 51+ char string never reaches the
+    service layer — character-class regex still happens in service
+    so the structured AgentError surfaces VALIDATION_INVALID_CHARS
+    (Codex round-1 P1: previously bare `str` let oversized names
+    bypass `name_pattern_ok` and trip the DB CHECK constraint
+    `chk_characters_name_length`, surfacing as 500 because the
+    IntegrityError handler only mapped name/slug uniqueness)."""
 
-    new_character_name: str
+    new_character_name: NameStr
 
 
 class SelectBaseResponse(BaseModel):

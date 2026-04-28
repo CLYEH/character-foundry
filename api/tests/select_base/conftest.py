@@ -288,14 +288,12 @@ def seed_committed_checkpoint(
     asyncio.run(_insert())
 
     if write_image and storage_root is not None:
-        # 1x1 transparent PNG — minimal valid bytes so the fork copy
-        # path has something concrete to hardlink / copy.
-        png = bytes.fromhex(
-            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-            "8900000000049444154789c63600000000200015a4d0a3b0000000049454e44ae426082"
-        )
+        # Storage copy + file-existence checks don't require a real
+        # decodable PNG — LocalFilesystemBackend.copy uses `os.link`
+        # so any bytes work. Use a non-empty placeholder so the
+        # destination file exists post-copy.
         target = storage_root / image_key
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(png)
+        target.write_bytes(b"placeholder-checkpoint-bytes")
 
     return str(cid), image_key
