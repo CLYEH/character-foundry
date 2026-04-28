@@ -86,9 +86,7 @@ export function ReferenceImageDropzone({
       <div className="font-medium text-foreground">
         {isFull ? `已達上限（${MAX_REFERENCE_IMAGES} 張）` : '拖放或點擊上傳參考圖'}
       </div>
-      <div className="text-xs">
-        PNG / JPEG / WebP，單檔 ≤ 10 MB，最多 {MAX_REFERENCE_IMAGES} 張
-      </div>
+      <div className="text-xs">PNG / JPEG / WebP，單檔 ≤ 10 MB，最多 {MAX_REFERENCE_IMAGES} 張</div>
       <input
         ref={inputRef}
         type="file"
@@ -97,6 +95,16 @@ export function ReferenceImageDropzone({
         disabled={inputDisabled}
         className="sr-only"
         data-testid="reference-image-input"
+        onClick={(e) => {
+          // The input is a child of the wrapper div, so a programmatic
+          // `inputRef.current?.click()` from `handleClick` would
+          // dispatch a click event on the input that bubbles back up
+          // to the wrapper, re-entering `handleClick` recursively
+          // (Codex P1 round 5 on PR #31). Stop the click here so the
+          // wrapper's onClick only fires for the user's original
+          // click on the dropzone.
+          e.stopPropagation()
+        }}
         onChange={(e) => {
           const files = Array.from(e.target.files ?? [])
           if (files.length > 0) onFiles(files)

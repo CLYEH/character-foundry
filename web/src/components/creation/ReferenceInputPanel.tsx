@@ -82,10 +82,7 @@ export function ReferenceInputPanel(props: ReferenceInputPanelProps) {
           disabled={isSubmitting}
         />
         {items.length > 0 && (
-          <div
-            data-testid="reference-image-grid"
-            className="grid grid-cols-3 gap-2"
-          >
+          <div data-testid="reference-image-grid" className="grid grid-cols-3 gap-2">
             {items.map((item) => (
               <ReferenceImagePreview
                 key={item.localId}

@@ -32,10 +32,9 @@ vi.mock('@/api/endpoints/checkpoints', async () => {
 })
 
 vi.mock('@/api/endpoints/reference-images', async () => {
-  const actual =
-    await vi.importActual<typeof import('@/api/endpoints/reference-images')>(
-      '@/api/endpoints/reference-images',
-    )
+  const actual = await vi.importActual<typeof import('@/api/endpoints/reference-images')>(
+    '@/api/endpoints/reference-images',
+  )
   return { ...actual, uploadReferenceImage: vi.fn() }
 })
 
@@ -279,9 +278,7 @@ describe('CreationSessionPage — reference mode', () => {
     await waitFor(() => {
       expect(screen.getAllByTestId(/^reference-image-preview-/)).toHaveLength(3)
     })
-    await waitFor(() =>
-      expect(uploadReferenceImageMock).toHaveBeenCalledTimes(3),
-    )
+    await waitFor(() => expect(uploadReferenceImageMock).toHaveBeenCalledTimes(3))
 
     const generate = await screen.findByRole('button', { name: '生成新候選' })
     await waitFor(() => expect(generate).toBeEnabled())
@@ -443,6 +440,31 @@ describe('CreationSessionPage — reference mode', () => {
     await waitFor(() => expect(generate).toBeEnabled())
   })
 
+  it('clicking the dropzone fires exactly one input.click (no recursive bubble loop)', async () => {
+    // Wrapper div + nested file input means a programmatic
+    // `inputRef.current?.click()` would dispatch a click event that
+    // bubbles back up and re-enters `handleClick`, looping forever
+    // (Codex P1 round 5 on PR #31). Spying on the prototype catches
+    // both the user's original click → handleClick → input.click() and
+    // any recursive re-entry.
+    getCreationSessionMock.mockResolvedValue(makeReferenceSession())
+    renderPage()
+
+    await screen.findByTestId('reference-image-dropzone')
+    const dropzone = screen.getByTestId('reference-image-dropzone')
+
+    const clickSpy = vi.spyOn(HTMLInputElement.prototype, 'click')
+    try {
+      fireEvent.click(dropzone)
+      // If the bubble loop existed, jsdom would have stack-overflowed
+      // before reaching this assertion. Belt-and-suspenders: also
+      // assert exactly one programmatic click was made.
+      expect(clickSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      clickSpy.mockRestore()
+    }
+  })
+
   it('rejects a file with empty File.type even when bytes are a valid PNG', async () => {
     // Backend gates on multipart `Content-Type` (sourced from `File.type`).
     // A drag-drop file with empty MIME would round-trip and fail
@@ -547,10 +569,7 @@ describe('CreationSessionPage — reference mode', () => {
     })
     createCheckpointMock.mockResolvedValue({ task_id: 'task-x', checkpoint_id: 'cp-x' })
     renderPage(
-      <NavigateButton
-        to={`/characters/new/session/${OTHER_SESSION_ID}`}
-        label="other-session"
-      />,
+      <NavigateButton to={`/characters/new/session/${OTHER_SESSION_ID}`} label="other-session" />,
     )
 
     await screen.findByTestId('reference-image-dropzone')

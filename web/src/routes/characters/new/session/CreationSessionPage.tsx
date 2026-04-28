@@ -193,11 +193,9 @@ export default function CreationSessionPage() {
       return {
         mode,
         base_checkpoint_id: baseCheckpointId,
-        menu_selections:
-          !isReference && hasAnyMenuValue(menuSelections) ? menuSelections : null,
+        menu_selections: !isReference && hasAnyMenuValue(menuSelections) ? menuSelections : null,
         freeform_note: trimmedNote.length > 0 ? trimmedNote : null,
-        reference_image_ids:
-          isReference && referenceImageIds.length > 0 ? referenceImageIds : null,
+        reference_image_ids: isReference && referenceImageIds.length > 0 ? referenceImageIds : null,
       }
     },
     [freeformNote, inputMode, menuSelections, referenceImageIds],

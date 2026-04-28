@@ -33,12 +33,7 @@ export function ReferenceImagePreview({ item, onRemove, onRetry }: ReferenceImag
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background/80 px-2 text-center text-xs text-destructive">
           <AlertCircle className="size-4" aria-hidden />
           <span data-testid="reference-image-error">{item.errorMessage ?? '上傳失敗'}</span>
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            onClick={() => onRetry(item.localId)}
-          >
+          <Button type="button" size="sm" variant="secondary" onClick={() => onRetry(item.localId)}>
             重試
           </Button>
         </div>
