@@ -15,6 +15,7 @@ import type { TaskEvent } from '@/api/endpoints/tasks'
 import {
   CheckpointLightbox,
   CheckpointList,
+  ReferenceInputPanel,
   TemplateInputPanel,
   type CheckpointCardModel,
   type RemixContext,
@@ -23,6 +24,7 @@ import { GenericErrorPage } from '@/components/composite/ErrorPage'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { FREEFORM_MAX_LENGTH, type MenuKey, type MenuSelections } from '@/constants/menu_options'
+import { useReferenceUpload } from '@/hooks/useReferenceUpload'
 import { useTaskStream } from '@/hooks/useTaskStream'
 import { AgentError, type AgentErrorPayload } from '@/lib/agentError'
 import { toast } from '@/stores/toastStore'
@@ -57,6 +59,7 @@ export default function CreationSessionPage() {
   const [remixContext, setRemixContext] = useState<RemixContext>(null)
   const [placeholders, setPlaceholders] = useState<Map<string, PlaceholderState>>(() => new Map())
   const [lightboxCheckpointId, setLightboxCheckpointId] = useState<string | null>(null)
+  const referenceUpload = useReferenceUpload(sessionId ?? '')
 
   // Monotonic counter so a placeholder's render slot is stable even if state
   // updates batch out of order — Map insertion order alone isn't enough once
@@ -173,21 +176,31 @@ export default function CreationSessionPage() {
     [createCheckpoint, sessionId, subscribe],
   )
 
+  const inputMode = sessionQuery.data?.session.input_mode ?? null
+  const referenceImageIds = referenceUpload.referenceImageIds
+
   const buildRequestFromForm = useCallback(
     (
       mode: CreateCheckpointRequest['mode'],
       baseCheckpointId: string | null,
     ): CreateCheckpointRequest => {
       const trimmedNote = freeformNote.trim()
+      // In reference mode the menu is hidden, so we never carry menu
+      // selections — keeping this branch tight prevents a stale state
+      // from a future template→reference toggle ever leaking into the
+      // reference payload.
+      const isReference = inputMode === 'reference'
       return {
         mode,
         base_checkpoint_id: baseCheckpointId,
-        menu_selections: hasAnyMenuValue(menuSelections) ? menuSelections : null,
+        menu_selections:
+          !isReference && hasAnyMenuValue(menuSelections) ? menuSelections : null,
         freeform_note: trimmedNote.length > 0 ? trimmedNote : null,
-        reference_image_ids: null,
+        reference_image_ids:
+          isReference && referenceImageIds.length > 0 ? referenceImageIds : null,
       }
     },
-    [freeformNote, menuSelections],
+    [freeformNote, inputMode, menuSelections, referenceImageIds],
   )
 
   const handleGenerate = useCallback(() => {
@@ -207,11 +220,16 @@ export default function CreationSessionPage() {
     submit(buildRequestFromForm('retry_same', newest.checkpointId))
   }, [buildRequestFromForm, models, submit])
 
+  // Aliasing the stable callback off the hook return so `useCallback`'s
+  // dep-array can reference a stable identifier — the eslint rule
+  // doesn't recognise `referenceUpload.reset` as stable.
+  const resetReferences = referenceUpload.reset
   const handleReset = useCallback(() => {
     setMenuSelections(EMPTY_SELECTIONS)
     setFreeformNote('')
     setRemixContext(null)
-  }, [])
+    resetReferences()
+  }, [resetReferences])
 
   const handleAdvancedView = useCallback(() => {
     // T-024 owns the Advanced Prompt modal (M-01). Until then the toast is
@@ -386,19 +404,41 @@ export default function CreationSessionPage() {
       </header>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[20rem_1fr]">
-        <TemplateInputPanel
-          menuSelections={menuSelections}
-          freeformNote={freeformNote}
-          remixSequence={remixContext?.baseSequence ?? null}
-          hasAnyCheckpoint={hasCompletedCheckpoint}
-          isSubmitting={isSubmitting}
-          onMenuChange={handleMenuChange}
-          onFreeformChange={handleFreeformChange}
-          onGenerate={handleGenerate}
-          onRetry={handleRetrySamePrompt}
-          onReset={handleReset}
-          onAdvancedView={handleAdvancedView}
-        />
+        {inputMode === 'reference' ? (
+          <ReferenceInputPanel
+            items={referenceUpload.items}
+            freeformNote={freeformNote}
+            remixSequence={remixContext?.baseSequence ?? null}
+            hasAnyCheckpoint={hasCompletedCheckpoint}
+            isSubmitting={isSubmitting}
+            isUploading={referenceUpload.isUploading}
+            hasReferenceReady={referenceImageIds.length > 0}
+            onAddFiles={(files) => {
+              void referenceUpload.addFiles(files)
+            }}
+            onRemoveImage={referenceUpload.remove}
+            onRetryImage={referenceUpload.retry}
+            onFreeformChange={handleFreeformChange}
+            onGenerate={handleGenerate}
+            onRetry={handleRetrySamePrompt}
+            onReset={handleReset}
+            onAdvancedView={handleAdvancedView}
+          />
+        ) : (
+          <TemplateInputPanel
+            menuSelections={menuSelections}
+            freeformNote={freeformNote}
+            remixSequence={remixContext?.baseSequence ?? null}
+            hasAnyCheckpoint={hasCompletedCheckpoint}
+            isSubmitting={isSubmitting}
+            onMenuChange={handleMenuChange}
+            onFreeformChange={handleFreeformChange}
+            onGenerate={handleGenerate}
+            onRetry={handleRetrySamePrompt}
+            onReset={handleReset}
+            onAdvancedView={handleAdvancedView}
+          />
+        )}
         <CheckpointList
           models={models}
           onCancel={handleCancel}
