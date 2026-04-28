@@ -45,8 +45,8 @@ export default function NewCharacterPage() {
     <section className="mx-auto flex w-full max-w-3xl flex-col gap-8">
       <div>
         <Button asChild variant="ghost" size="sm" className="-ml-2">
-          <Link to="/" aria-label="回 Dashboard">
-            <ArrowLeft className="size-4" />
+          <Link to="/">
+            <ArrowLeft className="size-4" aria-hidden />
             回 Dashboard
           </Link>
         </Button>

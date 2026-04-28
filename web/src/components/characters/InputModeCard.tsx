@@ -35,9 +35,7 @@ export function InputModeCard({
       )}
     >
       <div className="flex w-full items-center justify-between">
-        <div className="text-3xl" aria-hidden>
-          {icon}
-        </div>
+        <div aria-hidden>{icon}</div>
         {selected && (
           <span
             aria-hidden

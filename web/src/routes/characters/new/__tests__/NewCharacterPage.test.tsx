@@ -240,4 +240,36 @@ describe('NewCharacterPage', () => {
     const back = screen.getByRole('link', { name: '回 Dashboard' })
     expect(back).toHaveAttribute('href', '/')
   })
+
+  it('clears the inline duplicate error when the user retypes and successfully resubmits', async () => {
+    createCharacterMock.mockRejectedValueOnce(
+      new ApiError(
+        409,
+        'CONFLICT_DUPLICATE_NAME',
+        '此角色名稱已存在',
+        { error: { code: 'CONFLICT_DUPLICATE_NAME', message: '此角色名稱已存在' } },
+      ),
+    )
+    createCharacterMock.mockResolvedValueOnce(makeResponse())
+    renderPage()
+
+    const nameInput = screen.getByLabelText('先為角色取個名字')
+    fireEvent.change(nameInput, { target: { value: '小雅' } })
+    fireEvent.click(screen.getByTestId('input-mode-card-template'))
+    fireEvent.click(screen.getByRole('button', { name: '建立' }))
+
+    expect(await screen.findByText('你已有一個同名角色')).toBeInTheDocument()
+
+    // The user types a different name; RHF clears the field error onChange
+    // so the submit gate is not blocked by stale server state.
+    fireEvent.change(nameInput, { target: { value: '小雅二號' } })
+    await waitFor(() => {
+      expect(screen.queryByText('你已有一個同名角色')).not.toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '建立' }))
+    const stub = await screen.findByTestId('session-stub')
+    expect(stub).toHaveTextContent(`session ${SESSION_ID}`)
+    expect(createCharacterMock).toHaveBeenCalledTimes(2)
+  })
 })
