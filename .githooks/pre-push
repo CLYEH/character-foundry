@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Pre-push review gate (terminal side)
+#
+# Mirror of the Claude-side gate at .claude/hooks/pre-push-review.sh.
+# Triggered by git directly so terminal-driven `git push` is also covered
+# (the Claude-side hook only fires when Claude invokes Bash). Default
+# behavior: reject the push with a clear directive to run the
+# engineering-code-reviewer subagent first. Bypass with CF_SKIP_REVIEW=1
+# (hotfix, docs-only, or re-pushing after review has been done).
+#
+# Activated via `git config core.hooksPath .githooks` (run once per
+# clone — see CONTRIBUTING.md).
+#
+# git pre-push contract: receives `<local ref> <local sha> <remote ref>
+# <remote sha>` lines on stdin, exits non-zero to abort the push.
+
+set -u
+
+if [ "${CF_SKIP_REVIEW:-0}" = "1" ]; then
+  exit 0
+fi
+
+remote="${1:-?}"
+
+print_header() {
+  echo ""
+  echo "════════════════════════════════════════════════════════════"
+  echo "  PRE-PUSH REVIEW GATE  ($remote)"
+  echo "════════════════════════════════════════════════════════════"
+}
+
+printed_any=0
+zero_sha="0000000000000000000000000000000000000000"
+
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  # Branch deletion (local sha is all zeros) — nothing to review.
+  if [ "$local_sha" = "$zero_sha" ]; then
+    continue
+  fi
+
+  # New branch on the remote — diff against origin/main (or first
+  # commit of the branch if even main isn't there).
+  if [ "$remote_sha" = "$zero_sha" ]; then
+    if base=$(git rev-parse --verify --quiet origin/main); then
+      :
+    else
+      base=$(git rev-list --max-parents=0 "$local_sha" | tail -n 1)
+    fi
+    range="${base}..${local_sha}"
+  else
+    range="${remote_sha}..${local_sha}"
+  fi
+
+  if [ "$printed_any" = "0" ]; then
+    print_header
+    printed_any=1
+  fi
+
+  echo ""
+  echo "  Ref:    $local_ref → $remote_ref"
+  echo "  Range:  $range"
+  echo ""
+  echo "  Commits to be pushed:"
+  git log --oneline "$range" | sed 's/^/    /'
+  echo ""
+  echo "  Diff stat:"
+  git diff --stat "$range" | sed 's/^/    /'
+done
+
+if [ "$printed_any" = "0" ]; then
+  # Nothing substantive to review (e.g. all branch deletions). Allow.
+  exit 0
+fi
+
+cat <<'EOF'
+
+  ────────────────────────────────────────────────────────────
+  Review the diff with the `engineering-code-reviewer`
+  subagent in Claude Code before pushing.
+
+  After the review:
+    • Clean → re-run with the bypass flag:
+        CF_SKIP_REVIEW=1 git push <args>
+    • Issues → address them, commit, re-run the gate.
+
+  Intentional bypass (hotfix / docs / post-review):
+        CF_SKIP_REVIEW=1 git push <args>
+  ════════════════════════════════════════════════════════════
+
+EOF
+
+exit 1

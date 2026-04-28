@@ -301,6 +301,33 @@ T-004 會裝起來。本機 commit 時會自動跑：
 
 Hook 擋下就先修再 commit。**不要用 `--no-verify` 繞過**（除非 hook 本身壞了）。
 
+### 7.1 Pre-push review gate（agent code review）
+
+每次 push 前會跑 `engineering-code-reviewer` subagent review，由兩個對稱的 hook 把關：
+
+| 觸發來源 | 機制 | 檔案 |
+|---|---|---|
+| Claude Code 內 `Bash` tool 跑 `git push` | Claude Code `PreToolUse` hook | `.claude/hooks/pre-push-review.sh` |
+| Terminal 直接 `git push` | git `pre-push` hook | `.githooks/pre-push` |
+
+兩個 hook **都預設 reject + 印 directive**，由 `CF_SKIP_REVIEW=1` 顯式 bypass。
+
+**新 clone 一次性設定**（terminal 那條 hook 才會生效）：
+
+```bash
+git config --local core.hooksPath .githooks
+```
+
+不設的話 git 會跑 `.git/hooks/pre-push`（空的），等於 terminal 推送沒攔。`.githooks/` 是版控的，這條 config 是 per-clone。
+
+**正常 review 流程：**
+1. 在 Claude Code 裡呼叫 `engineering-code-reviewer` subagent，餵 `git diff origin/<base>...HEAD`
+2. Subagent 回 🔴 blocker / 🟡 suggestion / 💭 nit
+3. 採納 / 駁回逐條處理
+4. Review 過了 → `CF_SKIP_REVIEW=1 git push ...`
+
+**bypass 合理時機：** hotfix、純 docs、純 ticket 文件、review 已完成的二次 push。**禁止：** 用 bypass 取代 review 跳過正常工作流程。
+
 ---
 
 ## 8. 特殊情境
