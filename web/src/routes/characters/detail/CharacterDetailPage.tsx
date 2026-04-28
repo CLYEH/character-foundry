@@ -40,12 +40,7 @@ export default function CharacterDetailPage() {
 
   if (query.isError) {
     if (query.error instanceof ApiError && query.error.status === 404) {
-      return (
-        <NotFoundPage
-          title="找不到這個角色"
-          description="它可能已被刪除或 URL 寫錯了。"
-        />
-      )
+      return <NotFoundPage title="找不到這個角色" description="它可能已被刪除或 URL 寫錯了。" />
     }
     const agent = AgentError.from(query.error)
     return (
@@ -199,8 +194,7 @@ function BaseMissingFallback() {
       </p>
       <Button asChild variant="outline" size="sm">
         <Link to="/">
-          <ArrowLeft className="size-4" aria-hidden />
-          回 Dashboard
+          <ArrowLeft className="size-4" aria-hidden />回 Dashboard
         </Link>
       </Button>
     </div>

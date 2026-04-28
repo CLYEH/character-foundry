@@ -37,9 +37,7 @@ export function BasePromptModal(props: BasePromptModalProps) {
       <DialogContent data-testid="base-prompt-modal" className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Base 完整資訊</DialogTitle>
-          <DialogDescription>
-            Base 一旦確立即不可修改，以下資訊呈現它的來源。
-          </DialogDescription>
+          <DialogDescription>Base 一旦確立即不可修改，以下資訊呈現它的來源。</DialogDescription>
         </DialogHeader>
         <dl className="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-2 text-sm">
           <dt className="text-muted-foreground">來源 Checkpoint</dt>

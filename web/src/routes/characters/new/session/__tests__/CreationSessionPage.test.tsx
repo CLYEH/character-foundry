@@ -781,9 +781,7 @@ describe('CreationSessionPage', () => {
     expect(await screen.findByTestId('select-base-confirm')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '取消' }))
 
-    await waitFor(() =>
-      expect(screen.queryByTestId('select-base-confirm')).not.toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.queryByTestId('select-base-confirm')).not.toBeInTheDocument())
     expect(selectBaseMock).not.toHaveBeenCalled()
   })
 
@@ -828,8 +826,6 @@ describe('CreationSessionPage', () => {
     expect(screen.queryByTestId('character-detail-stub')).not.toBeInTheDocument()
     // Dialog closes on terminal error so the user can't mash the confirm
     // button into stacked toasts.
-    await waitFor(() =>
-      expect(screen.queryByTestId('select-base-confirm')).not.toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.queryByTestId('select-base-confirm')).not.toBeInTheDocument())
   })
 })
