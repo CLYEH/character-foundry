@@ -243,6 +243,12 @@ export default function CreationSessionPage() {
     // their own routes, so `mode` is hardcoded rather than threaded through
     // session state. Recomputing per keystroke is harmless because the
     // modal is closed (TanStack `enabled: false` blocks the fetch).
+    //
+    // Faithfulness: only `remixContext` makes the preview diverge from the
+    // worker's reconciler input (image2image with `has_reference_image=True`
+    // sourced from `base_checkpoint_id`). `retry_same` is dispatched from
+    // its own button and never opens this modal, so we only guard remix
+    // here via `unsupportedReason` below.
     return {
       mode: 'create_base',
       menu_selections: !isReference && hasAnyMenuValue(menuSelections) ? menuSelections : null,
@@ -473,9 +479,7 @@ export default function CreationSessionPage() {
         onClose={() => setPromptPreviewOpen(false)}
         request={promptPreviewRequest}
         unsupportedReason={
-          remixContext
-            ? `進階檢視 暫不支援 remix 模式（基於 #${remixContext.baseSequence ?? '?'}）。worker 會以該 checkpoint 為 image-to-image 來源，但 /v1/prompt/preview 還沒有對應的 base_checkpoint_id 欄位，預覽結果會與實際生成不一致。先點「從頭」清空後再開即可預覽。`
-            : null
+          remixContext ? buildRemixUnsupportedReason(remixContext.baseSequence) : null
         }
       />
     </section>
@@ -486,6 +490,14 @@ export default function CreationSessionPage() {
 
 function hasAnyMenuValue(selections: MenuSelections): boolean {
   return Object.values(selections).some((v) => typeof v === 'string' && v.length > 0)
+}
+
+function buildRemixUnsupportedReason(baseSequence: number | null): string {
+  // Server-loaded checkpoints can prefill remixContext without a known
+  // sequence (the DTO doesn't always carry it), so only render the
+  // parenthetical when we actually have one.
+  const anchor = baseSequence !== null ? `（基於 #${baseSequence}）` : ''
+  return `進階檢視 暫不支援 remix 模式${anchor}。worker 會以該 checkpoint 為 image-to-image 來源，但 /v1/prompt/preview 還沒有對應的 base_checkpoint_id 欄位，預覽結果會與實際生成不一致。先點「從頭」清空後再開即可預覽。`
 }
 
 const TERMINAL_CARD_STATUSES = new Set<CheckpointCardModel['status']>([
