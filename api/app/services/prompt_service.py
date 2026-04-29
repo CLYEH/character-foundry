@@ -320,6 +320,20 @@ async def _resolve_motion_parent(
     if parent_type == "alias":
         alias = await alias_repo.get_active(db, parent_id)
         if alias is not None:
+            # Early team-visibility check: collapse cross-team aliases
+            # to NOT_FOUND_ALIAS so this endpoint can't disambiguate
+            # "real alias in another team" from "no such alias" via
+            # distinguishable 404 codes (the post-resolve
+            # `assert_can_modify_character` would otherwise raise
+            # NOT_FOUND_CHARACTER for cross-team, while a missing id
+            # raises NOT_FOUND_ALIAS — Codex P2 on commit 7b7caf1).
+            # Same-team-non-owner still falls through to the
+            # post-resolve owner check and gets 403; that 403 vs the
+            # missing-alias 404 is a status-code distinction, not a
+            # code-string oracle on the same status.
+            owning_char = await character_repo.get_active(db, alias.character_id)
+            if owning_char is None or owning_char.team_id != user.team_id:
+                raise not_found_alias()
             return alias.image_key, alias.character_id
         sibling_base = await base_repo.get(db, parent_id)
         if sibling_base is not None and await _caller_can_modify_character(
