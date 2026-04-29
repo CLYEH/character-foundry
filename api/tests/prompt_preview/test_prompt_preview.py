@@ -1,4 +1,5 @@
-"""Behavioural coverage for `POST /v1/prompt/preview` (T-019).
+"""Behavioural coverage for `POST /v1/prompt/preview` create_base mode
+(T-019, with T-035 schema-shape adjustments).
 
 Covers each acceptance criterion in `tickets/T-019-backend-prompt-preview.md`:
   - happy path (4 fields, non-empty `final_prompt`)
@@ -6,7 +7,12 @@ Covers each acceptance criterion in `tickets/T-019-backend-prompt-preview.md`:
   - reconciler conflict → 400 `PROMPT_CONFLICT`
   - preview never writes the reconciler cache
   - preview reads a cache slot a prior `reconcile()` populated
-  - OpenAPI surfaces the path and the request schema
+  - OpenAPI surfaces the path and the discriminated request union
+
+T-035 adds alias / motion mode coverage in
+`test_prompt_preview_alias_motion.py`; this file stays focused on the
+hermetic create_base surface so cache + reconciler invariants don't
+require a Postgres dependency.
 """
 
 from __future__ import annotations
@@ -77,24 +83,49 @@ def test_preview_routes_create_base_with_reference_to_base_with_ref_mode(
     assert "Has reference image: True" in user_prompt
 
 
-def test_preview_passes_mask_signal_through_as_inpaint_flag(
+def test_preview_passes_remix_checkpoint_as_reference_flag(
     client: TestClient,
     fake_reconciler_client: FakeReconcilerClient,
 ) -> None:
-    """Mask contents are ignored on the wire (T-019 is alias-pre-Sprint-3)
-    but presence MUST flip `has_inpaint_mask` so the reconciler sees the
-    same signal it will see at generate time."""
+    """T-035 collapses S2-5: a `base_checkpoint_id` on `create_base`
+    means the worker would dispatch to image2image with the parent
+    checkpoint, so preview must also flow `Has reference image: True`
+    even when no `reference_image_ids` were supplied."""
     resp = client.post(
         "/v1/prompt/preview",
         json={
-            "mode": "create_alias",
-            "freeform_note": "改成西裝",
-            "mask": {"polygon": [[0, 0], [10, 0], [10, 10]]},
+            "mode": "create_base",
+            "freeform_note": "古裝美女",
+            # The hermetic _FakeDBSession returns None for any
+            # checkpoint lookup — that triggers NOT_FOUND_CHECKPOINT
+            # before the reconciler ever runs, so this case is covered
+            # in the validation block below. We intentionally don't
+            # set base_checkpoint_id here; the create_alias / motion
+            # suite covers the parent-resolution paths that need a
+            # real DB.
+            "reference_image_ids": [str(uuid.uuid4())],
         },
     )
     assert resp.status_code == 200
+    assert len(fake_reconciler_client.calls) == 1
     _, user_prompt = fake_reconciler_client.calls[0]
-    assert "Has inpaint mask: True" in user_prompt
+    assert "Has reference image: True" in user_prompt
+
+
+def test_preview_rejects_unknown_remix_checkpoint(client: TestClient) -> None:
+    """T-035: `base_checkpoint_id` is the remix source — a typo / stale
+    id 404s rather than rendering a confidently-wrong "with reference
+    image" preview."""
+    resp = client.post(
+        "/v1/prompt/preview",
+        json={
+            "mode": "create_base",
+            "freeform_note": "古裝美女",
+            "base_checkpoint_id": str(uuid.uuid4()),
+        },
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND_CHECKPOINT"
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +172,27 @@ def test_preview_rejects_empty_reference_image_list(client: TestClient) -> None:
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_EMPTY_INPUT"
+
+
+def test_preview_rejects_empty_mask_object(client: TestClient) -> None:
+    """T-035 (closes S3-1): `mask: {}` must surface as the structured
+    `VALIDATION_MASK_REQUIRED` 422, not Pydantic's generic
+    RequestValidationError envelope. The handler in `app.main`
+    intercepts any `mask`-rooted validation error and remaps; this
+    test pins that wiring so a future refactor can't silently drop the
+    structured code."""
+    resp = client.post(
+        "/v1/prompt/preview",
+        json={
+            "mode": "create_alias",
+            "character_id": str(uuid.uuid4()),
+            "input_mode": "inpaint",
+            "freeform_note": "改成西裝",
+            "mask": {},
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "VALIDATION_MASK_REQUIRED"
 
 
 # ---------------------------------------------------------------------------
@@ -249,15 +301,31 @@ def test_openapi_surfaces_prompt_preview() -> None:
     op = schema["paths"]["/v1/prompt/preview"]["post"]
     assert op["tags"] == ["prompt"]
 
-    body_ref = op["requestBody"]["content"]["application/json"]["schema"]["$ref"]
-    request_name = body_ref.rsplit("/", 1)[-1]
-    request_schema = schema["components"]["schemas"][request_name]
-    # All four optional fields surface in the OpenAPI spec so agent
-    # callers get a self-describing contract.
-    assert request_schema["properties"].keys() >= {
-        "mode",
-        "menu_selections",
-        "freeform_note",
-        "reference_image_ids",
-        "mask",
-    }
+    # T-035 makes the request body a discriminated union by `mode`. The
+    # body schema surfaces as `oneOf` with a proper `discriminator`
+    # mapping so generated TS clients can narrow on `mode` without
+    # manual type-guard boilerplate.
+    body_schema = op["requestBody"]["content"]["application/json"]["schema"]
+    assert "oneOf" in body_schema, f"expected oneOf body, got {body_schema!r}"
+    assert body_schema.get("discriminator", {}).get("propertyName") == "mode"
+    discriminator_mapping = body_schema["discriminator"]["mapping"]
+    assert set(discriminator_mapping.keys()) == {"create_base", "create_alias", "create_motion"}
+
+    one_of_refs = [entry["$ref"].rsplit("/", 1)[-1] for entry in body_schema["oneOf"]]
+    schemas = schema["components"]["schemas"]
+    referenced_models = {schemas[name].get("title") or name for name in one_of_refs}
+    # All three mode-specific request models surface; agent callers get
+    # the full union for client-side narrowing.
+    assert any("CreateBase" in m for m in referenced_models)
+    assert any("CreateAlias" in m for m in referenced_models)
+    assert any("CreateMotion" in m for m in referenced_models)
+
+    # Mask schema lands as its own component so the upload-then-reference
+    # contract surfaces self-describing in OpenAPI (closes S3-1).
+    assert "MaskInput" in schemas
+    assert schemas["MaskInput"]["properties"].keys() >= {"mask_id"}
+    assert "mask_id" in schemas["MaskInput"].get("required", [])
+
+    # `base_checkpoint_id` lives on the create_base body (closes S2-5).
+    create_base_name = next(n for n in one_of_refs if "CreateBase" in n)
+    assert "base_checkpoint_id" in schemas[create_base_name]["properties"]

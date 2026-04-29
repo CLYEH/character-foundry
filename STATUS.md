@@ -1,6 +1,6 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-04-29
+> **Last updated:** 2026-04-30 — T-029 (backend Veo 3.1 i2v client + stub) done.
 > **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張）**
 
 ---
@@ -66,17 +66,17 @@
 | # | Ticket | Status |
 |---|---|---|
 | T-029 | Backend Veo 3.1 i2v client + stub | DONE |
-| T-030 | Backend gpt-image-2 image2image + inpaint extension | TODO |
+| T-030 | Backend gpt-image-2 image2image + inpaint extension | DONE |
 | T-031 | Backend Alias generation endpoint + worker | TODO |
 | T-032 | Backend Alias list / detail / rename / delete | TODO |
 | T-033 | Backend Motion generation endpoint + worker | TODO |
 | T-034 | Backend Motion list / detail / rename / delete | TODO |
-| T-035 | Backend Prompt preview extension（alias / motion mode + MaskInput schema）| TODO |
+| T-035 | Backend Prompt preview extension（alias / motion mode + MaskInput schema）| DONE |
 | T-036 | Frontend Alias edit page (P-06) + InpaintCanvas | TODO |
 | T-037 | Frontend Character Detail aliases + motions sections | TODO |
 | T-038 | Frontend Motion preset generation（click-to-generate + SSE）| TODO |
 | T-039 | Frontend Custom motion modal (M-02) | TODO |
-| T-040 | Frontend Prompt preview modal extension（alias / motion mode）| TODO |
+| T-040 | Frontend Prompt preview modal extension（alias / motion mode）| DONE |
 | T-041 | E2E Alias creation + motion preset smoke（M3 gate）| TODO |
 
 **Dependency / parallelization plan：** 見 `tickets/PARALLEL_WORKFLOW.md`。Wave A（T-029 / T-030 / T-035 / T-036 / T-040）可立即平行開工。
@@ -118,11 +118,10 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | FB-3 | Storage URL expired 時 backend 要回對的 code | ✅ T-005 完成（`STORAGE_URL_EXPIRED` vs `AUTH_INVALID_TOKEN` 已分開） |
 | - | Visual design (Pencil mockup) | 之後需要再開 UX iteration 3 |
 | S2-1 | Slug-based URL（目前 `/characters/:id`）| Sprint 3/4 衡量 SEO/可分享性需求再做 |
-| S3-1 | `POST /v1/prompt/preview` 的 `mask: {}` 應比照 `reference_image_ids: []` 視為 empty 拒掉（T-019 reviewer 提的 🟡，今天的 `dict[str, Any]` 內部 endpoint 不擋；Sprint 3 inpaint 用真正 `MaskInput` schema 時一起處理）| Sprint 3 alias inpaint ticket 落地時 |
 | S2-3 | Dashboard 分頁 / infinite scroll（T-020 首版用 `limit=100` 平鋪，未做 cursor pagination）| Character 數逼近 100 或 UX 反饋時 |
 | S2-4 | `Checkpoint` DTO 不含 `menu_selections` / `freeform_note`，所以 server-loaded checkpoint 點 `[用這張再改]` 無法 prefill form（T-022 placeholder 期間靠 client-side 記憶；reload 後就只設 remix base、form 留白）| Backend 加欄位後 Frontend 移除 placeholder fallback |
-| S2-5 | `/v1/prompt/preview` 沒有 `base_checkpoint_id` 欄位，所以 remix 模式的 [進階檢視] 沒辦法 faithful 呈現（worker 會以 parent checkpoint 走 image2image + `has_reference_image=True`，preview 端點接到的訊號是 `False`）。T-024 PR #32 codex P2 議題；目前在 frontend disabled 並顯示「remix 模式暫不支援」notice。Backend 加欄位後 frontend 移除 unsupported notice。| 開新 ticket 擴充 `/v1/prompt/preview` schema |
 | S2-6 | `BaseDTO` 缺 prompt 欄位（`menu_selections` / `freeform_note` / `prompt_summary`），所以 Character Detail 上的「查看完整 prompt」modal 只能顯示 source checkpoint id + 建立時間，沒辦法重現完整 prompt 組合。T-025 frontend 落地時用 `BasePromptModal` placeholder 暫頂；Backend 在 BaseDTO 加 prompt 欄位後即可改為 reuse PromptPreviewModal。| 開新 ticket 擴充 `BaseDTO` schema |
+| S3-2 | T-030 `edit_image2image` 多參考圖的 multipart shape（重複 `image` field name）依 gpt-image-1 公開合約建模；gpt-image-2 假設沿用，但需在 T-031 整合真 provider 前以 smoke 驗證一次 | T-031 production cutover 前 |
 
 ---
 

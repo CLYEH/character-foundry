@@ -167,6 +167,46 @@ def model_invalid_request(model: str, *, detail: str | None = None) -> AgentErro
     )
 
 
+def validation_mask_size_mismatch(
+    *, base_size: tuple[int, int], mask_size: tuple[int, int]
+) -> AgentErrorException:
+    """Inpaint mask dimensions must match the base image exactly. The
+    frontend canvas (react-konva) is locked to the base size, so a
+    mismatch here means either a corrupt upload or a bypassed UI."""
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_MASK_SIZE_MISMATCH",
+            message="遮罩尺寸與原圖不符，請重新繪製",
+            problem=f"Inpaint mask is {mask_size[0]}x{mask_size[1]}; "
+            f"base image is {base_size[0]}x{base_size[1]}.",
+            cause="Mask PNG dimensions must equal the base image dimensions "
+            "(planning/ux/user-flows.md §6 row 3).",
+            fix="Re-export the mask at the same width/height as the base image.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
+def validation_mask_empty() -> AgentErrorException:
+    """Inpaint mask conveys no edit region — every pixel is opaque,
+    leaving the provider nothing to redraw. Per OpenAI's alpha-mask
+    convention (transparent pixels mark regions to edit), an all-opaque
+    mask is a no-op call we should reject before burning provider quota."""
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_MASK_EMPTY",
+            message="遮罩沒有指定要編輯的區域，請繪製想修改的範圍",
+            problem="Inpaint mask alpha channel has no transparent pixels.",
+            cause="Per OpenAI alpha-mask convention, transparent pixels mark "
+            "the region to edit; a fully opaque mask requests no change.",
+            fix="Paint the area you want to redraw on the mask canvas and retry.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Translator — converts an httpx error / response into an AgentErrorException.
 # Centralised so both the real client and any future provider share one truth.

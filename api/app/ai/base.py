@@ -1,4 +1,4 @@
-"""Public AI-client surface used by workers (T-014, T-029).
+"""Public AI-client surface used by workers (T-014, extended T-029 + T-030).
 
 `AIClient` / `VideoClient` are `Protocol`s (not ABCs) so the stub and real
 clients are duck-typed: callers depend only on the methods listed here.
@@ -6,6 +6,17 @@ The narrower fields on `AIGenerationResult` / `VeoResult` match what each
 ticket asks for; the planning doc's richer `ImageGenerationResult` /
 `VideoGenerationResult` shapes are Sprint 2/3 concerns that downstream
 callers can extend later.
+
+Two `AIClient` method families coexist:
+
+  - `generate_image_*` — Sprint 2 checkpoint flows (text2image,
+    image2image with single reference, inpaint with positional args).
+    Used by `app.workers.jobs.create_checkpoint`.
+  - `edit_image2image` / `edit_inpaint` — T-030, Sprint 3 alias flows.
+    Kwarg-only with a separate `base_image_bytes` and a list of
+    references; mask validation lives in the implementation.
+
+`VideoClient` (T-029) is the i2v surface for Veo 3.1 motion generation.
 """
 
 from __future__ import annotations
@@ -80,6 +91,22 @@ class AIClient(Protocol):
         *,
         aspect_ratio: str = "1:1",
         seed: int | None = None,
+    ) -> AIGenerationResult: ...
+
+    async def edit_image2image(
+        self,
+        *,
+        base_image_bytes: bytes,
+        reference_image_bytes: list[bytes] | None,
+        prompt: str,
+    ) -> AIGenerationResult: ...
+
+    async def edit_inpaint(
+        self,
+        *,
+        base_image_bytes: bytes,
+        mask_png_bytes: bytes,
+        prompt: str,
     ) -> AIGenerationResult: ...
 
 

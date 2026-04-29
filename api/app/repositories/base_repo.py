@@ -17,6 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.base import BaseAsset
 
 
+async def get(db: AsyncSession, base_id: uuid.UUID) -> BaseAsset | None:
+    """Fetch by id. T-035 motion-preview needs this to resolve the
+    parent base when `parent_type='base'`; checkpoint-time and
+    select-base flows use `get_by_character_id` instead."""
+    return await db.get(BaseAsset, base_id)
+
+
 async def get_by_character_id(
     db: AsyncSession,
     character_id: uuid.UUID,
