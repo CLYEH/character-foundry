@@ -196,9 +196,7 @@ def conflict_base_not_set() -> AgentErrorException:
     )
 
 
-def validation_alias_input_mode_mismatch(
-    *, input_mode: str, missing: str
-) -> AgentErrorException:
+def validation_alias_input_mode_mismatch(*, input_mode: str, missing: str) -> AgentErrorException:
     """The supplied `input_mode` requires a payload field that wasn't provided.
 
     Mirrors the T-031 alias-generate contract: `inpaint` needs a `mask`,
