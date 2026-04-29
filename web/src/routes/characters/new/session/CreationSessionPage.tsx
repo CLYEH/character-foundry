@@ -252,18 +252,21 @@ export default function CreationSessionPage() {
     // session state. Recomputing per keystroke is harmless because the
     // modal is closed (TanStack `enabled: false` blocks the fetch).
     //
-    // Faithfulness: only `remixContext` makes the preview diverge from the
-    // worker's reconciler input (image2image with `has_reference_image=True`
-    // sourced from `base_checkpoint_id`). `retry_same` is dispatched from
-    // its own button and never opens this modal, so we only guard remix
-    // here via `unsupportedReason` below.
+    // `remixContext` carries the parent checkpoint id so the backend
+    // reconciles with `has_reference_image=True` for the preview as well —
+    // matches what the worker sees on submit (closes STATUS.md S2-5).
     return {
       mode: 'create_base',
       menu_selections: !isReference && hasAnyMenuValue(menuSelections) ? menuSelections : null,
       freeform_note: trimmedNote.length > 0 ? trimmedNote : null,
       reference_image_ids: isReference && referenceImageIds.length > 0 ? referenceImageIds : null,
+      // Spread rather than emit `null` so the wire genuinely omits the field
+      // for non-remix submissions — keeps the contract independent of how
+      // backend distinguishes "absent" vs "explicit null" (Pydantic v2 can
+      // tell them apart via `model_fields_set`).
+      ...(remixContext ? { base_checkpoint_id: remixContext.baseCheckpointId } : {}),
     }
-  }, [freeformNote, inputMode, menuSelections, referenceImageIds])
+  }, [freeformNote, inputMode, menuSelections, referenceImageIds, remixContext])
 
   const handleRemix = useCallback(
     (checkpointId: string, sequence: number | null) => {
@@ -519,9 +522,6 @@ export default function CreationSessionPage() {
         isOpen={promptPreviewOpen}
         onClose={() => setPromptPreviewOpen(false)}
         request={promptPreviewRequest}
-        unsupportedReason={
-          remixContext ? buildRemixUnsupportedReason(remixContext.baseSequence) : null
-        }
       />
 
       <SelectBaseConfirmDialog
@@ -543,14 +543,6 @@ export default function CreationSessionPage() {
 
 function hasAnyMenuValue(selections: MenuSelections): boolean {
   return Object.values(selections).some((v) => typeof v === 'string' && v.length > 0)
-}
-
-function buildRemixUnsupportedReason(baseSequence: number | null): string {
-  // Server-loaded checkpoints can prefill remixContext without a known
-  // sequence (the DTO doesn't always carry it), so only render the
-  // parenthetical when we actually have one.
-  const anchor = baseSequence !== null ? `（基於 #${baseSequence}）` : ''
-  return `進階檢視 暫不支援 remix 模式${anchor}。worker 會以該 checkpoint 為 image-to-image 來源，但 /v1/prompt/preview 還沒有對應的 base_checkpoint_id 欄位，預覽結果會與實際生成不一致。先點「從頭」清空後再開即可預覽。`
 }
 
 const TERMINAL_CARD_STATUSES = new Set<CheckpointCardModel['status']>([
