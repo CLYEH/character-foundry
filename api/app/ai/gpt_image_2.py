@@ -33,9 +33,15 @@ from app.ai.errors import (
     map_response_to_agent_error,
     parse_retry_after_seconds,
 )
+from app.ai.mask import validate_inpaint_mask
 from app.core.errors import AgentErrorException
 
 _logger = logging.getLogger(__name__)
+
+# httpx accepts either a mapping or a sequence-of-tuples for `files`; we
+# need the list form to send repeated `image` field names for multi-image
+# edits (gpt-image-1 / gpt-image-2 multi-reference contract).
+_FilesArg = dict[str, tuple[str, bytes, str]] | list[tuple[str, tuple[str, bytes, str]]]
 
 # Aspect ratio → OpenAI `size` string. The provider only accepts a fixed
 # enum, so we map our internal ratios down to the closest supported size.
@@ -150,6 +156,76 @@ class GptImage2Client:
             data["seed"] = str(seed)
         return await self._call_with_resilience("/images/edits", form_data=data, files=files)
 
+    async def edit_image2image(
+        self,
+        *,
+        base_image_bytes: bytes,
+        reference_image_bytes: list[bytes] | None,
+        prompt: str,
+    ) -> AIGenerationResult:
+        """T-030 — Sprint 3 alias generation entry point (image / mixed mode).
+
+        The base image is the parent (Base) of the alias; references are
+        optional supplementary images uploaded by the user. We don't send
+        an explicit `size` — the provider infers from the input — so the
+        edit preserves base dimensions naturally.
+        """
+        # Repeated `image` field name for the base + each reference
+        # matches OpenAI's gpt-image-1 multi-image edits contract; httpx
+        # supports the list-of-tuples form for `files` to express that.
+        # gpt-image-2 is assumed to inherit the same multi-image shape;
+        # verify against the live provider before T-031 production cutover.
+        multipart_files: list[tuple[str, tuple[str, bytes, str]]] = [
+            ("image", ("base.png", base_image_bytes, "image/png")),
+        ]
+        if reference_image_bytes:
+            for idx, ref in enumerate(reference_image_bytes):
+                multipart_files.append(("image", (f"reference_{idx}.png", ref, "image/png")))
+        data: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "n": "1",
+            "response_format": "b64_json",
+        }
+        return await self._call_with_resilience(
+            "/images/edits", form_data=data, files=multipart_files
+        )
+
+    async def edit_inpaint(
+        self,
+        *,
+        base_image_bytes: bytes,
+        mask_png_bytes: bytes,
+        prompt: str,
+    ) -> AIGenerationResult:
+        """T-030 — Sprint 3 alias inpaint entry point.
+
+        Validates mask dimensions and emptiness *before* the breaker
+        check: bad masks are deterministic user-input errors and must
+        not consume retry / failure budget. Per OpenAI alpha-mask
+        convention, transparent pixels mark the region to edit; a mask
+        with no transparent pixels asks for no edit at all and is
+        rejected as `VALIDATION_MASK_EMPTY`.
+
+        Like `edit_image2image`, no explicit `size` is sent — the
+        provider preserves base dimensions on edit calls.
+        """
+        validate_inpaint_mask(base_image_bytes, mask_png_bytes)
+
+        multipart_files: list[tuple[str, tuple[str, bytes, str]]] = [
+            ("image", ("base.png", base_image_bytes, "image/png")),
+            ("mask", ("mask.png", mask_png_bytes, "image/png")),
+        ]
+        data: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "n": "1",
+            "response_format": "b64_json",
+        }
+        return await self._call_with_resilience(
+            "/images/edits", form_data=data, files=multipart_files
+        )
+
     # ----------------------------------------------------------------- private
 
     def _size_for(self, aspect_ratio: str) -> str:
@@ -170,7 +246,7 @@ class GptImage2Client:
         *,
         json_body: dict[str, Any] | None = None,
         form_data: dict[str, Any] | None = None,
-        files: dict[str, tuple[str, bytes, str]] | None = None,
+        files: _FilesArg | None = None,
     ) -> AIGenerationResult:
         await self._breaker.raise_if_open()
 
@@ -223,7 +299,7 @@ class GptImage2Client:
         *,
         json_body: dict[str, Any] | None,
         form_data: dict[str, Any] | None,
-        files: dict[str, tuple[str, bytes, str]] | None,
+        files: _FilesArg | None,
     ) -> tuple[AgentErrorException | None, httpx.Response | None]:
         try:
             response = await self._send(path, json_body=json_body, form_data=form_data, files=files)
@@ -239,7 +315,7 @@ class GptImage2Client:
         *,
         json_body: dict[str, Any] | None,
         form_data: dict[str, Any] | None,
-        files: dict[str, tuple[str, bytes, str]] | None,
+        files: _FilesArg | None,
     ) -> httpx.Response:
         client = await self._http()
         # Codex P1 round-1: build a fully-qualified URL ourselves rather than
