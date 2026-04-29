@@ -57,35 +57,62 @@
 
 ## 2. Wave grouping（建議的開工順序）
 
+> **Current status**（每完成一個 wave 就更新本表）：
+>
+> - Wave A：**待開工**（PR #37 merge 後立即可起；本 doc 上線即為待開工狀態）
+> - Wave B：blocked by Wave A
+> - Wave C：blocked by Wave B
+> - Wave D：blocked by Wave C
+> - Wave E：blocked by Wave D
+> - Wave F：blocked by Wave E
+> - Wave G：M3 gate
+
 | Wave | Tickets | 預期同時 worktree 數 | 解鎖條件 |
 |---|---|---|---|
-| **A** | T-029, T-030, T-035, T-036, T-040 | 5 | 立即可開（main = Sprint 2 done）|
-| **B** | T-031, T-033, T-037 | 3 | T-030 / T-029 merge 後（T-037 可在 T-036 route 註冊後即可起手）|
-| **C** | T-032, T-034, T-038 | 3 | T-031 / T-033 / T-037 merge 後 |
-| **D** | T-039 | 1 | T-038 merge 後 |
-| **E** | T-041 | 1 | 全部前置 merge 後（M3 gate）|
+| **A** | T-029, T-030, T-035, T-036, T-040 | 5 | 立即可開（main = Sprint 2 done + 本 PR merge）|
+| **B** | T-031, T-033 | 2 | T-029 / T-030 merge 後（T-031 需 T-030；T-033 需 T-029）|
+| **C** | T-032, T-034 | 2 | T-031 / T-033 merge 後（CRUD 各自接生成 ticket 寫入的 model）|
+| **D** | T-037 | 1 | T-032 / T-034 merge 後（detail 頁要 alias / motion list endpoint）|
+| **E** | T-038 | 1 | T-037 merge 後（MotionRow / MotionCell 結構先到位）|
+| **F** | T-039 | 1 | T-038 merge 後（reuse useGenerateMotion hook）|
+| **G** | T-041 | 1 | 全部前置 merge 後（M3 gate）|
 
-**Wave A 是 Sprint 3 最大平行寬度**——5 張 ticket 真正獨立（4 backend + 1 frontend，使用各自不同模組）。後續 wave 越靠後越收斂。
+**Wave A 是 Sprint 3 最大平行寬度**——5 張 ticket 真正獨立（4 backend + 1 frontend，使用各自不同模組）。後續 wave 收斂成 chain，因為 alias / motion 業務邏輯本身就是 generation → CRUD → UI list → UI mutation 的線性 dependency；硬要平行只會製造 mock-then-rebase 的反覆工。
 
 > Frontend 前置 mock：T-036 / T-040 在 Wave A 時 backend 尚未實裝，前端用 MSW 模擬 endpoint。Wave A merge 後若 contract 微調，前端 PR 內補一次 type 對齊（小改動，藉 openapi-typescript regen）。
+
+### 2.1 「open wave X」入口指令（給未來 session）
+
+使用者在新 session 說「開 Wave X」（X = A / B / C / ...）時，agent 該做：
+
+1. 讀本檔 §2 的 Current status 區塊，確認該 wave 的解鎖條件已達成（若上一 wave 未全部 merge，停下回報）
+2. 從本檔 §2 的表格找該 wave 的 ticket 清單
+3. 依 §3 的指令把 ticket 對應 worktree 從最新 `main` 切出來
+4. 印 worktree 路徑 + branch 名給使用者，並提醒「請在每個目錄手動開 Claude Code 並輸入 `start T-XXX`」
+5. 完成後把 §2 的 Current status 區塊本 wave 改成「**進行中**」，順手送一個 docs PR（小改）。Wave 全部 merge 後再改成「done」。
 
 ---
 
 ## 3. 開 worktree（給「規劃 agent」用的步驟）
 
-當有人說「幫我為 Wave A 開 worktree」，agent 應做：
+當有人說「幫我為 Wave X 開 worktree」（X 可為 A / B / C / D / E / F / G），agent 應做：
 
 ```bash
 # 主 repo 路徑（用絕對路徑避免歧義）
 cd C:/character-foundry
 
-# 確保 main 是最新
+# 1. 主 worktree 已在 main → 先確保最新
 git switch main && git pull
 
-# Worktree 根目錄（與主 repo 同層）
+# 2. Worktree 根目錄（與主 repo 同層）
 mkdir -p ../character-foundry.wt
 
-# Wave A 的五個 ticket — 每個建一條 branch + worktree
+# 3. 從 §2 表格取出本 wave 的 ticket 清單，每張開一個 worktree
+#    Branch 命名：<type>/T-XXX-short-desc（type 依 ticket 性質取 feature / fix / chore / refactor，per CONTRIBUTING §1.1）
+#    Sprint 3 全部 13 張都是 feature
+#    short-desc 由 ticket 檔名末段抽（tickets/T-XXX-<short-desc>.md → short-desc）
+
+# 範例（Wave A 對應指令；新 wave 改 ticket 編號 + short-desc 即可）：
 git worktree add -b feature/T-029-veo-i2v-client          ../character-foundry.wt/T-029 main
 git worktree add -b feature/T-030-image2image-inpaint     ../character-foundry.wt/T-030 main
 git worktree add -b feature/T-035-prompt-preview-ext      ../character-foundry.wt/T-035 main
@@ -201,12 +228,15 @@ fi
 gh pr merge $PR --squash --delete-branch
 
 # Loop 終止；ticket 文件已在 PR 內 git mv 至 DONE/、STATUS.md 已更新
-# 在 worktree 內把 main 拉回最新（給使用者觀察）
-git fetch origin && git switch main && git pull
+# ⚠ 不要在 feature worktree 裡 `git switch main` —— main 已被主 worktree 佔用，git 會拒絕。
+# 只 fast-forward 本 clone 的 main ref（不切 branch）：
+git fetch origin main:main 2>/dev/null || true   # 若 main 已被 checkout 在主 worktree，這條會 noop；不影響流程
 
 # 提示使用者本 worktree 已完工，可以收掉
-echo "T-XXX merged. To remove worktree: git worktree remove $(pwd)"
+echo "T-XXX merged. To remove worktree: cd C:/character-foundry && git worktree remove $(pwd)"
 ```
+
+**為什麼不在 feature worktree 切回 main：** `git switch main` 會被 git 拒絕（一個 branch 不能同時 checkout 在兩個 worktree）。主 worktree 才是 main 的家；要看 main 的最新狀態請去 `C:/character-foundry`。
 
 ---
 
