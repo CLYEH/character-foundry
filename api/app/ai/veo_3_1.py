@@ -41,6 +41,7 @@ import logging
 import math
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from redis.asyncio import Redis
@@ -81,6 +82,12 @@ _VEO_AUTH_KEY_ENV = "VEO_API_KEY"
 # update both bounds when real-Veo integration reveals a tighter spec.
 _VEO_DURATION_MIN_SECONDS = 1.0
 _VEO_DURATION_MAX_SECONDS = 10.0
+
+# Cap on the manual redirect chain in `_download_video_uri`. Five matches
+# the default browser behaviour and is well above the 1-2 hops Google's
+# media APIs typically use; ample headroom while bounding misconfigured
+# redirect loops.
+_VEO_MAX_REDIRECTS = 5
 
 
 class Veo31Client:
@@ -344,33 +351,59 @@ class Veo31Client:
     async def _download_video_uri(self, url: str) -> bytes:
         """Fetch the bytes from a `videoUri` returned by a completed operation.
 
-        Per the documented Gemini Veo flow the videoUri is fetched WITH the
-        provider API key (the URI is a Gemini API endpoint, not an arbitrary
-        signed CDN URL) and may redirect to the actual media location. We
-        keep the auth header and follow redirects.
+        Per the documented Gemini Veo flow the videoUri is fetched with the
+        provider API key on Gemini-API-host requests (the URI is a Gemini
+        API endpoint, not an arbitrary signed CDN URL) and may redirect to
+        the actual media location.
 
-        Codex P1 round-3 superseded the round-1 strip-the-key prescription,
-        which was based on the inverted assumption that videoUri pointed at
-        a signed CDN. With the key restored, 401/403 from this endpoint
-        correctly maps through the standard provider-error mapper to
-        `INTERNAL_AUTH_FAILED` (matching the submit/poll path's mapping).
+        Redirects are followed *manually* so the auth header can be stripped
+        whenever the (initial or redirected) URL points outside the
+        configured API host (`urlparse(self.api_url).netloc`). Auto-follow
+        with the auth header attached would forward `VEO_API_KEY` to
+        whatever foreign host Veo redirects to (Google blob storage, signed
+        CDN, …), creating a credential-exfiltration path. Codex P1 round-8
+        on PR #39; supersedes the round-3 deferral comment that said this
+        hardening could wait for real-Veo integration.
 
-        Cross-host redirect hardening (stripping the API key when redirected
-        to a different host) is deferred to real-Veo integration time, when
-        we can observe the actual redirect chain. Phase 1 stub mode never
-        exercises this path, and the breaker still catches degraded
-        behaviour if a real-mode deployment hits 5xx on the blob host.
+        - Same-host requests keep the api-key (Gemini API auth).
+        - Cross-host requests (initial OR via redirect) drop the api-key.
+        - Redirect chain is bounded by `_VEO_MAX_REDIRECTS`; loops surface
+          as `MODEL_INVALID_REQUEST`.
         """
         client = await self._http()
-        try:
-            response = await client.get(url, follow_redirects=True)
-        except httpx.HTTPError as exc:
-            raise map_exception_to_agent_error(self.model, exc) from exc
-        if not response.is_success:
-            raise map_response_to_agent_error(
-                self.model, response, auth_key_env_var=_VEO_AUTH_KEY_ENV
-            )
-        return response.content
+        api_host = urlparse(self.api_url).netloc
+        current_url = url
+
+        for _ in range(_VEO_MAX_REDIRECTS):
+            request = client.build_request("GET", current_url)
+            if urlparse(current_url).netloc != api_host:
+                request.headers.pop("x-goog-api-key", None)
+            try:
+                response = await client.send(request)
+            except httpx.HTTPError as exc:
+                raise map_exception_to_agent_error(self.model, exc) from exc
+
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location:
+                    raise model_invalid_request(
+                        self.model, detail="videoUri redirect missing Location header"
+                    )
+                # `urljoin` resolves relative redirect targets against the URL
+                # that returned the redirect.
+                current_url = urljoin(str(response.url), location)
+                continue
+
+            if not response.is_success:
+                raise map_response_to_agent_error(
+                    self.model, response, auth_key_env_var=_VEO_AUTH_KEY_ENV
+                )
+            return response.content
+
+        raise model_invalid_request(
+            self.model,
+            detail=f"videoUri redirect chain exceeded {_VEO_MAX_REDIRECTS} hops",
+        )
 
     # -- HTTP plumbing -------------------------------------------------------
 

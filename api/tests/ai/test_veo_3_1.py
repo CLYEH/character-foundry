@@ -744,6 +744,118 @@ async def test_truly_empty_response_raises_invalid_request(
     assert info.value.error.code == "MODEL_INVALID_REQUEST"
 
 
+async def test_videoUri_cross_host_redirect_strips_api_key(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1 round-8: when a videoUri 302-redirects to a different host
+    (signed CDN / blob storage), the follow-up GET must NOT carry the
+    Veo API key — otherwise VEO_API_KEY leaks to the foreign host.
+    """
+    initial_url = "https://veo.test/v1beta/operations/abc/media"
+    cross_host_url = "https://storage.example.com/blobs/abc.mp4"
+    foreign_request_headers: dict[str, str] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if str(request.url) == initial_url:
+            return httpx.Response(302, headers={"Location": cross_host_url})
+        if str(request.url) == cross_host_url:
+            foreign_request_headers.update(dict(request.headers))
+            return httpx.Response(200, content=_FAKE_MP4)
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {"videos": [{"videoUri": initial_url}]},
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=2)
+    finally:
+        await client.aclose()
+
+    assert result.video_bytes == _FAKE_MP4
+    # Critical security assertion: the key did NOT travel to the foreign host.
+    assert "x-goog-api-key" not in foreign_request_headers
+
+
+async def test_videoUri_same_host_redirect_keeps_api_key(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counterpart: when the videoUri redirects to the SAME host as the
+    Gemini API, the api-key must stay attached — that's the documented
+    Gemini Veo auth path. Strip-on-redirect must only fire across hosts."""
+    initial_url = "https://veo.test/v1beta/operations/abc/media"
+    same_host_url = "https://veo.test/blobs/abc.mp4"
+    final_request_headers: dict[str, str] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if str(request.url) == initial_url:
+            return httpx.Response(302, headers={"Location": same_host_url})
+        if str(request.url) == same_host_url:
+            final_request_headers.update(dict(request.headers))
+            return httpx.Response(200, content=_FAKE_MP4)
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {"videos": [{"videoUri": initial_url}]},
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, monkeypatch=monkeypatch)
+    try:
+        await client.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=2)
+    finally:
+        await client.aclose()
+
+    assert final_request_headers.get("x-goog-api-key") == "test-key"
+
+
+async def test_videoUri_redirect_chain_bounded(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1 round-8 implication: the manual redirect loop must be
+    bounded so a misconfigured redirect cycle doesn't hang the worker."""
+    download_url = "https://veo.test/v1beta/operations/abc/media"
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if request.url.path.startswith("/v1beta/operations"):
+            # Always redirect to itself — should bail after the cap.
+            return httpx.Response(302, headers={"Location": download_url})
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {"videos": [{"videoUri": download_url}]},
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, max_retries=0, monkeypatch=monkeypatch)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_INVALID_REQUEST"
+    assert (
+        "redirect chain" in info.value.error.problem.lower()
+        or "redirect"
+        in (info.value.error.problem + info.value.error.cause + info.value.error.fix).lower()
+    )
+
+
 async def test_videoUri_5xx_is_model_unavailable_and_feeds_breaker(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
