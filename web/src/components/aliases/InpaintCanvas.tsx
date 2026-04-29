@@ -102,10 +102,17 @@ export const InpaintCanvas = forwardRef<InpaintCanvasHandle, InpaintCanvasProps>
     const [imageLoadFailed, setImageLoadFailed] = useState(false)
 
     // Load the base image — `new Image()` rather than `useImage` from
-    // `use-image` avoids a peer dep just for the convenience hook. CORS is
-    // unset on purpose because in-product these are same-origin signed URLs;
-    // setting `crossOrigin = 'anonymous'` would tank tests where the URL is
-    // a fake string.
+    // `use-image` avoids a peer dep just for the convenience hook.
+    // `crossOrigin='anonymous'` is required so the resulting canvas
+    // isn't tainted: the mask export path (`layer.toCanvas` →
+    // `getImageData` + `toBlob`) throws SecurityError on tainted
+    // canvases, which would silently break inpaint submissions whenever
+    // the storage backend serves cross-origin URLs (DECISIONS.md §6 B2
+    // allows the future S3 presigned-URL swap). Must be set before `src`
+    // — assigning after kicks off the load with the wrong CORS mode in
+    // some browsers (Codex P1 round 9). Phase-1 same-origin loads are
+    // unaffected; cross-origin servers must reply with the appropriate
+    // Access-Control-Allow-Origin header.
     useEffect(() => {
       if (!baseImageUrl) return
       let cancelled = false
@@ -113,6 +120,7 @@ export const InpaintCanvas = forwardRef<InpaintCanvasHandle, InpaintCanvasProps>
       // signed URL) can recover.
       setImageLoadFailed(false)
       const img = new window.Image()
+      img.crossOrigin = 'anonymous'
       img.onload = () => {
         if (cancelled) return
         setImage(img)
