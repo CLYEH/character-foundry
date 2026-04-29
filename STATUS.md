@@ -66,7 +66,7 @@
 | # | Ticket | Status |
 |---|---|---|
 | T-029 | Backend Veo 3.1 i2v client + stub | TODO |
-| T-030 | Backend gpt-image-2 image2image + inpaint extension | TODO |
+| T-030 | Backend gpt-image-2 image2image + inpaint extension | DONE |
 | T-031 | Backend Alias generation endpoint + worker | TODO |
 | T-032 | Backend Alias list / detail / rename / delete | TODO |
 | T-033 | Backend Motion generation endpoint + worker | TODO |
@@ -122,6 +122,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | S2-3 | Dashboard 分頁 / infinite scroll（T-020 首版用 `limit=100` 平鋪，未做 cursor pagination）| Character 數逼近 100 或 UX 反饋時 |
 | S2-4 | `Checkpoint` DTO 不含 `menu_selections` / `freeform_note`，所以 server-loaded checkpoint 點 `[用這張再改]` 無法 prefill form（T-022 placeholder 期間靠 client-side 記憶；reload 後就只設 remix base、form 留白）| Backend 加欄位後 Frontend 移除 placeholder fallback |
 | S2-6 | `BaseDTO` 缺 prompt 欄位（`menu_selections` / `freeform_note` / `prompt_summary`），所以 Character Detail 上的「查看完整 prompt」modal 只能顯示 source checkpoint id + 建立時間，沒辦法重現完整 prompt 組合。T-025 frontend 落地時用 `BasePromptModal` placeholder 暫頂；Backend 在 BaseDTO 加 prompt 欄位後即可改為 reuse PromptPreviewModal。| 開新 ticket 擴充 `BaseDTO` schema |
+| S3-2 | T-030 `edit_image2image` 多參考圖的 multipart shape（重複 `image` field name）依 gpt-image-1 公開合約建模；gpt-image-2 假設沿用，但需在 T-031 整合真 provider 前以 smoke 驗證一次 | T-031 production cutover 前 |
 
 ---
 
