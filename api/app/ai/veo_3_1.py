@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -424,7 +425,17 @@ class Veo31Client:
 
 
 def _clamp_duration_seconds(value: float) -> float:
-    """Clamp a caller-supplied duration into Veo's accepted band."""
+    """Clamp a caller-supplied duration into Veo's accepted band.
+
+    Non-finite inputs (NaN / ±Infinity) collapse to the minimum: every
+    comparison with NaN is False, so the bare bounds checks below would
+    otherwise pass NaN through unchanged. That value would later break
+    `int(NaN * 1000)` with `ValueError` (and `int(Inf * 1000)` with
+    `OverflowError`) — bypassing the `AgentError` translation layer and
+    surfacing as an unclassified 500 (Codex P2 round-7 on PR #39).
+    """
+    if not math.isfinite(value):
+        return _VEO_DURATION_MIN_SECONDS
     if value < _VEO_DURATION_MIN_SECONDS:
         return _VEO_DURATION_MIN_SECONDS
     if value > _VEO_DURATION_MAX_SECONDS:
@@ -506,7 +517,13 @@ def _video_item_from(video: dict[str, Any], *, uri_keys: tuple[str, ...]) -> _Vi
     if not isinstance(b64, str) or not b64:
         b64 = None
     duration_raw = video.get("durationSeconds")
-    duration = float(duration_raw) if isinstance(duration_raw, int | float) else None
+    duration: float | None = None
+    # Guard non-finite values from a malformed provider response — same
+    # rationale as `_clamp_duration_seconds` (Codex P2 round-7).
+    if isinstance(duration_raw, int | float):
+        as_float = float(duration_raw)
+        if math.isfinite(as_float):
+            duration = as_float
     return _VideoItem(uri=uri, bytes_base64=b64, duration_seconds=duration)
 
 

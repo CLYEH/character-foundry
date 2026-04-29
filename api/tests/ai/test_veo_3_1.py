@@ -517,6 +517,80 @@ async def test_duration_seconds_in_range_passes_through_unchanged(
     assert result.duration_ms == 3500
 
 
+async def test_caller_nan_duration_does_not_raise(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 round-7: `int(NaN * 1000)` raises ValueError, bypassing the
+    AgentError mapping. A NaN from the caller must collapse to a finite
+    value before it reaches the duration_ms conversion. (Same rule for
+    Infinity, covered separately.)"""
+    handler, _ = _make_seq_handler(poll_fns=[_done_response_inline])
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(
+            image_bytes=b"i", prompt="x", duration_seconds=float("nan")
+        )
+    finally:
+        await client.aclose()
+
+    # NaN clamps to the minimum (1.0s) → 1000ms.
+    assert result.duration_ms == 1000
+
+
+async def test_caller_inf_duration_does_not_raise(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counterpart to NaN: Infinity also breaks `int(...)` with
+    OverflowError unless guarded."""
+    handler, _ = _make_seq_handler(poll_fns=[_done_response_inline])
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(
+            image_bytes=b"i", prompt="x", duration_seconds=float("inf")
+        )
+    finally:
+        await client.aclose()
+
+    assert result.duration_ms == 1000
+
+
+async def test_response_nan_duration_falls_back_to_zero(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed provider response carrying NaN in `durationSeconds` must
+    not propagate to `int(NaN * 1000)`. `_video_item_from` drops non-finite
+    values during normalisation, so the fallback is `_extract_duration_seconds`
+    returning None → duration_ms = 0.
+
+    NaN is non-standard JSON so we hand-write the body — httpx's `json=`
+    encoder refuses to emit it. Python's stdlib `json.loads` reads `NaN`
+    back as `float('nan')`, which is exactly the lenient-parser shape this
+    guard is meant to defend against.
+    """
+    nan_body = (
+        b'{"name": "'
+        + _OPERATION_NAME.encode()
+        + b'", "done": true, "response": {"videos": [{"bytesBase64Encoded": "'
+        + _FAKE_MP4_B64.encode()
+        + b'", "durationSeconds": NaN}]}}'
+    )
+    poll_done_with_nan = lambda _r: httpx.Response(  # noqa: E731
+        200,
+        headers={"content-type": "application/json"},
+        content=nan_body,
+    )
+    handler, _ = _make_seq_handler(poll_fns=[poll_done_with_nan])
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        # Caller doesn't supply duration → falls back to response value.
+        result = await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    # NaN was dropped → fallback to 0 (no value available anywhere).
+    assert result.duration_ms == 0
+
+
 async def test_stub_clamps_duration_seconds_for_consistency() -> None:
     """The stub must apply the same clamp as the real client so callers
     see consistent duration_ms regardless of which mode is wired in
