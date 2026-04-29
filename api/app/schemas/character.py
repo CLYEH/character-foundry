@@ -1,8 +1,6 @@
 """Pydantic DTOs for the Character resource.
 
-Mirrors planning/backend/api-shape.md §5.1 + §6.1 + §6.2. The
-`creation_session` field on `CharacterDetail` is deliberately absent —
-T-027 adds it once the frontend Resume-in-progress flow lands.
+Mirrors planning/backend/api-shape.md §5.1 + §6.1 + §6.2.
 """
 
 from __future__ import annotations
@@ -67,6 +65,18 @@ class MotionsSummary(BaseModel):
     aliases: list[MotionsSummaryAlias] = Field(default_factory=list)
 
 
+class CharacterDetailCreationSessionRef(BaseModel):
+    """Embedded session ref on `CharacterDetail` (api-shape §6.2).
+
+    Status is restricted to `in_progress | abandoned` — `completed`
+    sessions always coincide with `base != null`, in which case the
+    serializer emits `creation_session = null` instead of this ref.
+    """
+
+    id: uuid.UUID
+    status: Literal["in_progress", "abandoned"]
+
+
 class CharacterDTO(BaseModel):
     """List-card shape (api-shape §6.1)."""
 
@@ -84,9 +94,14 @@ class CharacterDTO(BaseModel):
 
 
 class CharacterDetailDTO(BaseModel):
-    """Detail-page shape (api-shape §6.2). Sprint 2 leaves `base`,
-    aliases, and motion counts at their zero values until T-018 selects
-    a base; T-027 adds the `creation_session` field."""
+    """Detail-page shape (api-shape §6.2). Sprint 2 leaves aliases and
+    motion counts at their zero values until later tickets backfill them.
+
+    `creation_session` is populated only when `base` is null — `base`
+    being set means a Base was confirmed and the session is logically
+    closed (the serializer skips the session lookup in that case to
+    keep the contract crisp and the payload small).
+    """
 
     id: uuid.UUID
     name: str
@@ -95,6 +110,7 @@ class CharacterDetailDTO(BaseModel):
     base: dict[str, object] | None = None
     aliases: list[dict[str, object]] = Field(default_factory=list)
     motions_summary: MotionsSummary = Field(default_factory=MotionsSummary)
+    creation_session: CharacterDetailCreationSessionRef | None = None
     copied_from: CopiedFromSummary | None = None
     created_at: datetime
     updated_at: datetime

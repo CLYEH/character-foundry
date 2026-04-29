@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-29
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 in progress（T-013 ~ T-026 + T-028 done，T-027 開單中）
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）
 
 ---
 
@@ -57,7 +57,7 @@
 | T-024 | Frontend Prompt preview modal (M-01) | DONE |
 | T-025 | Frontend Select Base + Character Detail (Base only) | DONE |
 | T-026 | E2E Character creation smoke test (template) | DONE |
-| T-027 | CharacterDetail DTO + frontend resume in-progress session | TODO |
+| T-027 | CharacterDetail DTO + frontend resume in-progress session | DONE |
 | T-028 | Worker post-lock checkpoint guard（從 T-018 PR #23 拆出來，Codex round-2 P1） | DONE |
 
 ### Sprint 3 — Aliases + Motions（尚未開單）
@@ -75,7 +75,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 
 - [ ] **M0** — Dev environment runs（`docker compose up` → `/health` returns ok）【Sprint 0 完成】
 - [x] **M1** — Login works end-to-end【Sprint 1 完成】
-- [ ] **M2** — Create Character (template mode) end-to-end【Sprint 2 完成】
+- [x] **M2** — Create Character (template mode) end-to-end【Sprint 2 完成】
 - [ ] **M3** — Aliases + Motions working【Sprint 3 完成】
 - [ ] **M4** — Download ZIP works【Sprint 4 完成】
 - [ ] **M5** — First internal user feedback【Sprint 5 完成】
@@ -100,7 +100,6 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | FB-3 | Storage URL expired 時 backend 要回對的 code | ✅ T-005 完成（`STORAGE_URL_EXPIRED` vs `AUTH_INVALID_TOKEN` 已分開） |
 | - | Visual design (Pencil mockup) | 之後需要再開 UX iteration 3 |
 | S2-1 | Slug-based URL（目前 `/characters/:id`）| Sprint 3/4 衡量 SEO/可分享性需求再做 |
-| ~~S2-2~~ | ~~CharacterDetail DTO 加 `creation_session` 欄位~~ | ✅ 升為 Sprint 2 ticket T-027 |
 | S3-1 | `POST /v1/prompt/preview` 的 `mask: {}` 應比照 `reference_image_ids: []` 視為 empty 拒掉（T-019 reviewer 提的 🟡，今天的 `dict[str, Any]` 內部 endpoint 不擋；Sprint 3 inpaint 用真正 `MaskInput` schema 時一起處理）| Sprint 3 alias inpaint ticket 落地時 |
 | S2-3 | Dashboard 分頁 / infinite scroll（T-020 首版用 `limit=100` 平鋪，未做 cursor pagination）| Character 數逼近 100 或 UX 反饋時 |
 | S2-4 | `Checkpoint` DTO 不含 `menu_selections` / `freeform_note`，所以 server-loaded checkpoint 點 `[用這張再改]` 無法 prefill form（T-022 placeholder 期間靠 client-side 記憶；reload 後就只設 remix base、form 留白）| Backend 加欄位後 Frontend 移除 placeholder fallback |

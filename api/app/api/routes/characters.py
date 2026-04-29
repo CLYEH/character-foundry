@@ -22,6 +22,7 @@ from app.models.character import Character
 from app.models.user import User
 from app.repositories import base_repo
 from app.schemas.character import (
+    CharacterDetailCreationSessionRef,
     CharacterDetailDTO,
     CharacterDetailResponse,
     CharacterDTO,
@@ -203,6 +204,32 @@ async def _character_to_detail_dto(
             # detail surface stays identical to the immediate-after-
             # select payload.
             base_payload = build_base_dto(base, storage).model_dump(mode="json")
+    # Resolve the embedded session ref. The contract (api-shape §6.2)
+    # is that this is populated only when `base` is null — confirming
+    # a Base closes the session for routing purposes, so the resume
+    # CTA doesn't need the ref. Skipping the lookup when base is set
+    # mirrors the contract's payload-trim rule.
+    #
+    # The `creation_session_id is not None` guard catches the FK-orphan
+    # case: `Character.creation_session_id` is `ON DELETE SET NULL`,
+    # so a session row deleted out from under a Base-less character
+    # leaves the column null. Frontend handles that as the "abnormal
+    # state" fallback in IncompleteCharacterCard.
+    session_ref: CharacterDetailCreationSessionRef | None = None
+    if base_payload is None and character.creation_session_id is not None:
+        from app.models.creation_session import CreationSession
+
+        session = await db.get(CreationSession, character.creation_session_id)
+        # `completed` collapses to None — the contract says completed
+        # sessions always come with a Base, so seeing one here means the
+        # row got into an inconsistent state we shouldn't paper over by
+        # surfacing 'completed' to a status that the frontend types
+        # don't allow.
+        if session is not None and session.status in ("in_progress", "abandoned"):
+            session_ref = CharacterDetailCreationSessionRef(
+                id=session.id,
+                status=session.status,  # type: ignore[arg-type]
+            )
     return CharacterDetailDTO(
         id=character.id,
         name=character.name,
@@ -211,6 +238,7 @@ async def _character_to_detail_dto(
         base=base_payload,
         # Aliases + motions still placeholders until T-019 / T-020.
         aliases=[],
+        creation_session=session_ref,
         copied_from=copied_from,
         created_at=character.created_at,
         updated_at=character.updated_at,

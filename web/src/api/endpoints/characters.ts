@@ -31,6 +31,11 @@ export interface CopiedFromSummary {
   name: string
 }
 
+export interface CharacterDetailCreationSessionRef {
+  id: string
+  status: 'in_progress' | 'abandoned'
+}
+
 export interface CharacterDetail {
   id: string
   name: string
@@ -42,6 +47,7 @@ export interface CharacterDetail {
     base: { preset_generated: number; custom_count: number }
     aliases: Array<{ alias_id: string; preset_generated: number; custom_count: number }>
   }
+  creation_session: CharacterDetailCreationSessionRef | null
   copied_from: CopiedFromSummary | null
   created_at: string
   updated_at: string
