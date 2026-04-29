@@ -4,6 +4,7 @@ from .character import Character
 from .checkpoint import Checkpoint
 from .creation_session import CreationSession
 from .generation_log import GenerationLog
+from .mask import Mask
 from .motion import Motion
 from .reference_image import ReferenceImage
 from .refresh_token import RefreshToken
@@ -18,6 +19,7 @@ __all__ = [
     "Checkpoint",
     "CreationSession",
     "GenerationLog",
+    "Mask",
     "Motion",
     "ReferenceImage",
     "RefreshToken",

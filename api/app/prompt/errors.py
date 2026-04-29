@@ -76,3 +76,117 @@ def validation_empty_input() -> AgentErrorException:
         ),
         status_code=400,
     )
+
+
+def validation_mask_required() -> AgentErrorException:
+    """`mask` was supplied as an empty / shapeless payload.
+
+    The wire schema is `{ mask_id: UUID }`; an empty object or one
+    missing `mask_id` reaches the route as a malformed `mask`. Per
+    T-035 we surface this as a structured `VALIDATION_MASK_REQUIRED`
+    422 instead of letting Pydantic emit the generic
+    `RequestValidationError` body — frontend uses the code to render
+    a "請先設定遮罩" hint inline rather than a generic 422.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_MASK_REQUIRED",
+            message="請先設定要編修的範圍（mask）",
+            problem="`mask` was supplied without a valid `mask_id`.",
+            cause="The wire shape for `mask` is `{ mask_id: UUID }`; an "
+            "empty object or a non-UUID value cannot be resolved to an "
+            "uploaded mask.",
+            fix="Upload the mask first (POST .../aliases/masks) and "
+            "send the returned id as `{ mask: { mask_id } }`.",
+            retryable=False,
+        ),
+        status_code=422,
+    )
+
+
+def not_found_mask() -> AgentErrorException:
+    """The supplied `mask_id` doesn't resolve to a mask the caller can see.
+
+    Same opacity as `NOT_FOUND_REFERENCE_IMAGE`: a mask owned by a
+    different character collapses to the same 404 as a wrong id, so
+    callers can't probe for other characters' uploads via mask-id
+    enumeration.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_MASK",
+            message="找不到此遮罩",
+            problem="The supplied mask_id does not match any uploaded mask the caller can see.",
+            cause="Either the mask_id is wrong, the mask belongs to "
+            "another character / team, or the mask was cascade-deleted "
+            "with its character.",
+            fix="Re-upload the mask via the alias mask upload endpoint "
+            "and use the freshly returned id.",
+            retryable=False,
+        ),
+        status_code=404,
+    )
+
+
+def not_found_alias() -> AgentErrorException:
+    """The supplied alias parent doesn't resolve to an alias the caller can see.
+
+    Mirrors `NOT_FOUND_CHARACTER`: visibility is gated on team
+    ownership (and, for write paths, character owner), so a wrong id
+    and a sibling-team id collapse to the same 404.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_ALIAS",
+            message="找不到此造型",
+            problem="No alias with the given id is visible to the caller.",
+            cause="Either the id is wrong, the alias was soft-deleted, "
+            "or the alias belongs to another team's character.",
+            fix="Re-fetch the alias list via GET /v1/characters/{id}/aliases.",
+            retryable=False,
+        ),
+        status_code=404,
+    )
+
+
+def validation_motion_parent_mismatch() -> AgentErrorException:
+    """`parent_type` doesn't match the row that `parent_id` points at.
+
+    A motion preview body says e.g. `parent_type='base'` but
+    `parent_id` is actually an alias id. Distinct from
+    `NOT_FOUND_*` because the row exists — it's just the wrong kind.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_MOTION_PARENT_MISMATCH",
+            message="動作的來源類型與 ID 不一致",
+            problem="`parent_type` does not match the row referenced by "
+            "`parent_id` (e.g. parent_type='base' but the id is an alias).",
+            cause="Caller assembled the motion preview body with a mismatched parent type/id pair.",
+            fix="Send the parent_type that matches the parent_id — "
+            "'base' for a base id, 'alias' for an alias id.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
+def validation_motion_custom_requires_description() -> AgentErrorException:
+    """`motion_type='custom'` was supplied without a description.
+
+    Mirrors the DB CHECK constraint on `motions.description`: custom
+    motions need user-supplied prompt text; presets don't.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_MOTION_DESCRIPTION_REQUIRED",
+            message="自訂動作必須填寫描述",
+            problem="`motion_type='custom'` was supplied without a non-empty `description`.",
+            cause="Custom motions get their prompt from `description`; "
+            "preset motions read a static template, so they don't.",
+            fix="Send `description` together with `motion_type='custom'`, "
+            "or pick a preset motion_type.",
+            retryable=False,
+        ),
+        status_code=422,
+    )

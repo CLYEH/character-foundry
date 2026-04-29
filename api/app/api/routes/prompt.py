@@ -1,74 +1,85 @@
-"""`POST /v1/prompt/preview` — synchronous reconciler preview (T-019).
+"""`POST /v1/prompt/preview` — synchronous reconciler preview (T-019 + T-035).
 
-Thin wrapper over `PromptReconciler.preview()`:
+Thin coordinator: pull dependencies, dispatch to the per-mode service
+function, return its `PromptPreviewResponse`.
 
-- No task, no DB writes — just compose the prompt and return.
-- Calls `preview()` (NOT `reconcile()`) so the cache stays clean. A
-  user clicking 進階檢視 with a one-off "what if" input shouldn't seed
-  the same key the worker would later read; if the user proceeds to
-  generate with the same input, that worker-side `reconcile()` call
-  populates the cache properly.
-- Validation: at least one of menu_selections / freeform_note /
-  reference_image_ids / mask must be present; otherwise 400.
-- Wire mode `create_base` + non-empty `reference_image_ids` maps to the
-  reconciler's `CREATE_BASE_WITH_REF` so the right constraint set
-  + LLM signal flows through.
+Three wire modes (discriminated union by `mode`):
+  - `create_base`   : original Sprint-2 surface, plus `base_checkpoint_id`
+                      for remix previews (closes STATUS.md S2-5).
+  - `create_alias`  : Sprint-3 alias mode (text/image/inpaint/mixed) with
+                      mask reference (closes STATUS.md S3-1).
+  - `create_motion` : Sprint-3 motion mode — preset prompts skip the
+                      reconciler; custom prompts run it.
+
+DB / storage / reconciler injection happens here so each service
+function reads as a pure transformation; the cache-write semantics
+stay the responsibility of the reconciler itself (preview never writes,
+per T-019).
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_prompt_reconciler_dep
+from app.api.deps import db_session, get_current_user, get_prompt_reconciler_dep, get_storage
 from app.models.user import User
-from app.prompt.constraints import ReconcileMode
-from app.prompt.errors import validation_empty_input
-from app.prompt.reconciler import PromptReconciler, ReconcileInput
+from app.prompt.reconciler import PromptReconciler
 from app.schemas.prompt import (
+    CreateAliasPreviewRequest,
+    CreateBasePreviewRequest,
+    CreateMotionPreviewRequest,
     PromptPreviewRequest,
     PromptPreviewResponse,
-    WirePromptMode,
 )
+from app.services import prompt_service
+from app.storage.backend import StorageBackend
 
 router = APIRouter(prefix="/v1/prompt", tags=["prompt"])
 
 
-def _resolve_mode(wire_mode: WirePromptMode, *, has_reference: bool) -> ReconcileMode:
-    if wire_mode == "create_base":
-        return ReconcileMode.CREATE_BASE_WITH_REF if has_reference else ReconcileMode.CREATE_BASE
-    if wire_mode == "create_alias":
-        return ReconcileMode.CREATE_ALIAS
-    return ReconcileMode.CREATE_MOTION
-
-
-@router.post("/preview", response_model=PromptPreviewResponse)
+@router.post(
+    "/preview",
+    response_model=PromptPreviewResponse,
+    # `derived_from` / `parent` / `motion_template_used` are mode-specific:
+    # only one is populated per response. Stripping the unused-None keys
+    # keeps the create_base wire surface unchanged from T-019 (existing
+    # frontend modal asserts on the four-key shape) and shrinks the
+    # alias / motion responses to just the relevant block.
+    response_model_exclude_none=True,
+)
 async def preview_prompt(
-    body: PromptPreviewRequest,
+    body: Annotated[PromptPreviewRequest, Body(...)],
+    db: Annotated[AsyncSession, Depends(db_session)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
     reconciler: Annotated[PromptReconciler, Depends(get_prompt_reconciler_dep)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> PromptPreviewResponse:
-    has_reference = bool(body.reference_image_ids)
-    has_mask = body.mask is not None
-    has_menu = bool(body.menu_selections)
-    has_note = bool((body.freeform_note or "").strip())
-    if not (has_menu or has_note or has_reference or has_mask):
-        raise validation_empty_input()
-
-    output = await reconciler.preview(
-        ReconcileInput(
-            mode=_resolve_mode(body.mode, has_reference=has_reference),
-            menu_selections=body.menu_selections,  # wire schema enforces str values
-            freeform_note=body.freeform_note,
-            has_reference_image=has_reference,
-            has_inpaint_mask=has_mask,
+    if isinstance(body, CreateBasePreviewRequest):
+        return await prompt_service.preview_create_base(
+            body=body,
+            db=db,
+            reconciler=reconciler,
         )
-    )
-
-    return PromptPreviewResponse(
-        platform_constraints=", ".join(output.applied_constraints),
-        reconciled_note_en=output.reconciled_note_en,
-        menu_fragments=list(output.menu_fragments_en),
-        final_prompt=output.final_prompt,
-    )
+    if isinstance(body, CreateAliasPreviewRequest):
+        return await prompt_service.preview_create_alias(
+            body=body,
+            db=db,
+            user=user,
+            storage=storage,
+            reconciler=reconciler,
+        )
+    if isinstance(body, CreateMotionPreviewRequest):
+        return await prompt_service.preview_create_motion(
+            body=body,
+            db=db,
+            user=user,
+            storage=storage,
+            reconciler=reconciler,
+        )
+    # Unreachable — `Field(discriminator='mode')` narrows to one of the
+    # three branches above. Kept as a final guardrail in case a fourth
+    # mode is added without updating the dispatcher.
+    raise NotImplementedError(f"unhandled prompt-preview mode: {body!r}")  # pragma: no cover
