@@ -198,11 +198,13 @@ async def test_real_client_supports_videoUri_download(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     download_url = "https://veo.test/blobs/abc.mp4"
+    download_request_headers: dict[str, str] = {}
 
     def _handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             return _submit_response(request)
         if str(request.url) == download_url:
+            download_request_headers.update(dict(request.headers))
             return httpx.Response(200, content=_FAKE_MP4)
         return httpx.Response(
             200,
@@ -221,6 +223,9 @@ async def test_real_client_supports_videoUri_download(
 
     assert result.video_bytes == _FAKE_MP4
     assert result.duration_ms == 4000
+    # Security: the api-key header must NOT travel to the foreign blob host.
+    # The signed videoUri carries its own credentials.
+    assert "x-goog-api-key" not in download_request_headers
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +373,29 @@ async def test_poll_loop_exhausts_max_attempts_with_model_timeout(
         await client.aclose()
 
     assert info.value.error.code == "MODEL_TIMEOUT"
+
+
+async def test_post_submit_poll_5xx_does_not_resubmit(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once Veo accepts the long-running operation we've already paid for
+    a generation; a poll-time 5xx must NOT trigger a fresh `predictLong-
+    Running` POST (planning §4.4: "影片重試很貴"). Failure should propagate
+    and feed the breaker once.
+    """
+    poll_5xx = lambda _r: httpx.Response(503, json={"error": {"message": "down"}})  # noqa: E731
+    handler, counters = _make_seq_handler(poll_fns=[poll_5xx])
+    client = _make_client(fake_redis, handler, max_retries=2, monkeypatch=monkeypatch)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_UNAVAILABLE"
+    assert counters["submit"] == 1, "post-submit failure must not trigger resubmission"
+    # Single failure recorded toward the breaker (mirrors per-call accounting).
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 1
 
 
 async def test_submit_400_does_not_retry_or_open_breaker(

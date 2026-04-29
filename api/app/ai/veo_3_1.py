@@ -111,56 +111,34 @@ class Veo31Client:
         prompt: str,
         duration_seconds: float | None = None,
     ) -> VeoResult:
+        """Run a Veo i2v generation: retry submission, then poll + download once.
+
+        Retry only protects the *submit* step. Once Veo accepts the long-
+        running operation it's already started consuming provider budget
+        (planning §4.4: "影片重試很貴"); resubmitting after a poll-time
+        transient would throw away an in-flight generation and pay for a
+        new one. Post-submit failures propagate directly to the caller and
+        still feed the breaker if retryable, so upstream health continues
+        to be tracked.
+        """
         await self._breaker.raise_if_open()
 
-        last_error: AgentErrorException | None = None
-        attempts = self.max_retries + 1
-
-        for attempt in range(attempts):
-            try:
-                return await self._run_one_attempt(
-                    image_bytes=image_bytes,
-                    prompt=prompt,
-                    duration_seconds=duration_seconds,
-                )
-            except AgentErrorException as exc:
-                last_error = exc
-                if not exc.error.retryable or attempt == attempts - 1:
-                    break
-                await self._sleep_for_retry(attempt)
-
-        # Same policy as GptImage2Client: only retryable errors signal upstream
-        # unhealth (timeout / 5xx / 429). Non-retryable ones (validation,
-        # auth, content policy) MUST NOT count toward opening the breaker —
-        # otherwise a few bad prompts turn into a service-wide outage.
-        assert last_error is not None
-        if last_error.error.retryable:
-            await self._breaker.record_failure()
-        raise last_error
-
-    # ----------------------------------------------------------------- private
-
-    async def _run_one_attempt(
-        self,
-        *,
-        image_bytes: bytes,
-        prompt: str,
-        duration_seconds: float | None,
-    ) -> VeoResult:
-        """One submit → poll → download pass. Wraps the whole flow so the
-        retry envelope at the top level can restart it cleanly.
-
-        On success the breaker is recorded as healthy here so concurrent
-        flakes recorded in `record_failure` don't stay stuck across an
-        already-good call.
-        """
-        operation_name = await self._submit_job(
+        operation_name = await self._submit_with_retry(
             image_bytes=image_bytes,
             prompt=prompt,
             duration_seconds=duration_seconds,
         )
-        operation = await self._poll_until_done(operation_name)
-        video_bytes = await self._fetch_video_bytes(operation)
+
+        try:
+            operation = await self._poll_until_done(operation_name)
+            video_bytes = await self._fetch_video_bytes(operation)
+        except AgentErrorException as exc:
+            # Retryable post-submit failures still tell us upstream is sick;
+            # non-retryable ones (INVALID_ARGUMENT, RESOURCE_EXHAUSTED) are
+            # request / quota issues and must not count toward OPEN.
+            if exc.error.retryable:
+                await self._breaker.record_failure()
+            raise
 
         await self._breaker.record_success()
 
@@ -187,6 +165,41 @@ class Veo31Client:
                 "operation": _redacted_operation(operation),
             },
         )
+
+    # ----------------------------------------------------------------- private
+
+    async def _submit_with_retry(
+        self,
+        *,
+        image_bytes: bytes,
+        prompt: str,
+        duration_seconds: float | None,
+    ) -> str:
+        """Submit until success or retry budget exhausted, returning the
+        operation name. Mirrors `GptImage2Client._call_with_resilience`'s
+        accounting: a failed call (after exhausting retries) counts as one
+        breaker failure regardless of attempt count, and only retryable
+        errors feed the breaker."""
+        last_error: AgentErrorException | None = None
+        attempts = self.max_retries + 1
+
+        for attempt in range(attempts):
+            try:
+                return await self._submit_job(
+                    image_bytes=image_bytes,
+                    prompt=prompt,
+                    duration_seconds=duration_seconds,
+                )
+            except AgentErrorException as exc:
+                last_error = exc
+                if not exc.error.retryable or attempt == attempts - 1:
+                    break
+                await self._sleep_for_retry(attempt)
+
+        assert last_error is not None
+        if last_error.error.retryable:
+            await self._breaker.record_failure()
+        raise last_error
 
     async def _submit_job(
         self,
@@ -299,8 +312,15 @@ class Veo31Client:
 
     async def _download_video_uri(self, url: str) -> bytes:
         client = await self._http()
+        # The signed `videoUri` typically points at a different host (Google
+        # Cloud Storage / a signed CDN URL) and embeds its own credentials in
+        # query parameters. Sending our `x-goog-api-key` along would leak the
+        # provider key to a foreign host. Build the request manually so we
+        # can drop the auth header before send.
         try:
-            response = await client.get(url)
+            request = client.build_request("GET", url)
+            request.headers.pop("x-goog-api-key", None)
+            response = await client.send(request)
         except httpx.HTTPError as exc:
             raise map_exception_to_agent_error(self.model, exc) from exc
         if not response.is_success:
@@ -311,9 +331,10 @@ class Veo31Client:
 
     async def _http(self) -> httpx.AsyncClient:
         if self._http_client is None:
-            # Veo / Vertex auth is `x-goog-api-key`; the operation download
-            # URL embeds its own credentials so this header is harmless on
-            # the GET side too.
+            # Veo / Vertex auth is `x-goog-api-key`. Submission + polling
+            # endpoints both go through this client; `_download_video_uri`
+            # explicitly strips the header per-request because the signed
+            # `videoUri` lives on a different host.
             self._http_client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout_seconds),
                 headers={"x-goog-api-key": self.api_key or ""},
