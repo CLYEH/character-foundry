@@ -1,6 +1,6 @@
 # T-027: CharacterDetail DTO + frontend 恢復 in-progress session
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 2
 **Est:** S (1h)
 **Depends on:** T-016 (CharacterDetail 已實作), T-025 (detail 頁已實作 inline error)

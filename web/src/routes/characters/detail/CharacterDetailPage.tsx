@@ -8,6 +8,7 @@ import {
   AliasEmptyState,
   BaseCard,
   BasePromptModal,
+  IncompleteCharacterCard,
   MotionEmptyStrip,
 } from '@/components/characters'
 import { GenericErrorPage, NotFoundPage } from '@/components/composite/ErrorPage'
@@ -20,10 +21,10 @@ import { AgentError } from '@/lib/agentError'
 /**
  * P-05 Character Detail (Sprint 2 cut).
  *
- * Renders Base + empty placeholders for Aliases / Motions. The
- * `base === null` branch is a deliberate fallback inline error — Sprint 2
- * does not redirect to the unfinished session yet (T-027 will own that
- * once `creation_session` lands on the DTO).
+ * Renders Base + empty placeholders for Aliases / Motions. When no Base
+ * has been confirmed yet, the page swaps the body for
+ * `IncompleteCharacterCard` which drives Resume / Abandoned states off
+ * `character.creation_session` (api-shape §6.2).
  */
 export default function CharacterDetailPage() {
   const { id: characterId } = useParams<{ id: string }>()
@@ -99,7 +100,7 @@ function CharacterDetailBody({
       </header>
 
       {character.base === null ? (
-        <BaseMissingFallback />
+        <IncompleteCharacterCard session={character.creation_session} />
       ) : (
         <>
           <section className="flex flex-col gap-3">
@@ -174,29 +175,6 @@ function DetailActions() {
         </TooltipTrigger>
         <TooltipContent>Sprint 4 會開放</TooltipContent>
       </Tooltip>
-    </div>
-  )
-}
-
-function BaseMissingFallback() {
-  // Sprint 2 fallback: T-027 will replace this branch with a Resume CTA
-  // once `CharacterDetail.creation_session` lands. Until then we tell the
-  // user the character isn't ready and route them back to Dashboard so
-  // they can re-enter the session through the in-progress card (T-027).
-  return (
-    <div
-      data-testid="character-detail-no-base"
-      className="flex min-h-[40vh] flex-col items-center justify-center gap-3 rounded-md border border-dashed border-border/60 bg-muted/30 px-6 py-10 text-center"
-    >
-      <p className="text-base font-medium">此角色尚未確立 Base</p>
-      <p className="max-w-md text-sm text-muted-foreground">
-        Creation Session 尚未完成。回 Dashboard 繼續挑選或建立 Base 圖。
-      </p>
-      <Button asChild variant="outline" size="sm">
-        <Link to="/">
-          <ArrowLeft className="size-4" aria-hidden />回 Dashboard
-        </Link>
-      </Button>
     </div>
   )
 }

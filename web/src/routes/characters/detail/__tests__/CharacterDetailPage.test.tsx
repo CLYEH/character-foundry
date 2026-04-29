@@ -41,6 +41,7 @@ function makeDetail(overrides: Partial<CharacterDetail> = {}): CharacterDetail {
     },
     aliases: [],
     motions_summary: { base: { preset_generated: 0, custom_count: 0 }, aliases: [] },
+    creation_session: null,
     copied_from: null,
     created_at: '2026-04-28T08:15:00Z',
     updated_at: '2026-04-28T10:00:00Z',
@@ -65,6 +66,10 @@ function renderPage() {
         <MemoryRouter initialEntries={[`/characters/${CHARACTER_ID}`]}>
           <Routes>
             <Route path="/" element={<div data-testid="dashboard-stub">dashboard</div>} />
+            <Route
+              path="/characters/new/session/:id"
+              element={<div data-testid="session-stub">session</div>}
+            />
             <Route path="/characters/:id" element={<CharacterDetailPage />} />
           </Routes>
         </MemoryRouter>
@@ -128,14 +133,51 @@ describe('CharacterDetailPage', () => {
     expect(await screen.findByTestId('base-prompt-modal')).toBeInTheDocument()
   })
 
-  it('shows the inline base-missing fallback (not a redirect) when base is null', async () => {
-    getCharacterMock.mockResolvedValue(makeResponse({ base: null }))
+  it('shows the resume CTA when base is null and session is in_progress', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    getCharacterMock.mockResolvedValue(
+      makeResponse({
+        base: null,
+        creation_session: { id: sessionId, status: 'in_progress' },
+      }),
+    )
+    renderPage()
+    expect(await screen.findByTestId('character-detail-resume-in-progress')).toBeInTheDocument()
+    // Resume CTA points at the creation session route. We did NOT
+    // navigate there — the page stays mounted so the user explicitly
+    // chooses to resume.
+    expect(screen.queryByTestId('dashboard-stub')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('session-stub')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /繼續建立/ })).toHaveAttribute(
+      'href',
+      `/characters/new/session/${sessionId}`,
+    )
+    expect(screen.getByRole('link', { name: /回 Dashboard/ })).toHaveAttribute('href', '/')
+  })
+
+  it('shows the abandoned-session message (no resume CTA) when session is abandoned', async () => {
+    getCharacterMock.mockResolvedValue(
+      makeResponse({
+        base: null,
+        creation_session: {
+          id: 'ffffffff-1111-2222-3333-444444444444',
+          status: 'abandoned',
+        },
+      }),
+    )
+    renderPage()
+    expect(await screen.findByTestId('character-detail-session-abandoned')).toBeInTheDocument()
+    // Abandoned sessions cannot be resumed (per user-flows §4.1) — the
+    // 繼續建立 CTA must not appear.
+    expect(screen.queryByRole('link', { name: /繼續建立/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /回 Dashboard/ })).toHaveAttribute('href', '/')
+  })
+
+  it('falls back to the inline error when base and session are both null', async () => {
+    getCharacterMock.mockResolvedValue(makeResponse({ base: null, creation_session: null }))
     renderPage()
     expect(await screen.findByTestId('character-detail-no-base')).toBeInTheDocument()
-    // Importantly, we did not redirect to dashboard or session — the
-    // page itself stays mounted with the inline fallback visible.
-    expect(screen.queryByTestId('dashboard-stub')).not.toBeInTheDocument()
-    // Back to Dashboard CTA is a Link to "/".
+    expect(screen.queryByRole('link', { name: /繼續建立/ })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /回 Dashboard/ })).toHaveAttribute('href', '/')
   })
 

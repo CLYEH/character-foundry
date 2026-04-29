@@ -646,3 +646,154 @@ def test_unknown_character_returns_not_found(client: TestClient, access_token: s
     resp = client.get(f"/v1/characters/{uuid.uuid4()}", headers=auth_headers(access_token))
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "NOT_FOUND_CHARACTER"
+
+
+# ---------------------------------------------------------------------------
+# CharacterDetail.creation_session (T-027)
+#
+# api-shape §6.2: the embedded `creation_session` ref drives the resume
+# CTA on the frontend Character Detail page when no Base has been
+# confirmed. base !== null  → ref = null (payload trim, contract clarity).
+# base === null + status: 'in_progress' → {id, status: 'in_progress'}
+# base === null + status: 'abandoned'   → {id, status: 'abandoned'}
+# ---------------------------------------------------------------------------
+
+
+def test_detail_in_progress_session_emits_session_ref(
+    client: TestClient, access_token: str
+) -> None:
+    a = _create(client, access_token, "Resumable")
+    cid = a["character"]["id"]
+    expected_session_id = a["creation_session"]["id"]
+
+    resp = client.get(f"/v1/characters/{cid}", headers=auth_headers(access_token))
+    assert resp.status_code == 200
+    body = resp.json()["character"]
+    assert body["base"] is None
+    assert body["creation_session"] == {
+        "id": expected_session_id,
+        "status": "in_progress",
+    }
+
+
+def test_detail_abandoned_session_emits_session_ref(
+    client: TestClient, access_token: str, database_url: str
+) -> None:
+    a = _create(client, access_token, "Walked")
+    cid = a["character"]["id"]
+    sid = a["creation_session"]["id"]
+
+    async def _abandon() -> None:
+        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(
+                    text("UPDATE creation_sessions SET status = 'abandoned' WHERE id = :id"),
+                    {"id": sid},
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_abandon())
+
+    resp = client.get(f"/v1/characters/{cid}", headers=auth_headers(access_token))
+    assert resp.status_code == 200
+    body = resp.json()["character"]
+    assert body["base"] is None
+    assert body["creation_session"] == {"id": sid, "status": "abandoned"}
+
+
+def test_detail_orphan_session_id_emits_null_session_ref(
+    client: TestClient, access_token: str, database_url: str
+) -> None:
+    """`Character.creation_session_id` is `ON DELETE SET NULL`. If the
+    session row is deleted out from under a Base-less character (or the
+    column is otherwise null), the serializer must emit
+    `creation_session: null` rather than crash on the missing row. The
+    frontend treats this as the abnormal-state fallback."""
+    a = _create(client, access_token, "Orphaned")
+    cid = a["character"]["id"]
+
+    async def _orphan() -> None:
+        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(
+                    text("UPDATE characters SET creation_session_id = NULL WHERE id = :id"),
+                    {"id": cid},
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_orphan())
+
+    resp = client.get(f"/v1/characters/{cid}", headers=auth_headers(access_token))
+    assert resp.status_code == 200
+    body = resp.json()["character"]
+    assert body["base"] is None
+    assert body["creation_session"] is None
+
+
+def test_detail_with_base_omits_session_ref(
+    client: TestClient, access_token: str, database_url: str
+) -> None:
+    """`base !== null` → `creation_session = null` per api-shape §6.2.
+
+    We seed a Base row directly (skipping the select-base flow — that's
+    integration-tested under tests/select_base) and verify the detail
+    payload reflects the contract: confirmed Base means the session is
+    logically closed, so the resume ref is omitted.
+    """
+    a = _create(client, access_token, "Confirmed")
+    cid = a["character"]["id"]
+    sid = a["creation_session"]["id"]
+
+    async def _seed_base() -> None:
+        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                checkpoint_id = uuid.uuid4()
+                image_key = f"checkpoints/{sid}/{checkpoint_id}.png"
+                await conn.execute(
+                    text(
+                        "INSERT INTO checkpoints "
+                        "(id, creation_session_id, sequence, prompt, output_image_key) "
+                        "VALUES (:cid, :sid, 1, 'a base prompt', :okey)"
+                    ),
+                    {"cid": str(checkpoint_id), "sid": sid, "okey": image_key},
+                )
+                base_id = uuid.uuid4()
+                await conn.execute(
+                    text(
+                        "INSERT INTO bases (id, character_id, from_checkpoint_id, image_key) "
+                        "VALUES (:bid, :cid, :ckid, :okey)"
+                    ),
+                    {
+                        "bid": str(base_id),
+                        "cid": cid,
+                        "ckid": str(checkpoint_id),
+                        "okey": image_key,
+                    },
+                )
+                await conn.execute(
+                    text("UPDATE characters SET base_id = :bid WHERE id = :cid"),
+                    {"bid": str(base_id), "cid": cid},
+                )
+                await conn.execute(
+                    text(
+                        "UPDATE creation_sessions SET status = 'completed', "
+                        "completed_at = NOW() WHERE id = :sid"
+                    ),
+                    {"sid": sid},
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_seed_base())
+
+    resp = client.get(f"/v1/characters/{cid}", headers=auth_headers(access_token))
+    assert resp.status_code == 200
+    body = resp.json()["character"]
+    assert body["base"] is not None
+    assert body["base"]["id"]
+    assert body["creation_session"] is None
