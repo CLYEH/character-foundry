@@ -173,8 +173,14 @@ function AliasEditBody({
           break
         }
         case 'cancelled':
-          // The cancel button's outcome handler already toasted the user;
-          // here we just clear so the form re-enables for retry.
+          // The user clicked 取消 on a running task → mutation returned
+          // `cancel_pending` and only emitted the interim「取消中…」toast.
+          // Now that the SSE has actually settled to `cancelled`, give
+          // the user the explicit success confirmation. The
+          // `cancelled_immediately` path is already filtered above by
+          // the `activeTaskRef` guard (it clears the ref synchronously),
+          // so we won't double-toast.
+          toast.success('已取消')
           setActiveTask(null)
           break
         default:

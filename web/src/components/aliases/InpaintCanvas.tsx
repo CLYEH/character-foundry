@@ -177,7 +177,14 @@ export function InpaintCanvas({ baseImageUrl, enabled, onMaskChange }: InpaintCa
     })
   }, [])
 
-  const handlePointerUp = useCallback(() => {
+  // `endStroke` covers every way a pointer interaction can finish:
+  // `pointerup` (normal release inside the stage), `pointerleave`
+  // (release while the cursor exits the stage), and `pointercancel`
+  // (touch interruption — phone call, scroll gesture takeover). Without
+  // the leave/cancel paths, `isDrawingRef` would stay `true` and the
+  // next pointer move would extend the previous stroke without a fresh
+  // press.
+  const endStroke = useCallback(() => {
     isDrawingRef.current = false
   }, [])
 
@@ -218,7 +225,9 @@ export function InpaintCanvas({ baseImageUrl, enabled, onMaskChange }: InpaintCa
           height={naturalH}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
+          onPointerUp={endStroke}
+          onPointerLeave={endStroke}
+          onPointerCancel={endStroke}
           // Konva renders into a fixed pixel-sized canvas; CSS on the
           // wrapper above scales it to fit. `style={{width:'100%'}}` on
           // the inner canvas makes the visual size follow the wrapper.

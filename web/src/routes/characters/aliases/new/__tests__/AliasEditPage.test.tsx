@@ -394,6 +394,36 @@ describe('AliasEditPage', () => {
     expect(screen.getByTestId('alias-submit')).toBeEnabled()
   })
 
+  it('cancel_pending then SSE cancelled emits the success confirmation toast', async () => {
+    getCharacterMock.mockResolvedValue({ character: makeDetail() })
+    createAliasMock.mockResolvedValue({ task_id: 'task-cp', alias_id: 'alias-cp' })
+    cancelTaskMock.mockResolvedValue({
+      task: {} as unknown as CancelTaskResponse['task'],
+      cancel_outcome: 'cancel_pending',
+    })
+    renderPage()
+
+    await screen.findByTestId('alias-base-image')
+    fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: '取消版' } })
+    fireEvent.change(screen.getByLabelText('Alias 補述內容'), { target: { value: '某些字' } })
+
+    fireEvent.click(screen.getByTestId('alias-submit'))
+    await waitFor(() => expect(createAliasMock).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByTestId('alias-cancel'))
+    await waitFor(() => expect(cancelTaskMock).toHaveBeenCalledWith('task-cp'))
+    // Interim toast surfaces while the worker tries to abort.
+    await waitFor(() => expect(sonnerCalls.find((c) => c.kind === 'info')?.message).toBe('取消中…'))
+
+    // SSE eventually settles to cancelled — the user must get an
+    // explicit success toast (Codex P2: silent stop is bad UX).
+    pushSse('task-cp', { status: 'cancelled' })
+    await waitFor(() =>
+      expect(sonnerCalls.find((c) => c.kind === 'success')?.message).toBe('已取消'),
+    )
+    expect(screen.getByTestId('alias-submit')).toBeEnabled()
+  })
+
   it('renders NotFoundPage on a 404 character lookup', async () => {
     getCharacterMock.mockRejectedValue(
       new ApiError(404, 'NOT_FOUND_CHARACTER', '找不到角色', {
