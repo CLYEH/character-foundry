@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
 > **Last updated:** 2026-04-29
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張）**
 
 ---
 
@@ -60,8 +60,26 @@
 | T-027 | CharacterDetail DTO + frontend resume in-progress session | DONE |
 | T-028 | Worker post-lock checkpoint guard（從 T-018 PR #23 拆出來，Codex round-2 P1） | DONE |
 
-### Sprint 3 — Aliases + Motions（尚未開單）
-三合一 Alias 輸入（含 Inpaint）、Preset + Custom motion。
+### Sprint 3 — Aliases + Motions
+**目標：** 三合一 Alias 輸入（含 Inpaint）、Preset + Custom motion，跑完 M3 milestone。
+
+| # | Ticket | Status |
+|---|---|---|
+| T-029 | Backend Veo 3.1 i2v client + stub | TODO |
+| T-030 | Backend gpt-image-2 image2image + inpaint extension | TODO |
+| T-031 | Backend Alias generation endpoint + worker | TODO |
+| T-032 | Backend Alias list / detail / rename / delete | TODO |
+| T-033 | Backend Motion generation endpoint + worker | TODO |
+| T-034 | Backend Motion list / detail / rename / delete | TODO |
+| T-035 | Backend Prompt preview extension（alias / motion mode + MaskInput schema）| TODO |
+| T-036 | Frontend Alias edit page (P-06) + InpaintCanvas | TODO |
+| T-037 | Frontend Character Detail aliases + motions sections | TODO |
+| T-038 | Frontend Motion preset generation（click-to-generate + SSE）| TODO |
+| T-039 | Frontend Custom motion modal (M-02) | TODO |
+| T-040 | Frontend Prompt preview modal extension（alias / motion mode）| TODO |
+| T-041 | E2E Alias creation + motion preset smoke（M3 gate）| TODO |
+
+**Dependency / parallelization plan：** 見 `tickets/PARALLEL_WORKFLOW.md`。Wave A（T-029 / T-030 / T-035 / T-036 / T-040）可立即平行開工。
 
 ### Sprint 4 — Download + Usage（尚未開單）
 ZIP 匯出、Copy Character、Usage dashboard。

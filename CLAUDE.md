@@ -58,7 +58,7 @@
 3. 照需求討論、更新 planning 文件
 
 ### 做實作 / Feature 類任務（常見）
-1. 使用者會說「我要做 T-XXX」或「繼續做 T-XXX」
+1. 使用者會說「我要做 T-XXX」、「繼續做 T-XXX」或（在 worktree 內）「start T-XXX」
 2. Claude **必讀順序：**
    - `CLAUDE.md`（專案定位）
    - `DECISIONS.md`（核心決策快查）
@@ -66,6 +66,7 @@
    - `tickets/T-XXX-*.md`（本單完整內容）
    - 單裡列的 **Planning refs**（具體規格）
    - `STATUS.md`（看前後依賴）
+   - 若 working dir 看起來像 worktree（路徑含 `.wt/T-XXX`、或 `git rev-parse --show-toplevel` 不是主 repo）→ 加讀 `tickets/PARALLEL_WORKFLOW.md` §4 ~ §7（pre-flight、上游檢查、每 loop tick rebase、conflict SOP）。Worktree 情境下「start T-XXX」== 走那份 SOP 一路到 merge。
 3. **切 ticket branch（必做；動手改檔之前）：**
 
    Branch 命名是 `<type>/T-XXX-short-desc`，`<type>` 依 CONTRIBUTING §1.1 取 `feature` / `fix` / `chore` / `refactor`——**先根據 ticket 性質決定 type**，再用下面指令（把 `<type>` 換成實際值）：
