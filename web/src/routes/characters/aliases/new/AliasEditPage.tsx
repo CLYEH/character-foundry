@@ -275,6 +275,12 @@ function AliasEditBody({
     if (submitInFlightRef.current) return
     const trimmedName = aliasName.trim()
     if (!trimmedName) return
+    // Set the in-flight guard SYNCHRONOUSLY before the first await so a
+    // fast double-click can't pass this gate twice (the second click
+    // would otherwise enter while the first is mid-flush and proceed in
+    // parallel — duplicate uploadMask + createAlias POSTs, duplicate
+    // backend tasks, doubled quota burn). Codex P1 round 7.
+    submitInFlightRef.current = true
 
     // Flush any pending mask export before reading the mask — a stroke
     // ended just before submit might still have its `toBlob` in flight,
@@ -287,8 +293,10 @@ function AliasEditBody({
     const liveMask = maskPayloadRef.current
     const liveHasMask = liveMask !== null
     const liveHasAnyInput = hasText || hasReference || liveHasMask
-    if (!liveHasAnyInput) return
-    submitInFlightRef.current = true
+    if (!liveHasAnyInput) {
+      submitInFlightRef.current = false
+      return
+    }
 
     let maskHandle: { mask_id: string } | null = null
     if (liveMask) {

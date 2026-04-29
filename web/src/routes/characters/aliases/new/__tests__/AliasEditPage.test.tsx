@@ -483,6 +483,35 @@ describe('AliasEditPage', () => {
     expect(screen.getByTestId('alias-submit')).toBeEnabled()
   })
 
+  it('double-click submit during mask flush still sends only one alias POST', async () => {
+    // Codex P1 round 7: setting submitInFlightRef AFTER the flush await
+    // re-introduced the double-click race. Two fast clicks both pass
+    // the guard while the first is awaiting flush, then both proceed
+    // to uploadMask + createAlias, minting duplicate backend tasks.
+    // The fix sets the guard synchronously before any await.
+    getCharacterMock.mockResolvedValue({ character: makeDetail() })
+    createAliasMock.mockResolvedValue({ task_id: 'task-once', alias_id: 'alias-once' })
+    renderPage()
+
+    await screen.findByTestId('alias-base-image')
+    fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: '單擊版' } })
+    fireEvent.change(screen.getByLabelText('Alias 補述內容'), { target: { value: '一次' } })
+
+    // Two synchronous clicks back-to-back. Without the synchronous
+    // guard, both invocations would race past the `if (submitInFlightRef
+    // .current) return` gate while the first is awaiting flushPendingExport.
+    const submit = screen.getByTestId('alias-submit')
+    fireEvent.click(submit)
+    fireEvent.click(submit)
+
+    // Wait long enough for both microtasks to drain.
+    await waitFor(() => expect(createAliasMock).toHaveBeenCalledTimes(1))
+    // Microtask drain: if the second click had slipped past, a second
+    // POST would land here. Give it a clear shot to misbehave.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(createAliasMock).toHaveBeenCalledTimes(1)
+  })
+
   it('flushes pending mask export before submit reads mask state', async () => {
     // Codex P1 round 5: a stroke can end and the user can click submit
     // before the async canvas.toBlob fires. Without the flush gate, the
