@@ -293,6 +293,26 @@ describe('AliasEditPage', () => {
     expect(await screen.findByTestId('alias-edit-no-base')).toBeInTheDocument()
   })
 
+  it('shows the inline error when Base exists but image_url is null', async () => {
+    // Codex P2 round 6: passing image_url=null into the editor would
+    // render <img src=""> and leave the canvas in perpetual loading.
+    // Block entry with the same inline error UI.
+    getCharacterMock.mockResolvedValue({
+      character: makeDetail({
+        base: {
+          id: 'base-1',
+          character_id: CHARACTER_ID,
+          image_url: null,
+          thumbnail_url: null,
+          from_checkpoint_id: 'cp-1',
+          created_at: '2026-04-28T10:00:00Z',
+        },
+      }),
+    })
+    renderPage()
+    expect(await screen.findByTestId('alias-edit-no-base')).toHaveTextContent(/連結可能失效/)
+  })
+
   it('renders the base image and disables 生成 until an input has content', async () => {
     getCharacterMock.mockResolvedValue({ character: makeDetail() })
     renderPage()

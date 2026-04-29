@@ -67,18 +67,23 @@ export default function AliasEditPage() {
   }
 
   const character = characterQuery.data.character
-  if (!character.base) {
-    // Spec: "無 base → inline 錯誤頁 + Back to Detail". Aliases are
-    // always derived from a confirmed Base (DECISIONS.md §5), so this
-    // pre-flight check fails fast rather than rendering a half-state.
+  // Spec: "無 base → inline 錯誤頁 + Back to Detail". Aliases are always
+  // derived from a confirmed Base (DECISIONS.md §5), so this pre-flight
+  // fails fast rather than rendering a half-state. The same inline UI
+  // covers the rare case where Base exists but `image_url` came back
+  // null — passing `''` into the editor would render `<img src="">` in
+  // the non-inpaint branch and leave the canvas in perpetual loading
+  // in the inpaint branch (Codex P2 round 6).
+  if (!character.base || !character.base.image_url) {
+    const message = !character.base
+      ? '這個角色還沒確立 Base，無法新增 Alias。先回 Character 詳情完成 Base。'
+      : 'Base 圖目前讀不到（連結可能失效），請回 Character 詳情重新整理。'
     return (
       <section
         data-testid="alias-edit-no-base"
         className="flex flex-col items-center gap-4 rounded-md border border-dashed border-border p-12 text-center"
       >
-        <p className="text-sm text-muted-foreground">
-          這個角色還沒確立 Base，無法新增 Alias。先回 Character 詳情完成 Base。
-        </p>
+        <p className="text-sm text-muted-foreground">{message}</p>
         <Button asChild variant="outline" size="sm">
           <Link to={`/characters/${characterId}`}>
             <ArrowLeft className="size-4" aria-hidden />回 Character 詳情
@@ -99,7 +104,7 @@ export default function AliasEditPage() {
       key={characterId}
       characterId={characterId}
       characterName={character.name}
-      baseImageUrl={character.base.image_url ?? ''}
+      baseImageUrl={character.base.image_url}
       onCompleted={() => navigate(`/characters/${characterId}`)}
     />
   )

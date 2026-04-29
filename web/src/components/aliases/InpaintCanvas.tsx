@@ -96,6 +96,11 @@ export const InpaintCanvas = forwardRef<InpaintCanvasHandle, InpaintCanvasProps>
     // `onMaskChange` firing.
     const pendingExportRef = useRef<Promise<void>>(Promise.resolve())
 
+    // Tracks an image-load failure so the component can render a
+    // recoverable error state instead of hanging on "載入中" forever
+    // (Codex P2 round 6 — bad/expired/CDN-down URL).
+    const [imageLoadFailed, setImageLoadFailed] = useState(false)
+
     // Load the base image — `new Image()` rather than `useImage` from
     // `use-image` avoids a peer dep just for the convenience hook. CORS is
     // unset on purpose because in-product these are same-origin signed URLs;
@@ -104,17 +109,25 @@ export const InpaintCanvas = forwardRef<InpaintCanvasHandle, InpaintCanvasProps>
     useEffect(() => {
       if (!baseImageUrl) return
       let cancelled = false
+      // Reset error state for new URLs so a retry (parent passes a fresh
+      // signed URL) can recover.
+      setImageLoadFailed(false)
       const img = new window.Image()
       img.onload = () => {
         if (cancelled) return
         setImage(img)
       }
+      img.onerror = () => {
+        if (cancelled) return
+        setImageLoadFailed(true)
+      }
       img.src = baseImageUrl
       return () => {
         cancelled = true
-        // Detach the handler so a late decode doesn't keep the closure
-        // (and thus the previous `setImage`) reachable.
+        // Detach the handlers so a late decode doesn't keep the closure
+        // (and thus the previous setters) reachable.
         img.onload = null
+        img.onerror = null
       }
     }, [baseImageUrl])
 
@@ -289,6 +302,20 @@ export const InpaintCanvas = forwardRef<InpaintCanvasHandle, InpaintCanvasProps>
         aspectRatio: `${naturalW} / ${naturalH}`,
       }
     }, [naturalW, naturalH])
+
+    if (imageLoadFailed) {
+      return (
+        <div
+          data-testid="inpaint-canvas-error"
+          className="flex h-64 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-destructive/50 bg-destructive/5 p-4 text-center text-sm text-destructive"
+        >
+          <span>Base 圖讀取失敗</span>
+          <span className="text-xs text-muted-foreground">
+            連結可能失效，請取消 Inpaint 後回 Character 詳情重新整理。
+          </span>
+        </div>
+      )
+    }
 
     if (!image) {
       return (
