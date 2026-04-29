@@ -375,6 +375,98 @@ async def test_poll_loop_exhausts_max_attempts_with_model_timeout(
     assert info.value.error.code == "MODEL_TIMEOUT"
 
 
+async def test_blob_403_is_invalid_request_not_auth_failed(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1 round-1: a signed-URL 403 must NOT be mapped to
+    `INTERNAL_AUTH_FAILED`. The blob host's credentials are in the URL
+    itself; 403 there means an expired or invalid signed URL, not a bad
+    provider API key. Map to `MODEL_INVALID_REQUEST` so operators get the
+    right diagnosis (and so the breaker isn't confused).
+    """
+    download_url = "https://veo.test/blobs/expired.mp4"
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if str(request.url) == download_url:
+            return httpx.Response(403, content=b"signature expired")
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {"videos": [{"videoUri": download_url}]},
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, max_retries=0, monkeypatch=monkeypatch)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_INVALID_REQUEST"
+    assert info.value.error.code != "INTERNAL_AUTH_FAILED"
+    # Non-retryable bad URL must not push the breaker toward OPEN.
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 0
+
+
+async def test_blob_5xx_is_model_unavailable_and_feeds_breaker(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counterpart to the 4xx test: a 5xx from the blob host signals
+    upstream sickness and SHOULD feed the breaker so /v1/meta can surface
+    degradation. Maps to MODEL_UNAVAILABLE (retryable signal)."""
+    download_url = "https://veo.test/blobs/transient.mp4"
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if str(request.url) == download_url:
+            return httpx.Response(503, content=b"upstream down")
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {"videos": [{"videoUri": download_url}]},
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, max_retries=0, monkeypatch=monkeypatch)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_UNAVAILABLE"
+    # Retryable upstream signal feeds breaker accounting.
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 1
+
+
+async def test_stub_fixture_is_packaged_via_importlib_resources() -> None:
+    """Codex P1 round-1: the mp4 fixture must be packaged with the wheel
+    so non-editable installs (Docker image's `pip install .`) don't crash
+    on the first stub call. `pyproject.toml` `[tool.setuptools.package-data]`
+    must include `*.mp4` for `app.ai._fixtures`. This test exercises the
+    importlib.resources path the stub uses, so a packaging regression
+    surfaces here instead of in production.
+    """
+    from importlib import resources
+
+    package = resources.files("app.ai._fixtures")
+    fixture = package.joinpath("veo_placeholder.mp4")
+    assert fixture.is_file(), (
+        "veo_placeholder.mp4 must be reachable via importlib.resources; "
+        "if this fails, add `*.mp4` to [tool.setuptools.package-data]."
+    )
+    data = fixture.read_bytes()
+    assert data[4:8] == b"ftyp", "fixture should be a valid mp4 (ftyp box at offset 4)"
+
+
 async def test_post_submit_poll_5xx_does_not_resubmit(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:

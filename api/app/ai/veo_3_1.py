@@ -21,12 +21,16 @@ both ends, so the character's look is locked at start and end of the clip.
 Callers (workers / API routes) stay oblivious — they just hand over the
 parent image and a prompt.
 
-The retry loop counts a failed *call* (after exhausting retries) as a single
-breaker failure — same policy as the image client, since one flaky call
-shouldn't burn the breaker budget by itself. The retry envelopes the whole
-submit→poll→download flow rather than each HTTP step; restarting the flow
-is the only safe way to recover from a poll-time transient (we can't resume
-a half-watched operation from another process).
+The retry envelope ONLY protects the submit step. Once Veo accepts the
+long-running operation it has started consuming budget (planning §4.4:
+"影片重試很貴"); resubmitting after a poll-time transient would throw away
+an in-flight generation and pay for a fresh one. Post-submit failures
+propagate directly and still feed the breaker if retryable, so upstream
+health remains observable.
+
+A failed submission (after exhausting retries) counts as a single breaker
+failure — same policy as the image client. Non-retryable errors (validation,
+content policy, quota exhaustion) never feed the breaker.
 """
 
 from __future__ import annotations
@@ -324,8 +328,31 @@ class Veo31Client:
         except httpx.HTTPError as exc:
             raise map_exception_to_agent_error(self.model, exc) from exc
         if not response.is_success:
-            raise map_response_to_agent_error(self.model, response)
+            raise self._map_blob_response_error(response)
         return response.content
+
+    def _map_blob_response_error(self, response: httpx.Response) -> AgentErrorException:
+        """Map a non-2xx response from the signed `videoUri` host.
+
+        Distinct from `map_response_to_agent_error` because that mapper treats
+        401/403 as `INTERNAL_AUTH_FAILED` (provider API-key issue) — but the
+        blob fetch deliberately strips the API key, so 401/403 here means an
+        expired or invalid signed URL, not bad credentials. Misclassifying
+        would trigger an operator chase for an API-key problem that doesn't
+        exist (Codex P1 round-1 on PR #39).
+
+        - 5xx → MODEL_UNAVAILABLE (retryable; signals upstream blob host is
+          sick and feeds the breaker so /v1/meta surfaces degradation).
+        - 4xx → MODEL_INVALID_REQUEST (the URL Veo handed us is bad / expired;
+          retry without a fresh submission won't fix it, so non-retryable).
+        """
+        status = response.status_code
+        if 500 <= status < 600:
+            return model_unavailable(self.model, cause=f"blob fetch failed with HTTP {status}")
+        return model_invalid_request(
+            self.model,
+            detail=f"signed videoUri returned HTTP {status} (URL likely expired or revoked)",
+        )
 
     # -- HTTP plumbing -------------------------------------------------------
 
