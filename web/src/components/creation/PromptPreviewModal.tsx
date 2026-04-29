@@ -170,12 +170,8 @@ function PromptPreviewSections({
 }) {
   return (
     <div className="flex flex-col gap-4">
-      {request.mode === 'create_alias' && (
-        <AliasContextHeader request={request} data={data} />
-      )}
-      {request.mode === 'create_motion' && (
-        <MotionContextHeader request={request} data={data} />
-      )}
+      {request.mode === 'create_alias' && <AliasContextHeader request={request} data={data} />}
+      {request.mode === 'create_motion' && <MotionContextHeader request={request} data={data} />}
 
       <Section title="平台固定 constraints">
         <pre className="whitespace-pre-wrap font-mono text-xs">{data.platform_constraints}</pre>
@@ -355,15 +351,7 @@ function ContextHeader({
   )
 }
 
-function Thumbnail({
-  src,
-  alt,
-  testId,
-}: {
-  src: string | null
-  alt: string
-  testId: string
-}) {
+function Thumbnail({ src, alt, testId }: { src: string | null; alt: string; testId: string }) {
   return (
     <div
       data-testid={testId}

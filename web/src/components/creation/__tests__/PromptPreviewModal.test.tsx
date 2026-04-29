@@ -308,9 +308,7 @@ describe('PromptPreviewModal — create_alias', () => {
       'src',
       HAPPY_ALIAS_RESPONSE.derived_from!.base_image_url,
     )
-    expect(screen.getByTestId('prompt-preview-alias-input-mode')).toHaveTextContent(
-      '文字 + 參考圖',
-    )
+    expect(screen.getByTestId('prompt-preview-alias-input-mode')).toHaveTextContent('文字 + 參考圖')
     expect(ctx).toHaveTextContent('改成紅旗袍')
     expect(ctx).toHaveTextContent('2 張')
     expect(screen.getByTestId('prompt-preview-alias-mask')).toHaveTextContent('已圈選')
