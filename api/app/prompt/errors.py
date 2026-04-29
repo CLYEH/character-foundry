@@ -196,6 +196,33 @@ def conflict_base_not_set() -> AgentErrorException:
     )
 
 
+def validation_alias_input_mode_mismatch(
+    *, input_mode: str, missing: str
+) -> AgentErrorException:
+    """The supplied `input_mode` requires a payload field that wasn't provided.
+
+    Mirrors the T-031 alias-generate contract: `inpaint` needs a `mask`,
+    `image` needs at least one `reference_image_ids` entry. Preview must
+    fail on the same input matrix as generate so the modal doesn't
+    render a confidently-correct preview for a combination the worker
+    will later reject.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_ALIAS_INPUT_MODE_MISMATCH",
+            message=f"input_mode='{input_mode}' 缺少必要欄位：{missing}",
+            problem=f"input_mode={input_mode!r} requires {missing} but it was not supplied.",
+            cause="The alias-generation contract (T-031) enforces "
+            "input_mode-specific payload requirements; preview must "
+            "match so callers don't see a successful preview for "
+            "combinations the worker will reject.",
+            fix=f"Either change input_mode, or supply {missing}.",
+            retryable=False,
+        ),
+        status_code=422,
+    )
+
+
 def validation_motion_custom_requires_description() -> AgentErrorException:
     """`motion_type='custom'` was supplied without a description.
 

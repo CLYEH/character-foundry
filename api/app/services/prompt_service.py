@@ -27,6 +27,7 @@ from app.prompt.errors import (
     conflict_base_not_set,
     not_found_alias,
     not_found_mask,
+    validation_alias_input_mode_mismatch,
     validation_empty_input,
     validation_motion_custom_requires_description,
     validation_motion_parent_mismatch,
@@ -154,6 +155,18 @@ async def preview_create_alias(
     has_mask = body.mask is not None
     if not (has_note or has_refs or has_mask):
         raise validation_empty_input()
+
+    # Mirror T-031's alias-create payload contract: `inpaint` needs a
+    # mask, `image` needs reference_image_ids. Preview must fail on
+    # the same input matrix as generate (Codex P2 on b144149) — `text`
+    # and `mixed` stay permissive here; T-031 will tighten them at
+    # write time once that ticket lands.
+    if body.input_mode == "inpaint" and not has_mask:
+        raise validation_alias_input_mode_mismatch(input_mode="inpaint", missing="mask")
+    if body.input_mode == "image" and not has_refs:
+        raise validation_alias_input_mode_mismatch(
+            input_mode="image", missing="reference_image_ids"
+        )
 
     if body.mask is not None:
         mask_row = await mask_repo.get(db, body.mask.mask_id)

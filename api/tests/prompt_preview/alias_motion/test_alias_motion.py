@@ -192,6 +192,51 @@ def test_alias_non_owner_returns_403(
     assert resp.json()["error"]["code"] == "AUTH_INSUFFICIENT_PERMISSION"
 
 
+def test_alias_inpaint_mode_requires_mask(
+    client: TestClient,
+    seeded_character: dict[str, Any],
+    access_token: str,
+) -> None:
+    """Codex P2 (PR #42, commit b144149): preview must mirror T-031's
+    alias-create payload contract — `inpaint` mode requires a mask.
+    Otherwise preview would 200 on a combination the worker will reject."""
+    resp = client.post(
+        "/v1/prompt/preview",
+        headers=auth_headers(access_token),
+        json={
+            "mode": "create_alias",
+            "character_id": str(seeded_character["id"]),
+            "input_mode": "inpaint",
+            "freeform_note": "改成 V 領",
+            # No mask sent — should 422.
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "VALIDATION_ALIAS_INPUT_MODE_MISMATCH"
+
+
+def test_alias_image_mode_requires_reference_images(
+    client: TestClient,
+    seeded_character: dict[str, Any],
+    access_token: str,
+) -> None:
+    """Same as above but for `input_mode='image'` — reference_image_ids
+    must be supplied per T-031 contract."""
+    resp = client.post(
+        "/v1/prompt/preview",
+        headers=auth_headers(access_token),
+        json={
+            "mode": "create_alias",
+            "character_id": str(seeded_character["id"]),
+            "input_mode": "image",
+            "freeform_note": "參考圖中的造型",
+            # No reference_image_ids sent — should 422.
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "VALIDATION_ALIAS_INPUT_MODE_MISMATCH"
+
+
 def test_alias_rejects_all_empty(
     client: TestClient,
     seeded_character: dict[str, Any],
