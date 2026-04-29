@@ -414,19 +414,27 @@ def _safe_json(response: httpx.Response) -> Any:
 
 
 def _extract_videos(operation: dict[str, Any]) -> list[Any]:
+    """Return the canonical `response.videos[]` list (Phase 1 supported shape).
+
+    A previous draft also folded `generateVideoResponse.generatedSamples` —
+    a different published shape with a different inner schema (`video.uri`
+    vs `videoUri`, etc.) — into the same list. That made downstream helpers
+    inconsistent: `_fetch_video_bytes` only knows `videoUri`/`bytesBase64Encoded`,
+    so a successfully-completed `generatedSamples` operation would have raised
+    `MODEL_INVALID_REQUEST` even though the bytes were present (Codex P1
+    round-2 on PR #39).
+
+    Removed the fallback rather than partially supporting it. Per the ticket
+    Notes ("真實串接時若欄位名不同，client 內部包一層 adapter 即可"), the
+    adapter for any real Veo response shape goes in at integration time —
+    speculative half-support is worse than honest single-shape support.
+    """
     response = operation.get("response")
     if not isinstance(response, dict):
         return []
     videos = response.get("videos")
     if isinstance(videos, list):
         return videos
-    # Some published responses nest under `generateVideoResponse.generatedSamples`;
-    # fold that into the same shape so callers don't branch.
-    nested = response.get("generateVideoResponse")
-    if isinstance(nested, dict):
-        samples = nested.get("generatedSamples")
-        if isinstance(samples, list):
-            return [s.get("video") if isinstance(s, dict) else s for s in samples]
     return []
 
 

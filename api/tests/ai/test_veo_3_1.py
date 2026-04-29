@@ -375,6 +375,41 @@ async def test_poll_loop_exhausts_max_attempts_with_model_timeout(
     assert info.value.error.code == "MODEL_TIMEOUT"
 
 
+async def test_unknown_response_shape_raises_invalid_request(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1 round-2: an earlier draft tried to fold
+    `generateVideoResponse.generatedSamples` into the canonical `videos[]`
+    list, but the inner schema differed (`uri` vs `videoUri`) and made
+    downstream helpers inconsistent. Phase 1 only supports
+    `response.videos[]`; alternate shapes need an adapter at real-Veo
+    integration time. Lock in that an unsupported shape surfaces as
+    MODEL_INVALID_REQUEST (loud + actionable) rather than silently
+    succeeding or producing garbage.
+    """
+    poll_unknown_shape = lambda _r: httpx.Response(  # noqa: E731
+        200,
+        json={
+            "name": _OPERATION_NAME,
+            "done": True,
+            "response": {
+                "generateVideoResponse": {
+                    "generatedSamples": [{"video": {"uri": "https://veo.test/x.mp4"}}],
+                }
+            },
+        },
+    )
+    handler, _ = _make_seq_handler(poll_fns=[poll_unknown_shape])
+    client = _make_client(fake_redis, handler, max_retries=0, monkeypatch=monkeypatch)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_INVALID_REQUEST"
+
+
 async def test_blob_403_is_invalid_request_not_auth_failed(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
