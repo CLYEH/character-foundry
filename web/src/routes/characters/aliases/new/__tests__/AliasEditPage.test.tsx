@@ -405,6 +405,41 @@ describe('AliasEditPage', () => {
     expect(screen.getByTestId('alias-submit')).toBeEnabled()
   })
 
+  it('too_late_completed invalidates character detail before navigating', async () => {
+    // Codex P2 round 4: the cancel raced and lost — the alias *was*
+    // created server-side, so navigating back must invalidate to avoid
+    // serving the cached pre-alias snapshot from staleTime.
+    getCharacterMock.mockResolvedValue({ character: makeDetail() })
+    createAliasMock.mockResolvedValue({ task_id: 'task-late', alias_id: 'alias-late' })
+    cancelTaskMock.mockResolvedValue({
+      task: {} as unknown as CancelTaskResponse['task'],
+      cancel_outcome: 'too_late_completed',
+    })
+    renderPage()
+
+    await screen.findByTestId('alias-base-image')
+    fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: '太遲版' } })
+    fireEvent.change(screen.getByLabelText('Alias 補述內容'), { target: { value: '某些字' } })
+
+    fireEvent.click(screen.getByTestId('alias-submit'))
+    await waitFor(() => expect(createAliasMock).toHaveBeenCalledTimes(1))
+    // Initial mount was the only getCharacter call so far.
+    expect(getCharacterMock).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByTestId('alias-cancel'))
+    await waitFor(() => expect(cancelTaskMock).toHaveBeenCalledWith('task-late'))
+
+    // The cancel returned too_late_completed, which means the alias
+    // was actually created — page must invalidate before nav so the
+    // detail page lands on a fresh fetch.
+    await waitFor(() => expect(getCharacterMock).toHaveBeenCalledTimes(2))
+    await waitFor(() =>
+      expect(sonnerCalls.find((c) => c.kind === 'warning')?.message).toBe(
+        '來不及取消，Alias 已建立',
+      ),
+    )
+  })
+
   it('aborts before alias POST when user unmounts during mask upload', async () => {
     getCharacterMock.mockResolvedValue({ character: makeDetail() })
 

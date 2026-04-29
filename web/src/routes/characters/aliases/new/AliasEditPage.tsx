@@ -350,6 +350,14 @@ function AliasEditBody({
             // Keep activeTask — SSE will deliver the final status.
             break
           case 'too_late_completed':
+            // Symmetric with the SSE `completed` branch: the alias was
+            // actually created server-side (the cancel raced and lost),
+            // so the navigation back to /characters/:id must land on a
+            // fresh fetch. Without this, the cached pre-alias snapshot
+            // would serve stale-fresh for staleTime — Codex P2 round 4.
+            void queryClient.invalidateQueries({
+              queryKey: characterDetailQueryKey(characterId),
+            })
             toast.warning('來不及取消，Alias 已建立')
             setActiveTask(null)
             onCompleted()
@@ -361,7 +369,7 @@ function AliasEditBody({
         }
       },
     })
-  }, [cancelTaskMutation, onCompleted, setActiveTask])
+  }, [cancelTaskMutation, characterId, onCompleted, queryClient, setActiveTask])
 
   // ---- prompt preview --------------------------------------------------
   // T-040 ships the modal with a `create_alias` mode that mirrors the
