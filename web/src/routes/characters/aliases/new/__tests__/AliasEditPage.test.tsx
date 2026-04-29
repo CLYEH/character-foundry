@@ -266,6 +266,11 @@ describe('AliasEditPage', () => {
   })
 
   it('text-only happy path: submit → SSE complete → toast + nav back', async () => {
+    // Two getCharacter calls expected: initial mount + post-completion
+    // refetch (triggered by invalidation in the SSE `completed` branch).
+    // Codex P2 round 3: invalidation must fire on terminal completion,
+    // not on POST success — otherwise the cached pre-alias snapshot
+    // serves stale-fresh for staleTime.
     getCharacterMock.mockResolvedValue({ character: makeDetail() })
     createAliasMock.mockResolvedValue({
       task_id: 'task-1',
@@ -282,6 +287,9 @@ describe('AliasEditPage', () => {
     fireEvent.click(submit)
 
     await waitFor(() => expect(createAliasMock).toHaveBeenCalledTimes(1))
+    // POST resolved but SSE hasn't fired yet — getCharacter must NOT
+    // have been re-fetched (invalidation is deferred to completion).
+    expect(getCharacterMock).toHaveBeenCalledTimes(1)
     const body = createAliasMock.mock.calls[0][1]
     expect(body).toMatchObject({
       name: '紅旗袍',
@@ -300,6 +308,9 @@ describe('AliasEditPage', () => {
       expect(screen.getByTestId('character-detail-stub')).toBeInTheDocument()
     })
     expect(sonnerCalls.find((c) => c.kind === 'success')?.message).toBe('Alias 已建立')
+    // SSE completion invalidated the character detail — the second
+    // refetch must have fired so the navigation-back lands on fresh data.
+    await waitFor(() => expect(getCharacterMock).toHaveBeenCalledTimes(2))
   })
 
   it('inpaint path uploads the mask and includes mask_id in the alias body', async () => {
@@ -392,6 +403,45 @@ describe('AliasEditPage', () => {
       expect(sonnerCalls.find((c) => c.kind === 'success')?.message).toBe('已取消'),
     )
     expect(screen.getByTestId('alias-submit')).toBeEnabled()
+  })
+
+  it('aborts before alias POST when user unmounts during mask upload', async () => {
+    getCharacterMock.mockResolvedValue({ character: makeDetail() })
+
+    // Hold mask upload mid-flight so we can unmount during it. The page
+    // must NOT call createAlias once we resume — Codex P1 round 3 says
+    // creating the backend task and then cancelling burns quota; we
+    // should never create the task in the first place.
+    let resolveMask: (value: UploadMaskResponse) => void = () => {}
+    uploadMaskMock.mockImplementation(
+      () =>
+        new Promise<UploadMaskResponse>((resolve) => {
+          resolveMask = resolve
+        }),
+    )
+
+    const { unmount } = renderPage()
+
+    await screen.findByTestId('alias-base-image')
+    fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: '中斷版' } })
+    fireEvent.click(screen.getByTestId('section-inpaint-toggle'))
+    fireEvent.click(await screen.findByTestId('fake-paint-mask'))
+    fireEvent.click(screen.getByTestId('alias-submit'))
+    await waitFor(() => expect(uploadMaskMock).toHaveBeenCalledTimes(1))
+
+    // Unmount while mask upload is still pending.
+    unmount()
+
+    // Backend then completes the mask upload.
+    await act(async () => {
+      resolveMask({ mask_id: 'mask-stranded' })
+      await Promise.resolve()
+    })
+
+    // Page detected the unmount before issuing the alias POST — task is
+    // never created so no quota gets burned.
+    expect(createAliasMock).not.toHaveBeenCalled()
+    expect(cancelTaskMock).not.toHaveBeenCalled()
   })
 
   it('cancels the orphan task when user unmounts mid-POST (after task_id resolves)', async () => {

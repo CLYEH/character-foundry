@@ -1,23 +1,26 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 
 import {
   createAlias,
   type CreateAliasRequest,
   type CreateAliasResponse,
 } from '@/api/endpoints/aliases'
-import { characterDetailQueryKey } from '@/hooks/useCharacterDetail'
 
+/**
+ * Thin POST wrapper. We deliberately don't invalidate `characterDetail`
+ * on `onSuccess` — the POST returns immediately with `{ task_id, alias_id }`
+ * while the worker is still queued, so the alias entity exists in the DB
+ * but its image isn't generated yet. Invalidating now would refetch a
+ * pre-alias snapshot and serve it stale-fresh for `staleTime` (30s),
+ * causing the post-completion navigation to land on outdated detail data
+ * (Codex P2 round 3).
+ *
+ * The page-level `handleTerminal` invalidates on the SSE `completed`
+ * event instead, so the navigation back to `/characters/:id` lands on a
+ * fresh fetch with the new alias visible.
+ */
 export function useCreateAlias(characterId: string) {
-  const queryClient = useQueryClient()
   return useMutation<CreateAliasResponse, Error, CreateAliasRequest>({
     mutationFn: (body) => createAlias(characterId, body),
-    onSuccess: () => {
-      // The detail page is what the user lands on after the alias finishes,
-      // so invalidate that query specifically. We don't blow away the whole
-      // `['characters']` root because the dashboard list query under it
-      // doesn't carry alias rows — refetching it just for an alias create
-      // would be wasted work.
-      void queryClient.invalidateQueries({ queryKey: characterDetailQueryKey(characterId) })
-    },
   })
 }

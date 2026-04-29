@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router'
+import { useQueryClient } from '@tanstack/react-query'
 
 import { ApiError } from '@/api/client'
 import { uploadCharacterReference, type AliasInputMode } from '@/api/endpoints/aliases'
@@ -14,7 +15,7 @@ import { PromptPreviewModal } from '@/components/creation/PromptPreviewModal'
 import type { PromptPreviewAliasRequest } from '@/api/endpoints/prompt'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useCharacterDetail } from '@/hooks/useCharacterDetail'
+import { characterDetailQueryKey, useCharacterDetail } from '@/hooks/useCharacterDetail'
 import { useReferenceUpload } from '@/hooks/useReferenceUpload'
 import { useTaskStream } from '@/hooks/useTaskStream'
 import { AgentError } from '@/lib/agentError'
@@ -83,7 +84,14 @@ export default function AliasEditPage() {
   }
 
   return (
+    // `key={characterId}` forces a remount when the URL `:id` changes
+    // so all the local form state (alias name, freeform note, mask
+    // payload, section toggles, in-flight task) resets cleanly. Without
+    // it, navigating /characters/A/aliases/new → /characters/B/aliases/
+    // new would leak the previous character's input into the next
+    // submit (Codex P2 round 3).
     <AliasEditBody
+      key={characterId}
       characterId={characterId}
       characterName={character.name}
       baseImageUrl={character.base.image_url ?? ''}
@@ -148,6 +156,7 @@ function AliasEditBody({
   const uploadMaskMutation = useUploadMask(characterId)
   const createAliasMutation = useCreateAlias(characterId)
   const cancelTaskMutation = useCancelTask()
+  const queryClient = useQueryClient()
 
   // ---- submit eligibility ----------------------------------------------
   // We check input *value* presence rather than checkbox state — toggling
@@ -168,6 +177,14 @@ function AliasEditBody({
       if (!current || current.taskId !== taskId) return
       switch (event.status) {
         case 'completed':
+          // Invalidate the character detail query *now* (not at POST
+          // time) so the navigation back to /characters/:id lands on a
+          // fresh fetch with the new alias visible. Invalidating earlier
+          // would have refetched a pre-alias snapshot and served it
+          // stale-fresh for staleTime — Codex P2 round 3.
+          void queryClient.invalidateQueries({
+            queryKey: characterDetailQueryKey(characterId),
+          })
           toast.success('Alias 已建立')
           setActiveTask(null)
           onCompleted()
@@ -195,7 +212,7 @@ function AliasEditBody({
           break
       }
     },
-    [onCompleted, setActiveTask],
+    [characterId, onCompleted, queryClient, setActiveTask],
   )
 
   const { subscribe } = useTaskStream({ onTerminal: handleTerminal })
@@ -250,6 +267,18 @@ function AliasEditBody({
         submitInFlightRef.current = false
         return
       }
+    }
+
+    // Bail before sending the alias POST if the user already left while
+    // we were uploading the mask. Otherwise we'd mint a backend task
+    // (and burn gpt-image-2 quota) just to cancel it via the post-await
+    // unmount check on the next line — Codex P1 round 3 wants us to
+    // never create the task at all in this case. The orphan mask blob
+    // is left behind; backend GCs uploaded masks not referenced by an
+    // alias.
+    if (isUnmountedRef.current) {
+      submitInFlightRef.current = false
+      return
     }
 
     const inputMode = computeInputMode()
