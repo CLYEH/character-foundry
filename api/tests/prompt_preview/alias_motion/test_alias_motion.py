@@ -321,6 +321,33 @@ def test_motion_parent_type_mismatch_against_alias(
     assert resp.json()["error"]["code"] == "VALIDATION_MOTION_PARENT_MISMATCH"
 
 
+def test_base_remix_rejects_other_users_checkpoint(
+    client: TestClient,
+    seeded_character: dict[str, Any],
+    second_access_token: str,
+) -> None:
+    """Codex P2 (PR #42, commit 0b04ff4): preview must enforce the same
+    same-session ownership the worker's `_resolve_base_checkpoint`
+    enforces. Otherwise an authenticated caller could 200 on any
+    checkpoint id (cross-user existence oracle) while the generate path
+    would later 404 on the same id.
+
+    Bob (different user) sending alice's checkpoint id under
+    `mode='create_base'` must collapse to NOT_FOUND_CHECKPOINT — same
+    envelope a typo'd id would produce."""
+    resp = client.post(
+        "/v1/prompt/preview",
+        headers=auth_headers(second_access_token),
+        json={
+            "mode": "create_base",
+            "freeform_note": "remix something",
+            "base_checkpoint_id": str(seeded_character["checkpoint_id"]),
+        },
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND_CHECKPOINT"
+
+
 def test_motion_parent_mismatch_collapses_for_non_owner(
     client: TestClient,
     seeded_character: dict[str, Any],

@@ -38,6 +38,7 @@ from app.repositories import (
     base_repo,
     character_repo,
     checkpoint_repo,
+    creation_session_repo,
     mask_repo,
 )
 from app.schemas.prompt import (
@@ -67,6 +68,7 @@ async def preview_create_base(
     *,
     body: CreateBasePreviewRequest,
     db: AsyncSession,
+    user: User,
     reconciler: PromptReconciler,
 ) -> PromptPreviewResponse:
     """Sprint-2 surface (T-019), extended with `base_checkpoint_id` for
@@ -85,17 +87,20 @@ async def preview_create_base(
         raise validation_empty_input()
 
     if body.base_checkpoint_id is not None:
-        # Validate the checkpoint exists so a typo'd remix doesn't render
-        # a confidently-wrong "with reference image" preview.
-        # Trade-off: we don't ownership-check here. Preview is read-only,
-        # the worker hard-validates at generate time, and pulling
-        # session → character → team to check is two extra queries that
-        # mainly exist to hide checkpoint-id existence across teams. The
-        # leak this leaves is "did checkpoint X exist on the platform" —
-        # bounded, since checkpoints are not user-shared identifiers.
-        # Revisit if Phase 1 grows multi-team boundaries.
+        # Validate the checkpoint exists AND belongs to a session the
+        # caller initiated. Mirrors `_resolve_base_checkpoint` in
+        # `checkpoint_service` which the worker uses at generate time —
+        # otherwise preview would 200 on cross-user checkpoint ids that
+        # the worker would later reject, and an authenticated caller
+        # could confirm checkpoint existence platform-wide via
+        # 200-vs-404 oracle. Cross-session collapses to
+        # NOT_FOUND_CHECKPOINT, same opacity as a typo'd id (Codex P2
+        # on commit 0b04ff4).
         checkpoint = await checkpoint_repo.get(db, body.base_checkpoint_id)
         if checkpoint is None:
+            raise not_found_checkpoint()
+        session = await creation_session_repo.get(db, checkpoint.creation_session_id)
+        if session is None or session.initiator_id != user.id:
             raise not_found_checkpoint()
 
     mode = ReconcileMode.CREATE_BASE_WITH_REF if has_reference else ReconcileMode.CREATE_BASE

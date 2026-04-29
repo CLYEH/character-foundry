@@ -61,6 +61,7 @@ async def preview_prompt(
         return await prompt_service.preview_create_base(
             body=body,
             db=db,
+            user=user,
             reconciler=reconciler,
         )
     if isinstance(body, CreateAliasPreviewRequest):

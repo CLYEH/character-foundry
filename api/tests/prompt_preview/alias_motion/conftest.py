@@ -375,6 +375,7 @@ def seeded_character(
         "base_id": base_id,
         "base_image_key": base_image_key,
         "creation_session_id": session_id,
+        "checkpoint_id": checkpoint_id,
     }
 
 
