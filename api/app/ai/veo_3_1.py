@@ -315,53 +315,42 @@ class Veo31Client:
         return await self._download_video_uri(video_uri)
 
     async def _download_video_uri(self, url: str) -> bytes:
+        """Fetch the bytes from a `videoUri` returned by a completed operation.
+
+        Per the documented Gemini Veo flow the videoUri is fetched WITH the
+        provider API key (the URI is a Gemini API endpoint, not an arbitrary
+        signed CDN URL) and may redirect to the actual media location. We
+        keep the auth header and follow redirects.
+
+        Codex P1 round-3 superseded the round-1 strip-the-key prescription,
+        which was based on the inverted assumption that videoUri pointed at
+        a signed CDN. With the key restored, 401/403 from this endpoint
+        correctly maps through the standard provider-error mapper to
+        `INTERNAL_AUTH_FAILED` (matching the submit/poll path's mapping).
+
+        Cross-host redirect hardening (stripping the API key when redirected
+        to a different host) is deferred to real-Veo integration time, when
+        we can observe the actual redirect chain. Phase 1 stub mode never
+        exercises this path, and the breaker still catches degraded
+        behaviour if a real-mode deployment hits 5xx on the blob host.
+        """
         client = await self._http()
-        # The signed `videoUri` typically points at a different host (Google
-        # Cloud Storage / a signed CDN URL) and embeds its own credentials in
-        # query parameters. Sending our `x-goog-api-key` along would leak the
-        # provider key to a foreign host. Build the request manually so we
-        # can drop the auth header before send.
         try:
-            request = client.build_request("GET", url)
-            request.headers.pop("x-goog-api-key", None)
-            response = await client.send(request)
+            response = await client.get(url, follow_redirects=True)
         except httpx.HTTPError as exc:
             raise map_exception_to_agent_error(self.model, exc) from exc
         if not response.is_success:
-            raise self._map_blob_response_error(response)
+            raise map_response_to_agent_error(self.model, response)
         return response.content
-
-    def _map_blob_response_error(self, response: httpx.Response) -> AgentErrorException:
-        """Map a non-2xx response from the signed `videoUri` host.
-
-        Distinct from `map_response_to_agent_error` because that mapper treats
-        401/403 as `INTERNAL_AUTH_FAILED` (provider API-key issue) — but the
-        blob fetch deliberately strips the API key, so 401/403 here means an
-        expired or invalid signed URL, not bad credentials. Misclassifying
-        would trigger an operator chase for an API-key problem that doesn't
-        exist (Codex P1 round-1 on PR #39).
-
-        - 5xx → MODEL_UNAVAILABLE (retryable; signals upstream blob host is
-          sick and feeds the breaker so /v1/meta surfaces degradation).
-        - 4xx → MODEL_INVALID_REQUEST (the URL Veo handed us is bad / expired;
-          retry without a fresh submission won't fix it, so non-retryable).
-        """
-        status = response.status_code
-        if 500 <= status < 600:
-            return model_unavailable(self.model, cause=f"blob fetch failed with HTTP {status}")
-        return model_invalid_request(
-            self.model,
-            detail=f"signed videoUri returned HTTP {status} (URL likely expired or revoked)",
-        )
 
     # -- HTTP plumbing -------------------------------------------------------
 
     async def _http(self) -> httpx.AsyncClient:
         if self._http_client is None:
-            # Veo / Vertex auth is `x-goog-api-key`. Submission + polling
-            # endpoints both go through this client; `_download_video_uri`
-            # explicitly strips the header per-request because the signed
-            # `videoUri` lives on a different host.
+            # Veo / Vertex auth is `x-goog-api-key`. All endpoints
+            # (submit, poll, videoUri download) go through this client and
+            # carry the header. See `_download_video_uri` for the Phase 1
+            # rationale on cross-host redirect handling.
             self._http_client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout_seconds),
                 headers={"x-goog-api-key": self.api_key or ""},

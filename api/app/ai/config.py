@@ -124,7 +124,15 @@ def veo_api_url() -> str:
 
 
 def veo_model() -> str:
-    return os.environ.get("VEO_MODEL", "veo-3.1")
+    """Concrete Gemini Veo model SKU. The bare display name `veo-3.1` is the
+    breaker / `/v1/meta` service identifier (decoupled in `VEO_SERVICE_NAME`),
+    NOT a valid Gemini model code — submitting to `/models/veo-3.1:predictLong-
+    Running` will 404. The default points at the published preview SKU so a
+    misconfigured deployment with `AI_STUB_MODE=false` doesn't fail every
+    request; production should still pin `VEO_MODEL` explicitly to track
+    SKU rotations (Codex P2 round-3).
+    """
+    return os.environ.get("VEO_MODEL", "veo-3.1-generate-preview")
 
 
 def veo_timeout_seconds() -> float:

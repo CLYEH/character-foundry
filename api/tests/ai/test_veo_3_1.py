@@ -223,9 +223,44 @@ async def test_real_client_supports_videoUri_download(
 
     assert result.video_bytes == _FAKE_MP4
     assert result.duration_ms == 4000
-    # Security: the api-key header must NOT travel to the foreign blob host.
-    # The signed videoUri carries its own credentials.
-    assert "x-goog-api-key" not in download_request_headers
+    # Codex P1 round-3: the videoUri GET must carry the provider API key
+    # because the documented Gemini Veo flow uses Gemini API auth on it
+    # (the URI is not an arbitrary signed CDN URL).
+    assert download_request_headers.get("x-goog-api-key") == "test-key"
+
+
+async def test_videoUri_download_follows_redirect(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1 round-3: Veo's videoUri may 302-redirect to the actual media
+    location. The client must follow the redirect rather than surface a 302
+    as MODEL_INVALID_REQUEST."""
+    initial_url = "https://veo.test/v1beta/operations/abc/media"
+    final_url = "https://veo.test/blobs/abc.mp4"
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if str(request.url) == initial_url:
+            return httpx.Response(302, headers={"Location": final_url})
+        if str(request.url) == final_url:
+            return httpx.Response(200, content=_FAKE_MP4)
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {"videos": [{"videoUri": initial_url}]},
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(image_bytes=b"img", prompt="x", duration_seconds=2)
+    finally:
+        await client.aclose()
+
+    assert result.video_bytes == _FAKE_MP4
 
 
 # ---------------------------------------------------------------------------
@@ -410,50 +445,13 @@ async def test_unknown_response_shape_raises_invalid_request(
     assert info.value.error.code == "MODEL_INVALID_REQUEST"
 
 
-async def test_blob_403_is_invalid_request_not_auth_failed(
+async def test_videoUri_5xx_is_model_unavailable_and_feeds_breaker(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Codex P1 round-1: a signed-URL 403 must NOT be mapped to
-    `INTERNAL_AUTH_FAILED`. The blob host's credentials are in the URL
-    itself; 403 there means an expired or invalid signed URL, not a bad
-    provider API key. Map to `MODEL_INVALID_REQUEST` so operators get the
-    right diagnosis (and so the breaker isn't confused).
-    """
-    download_url = "https://veo.test/blobs/expired.mp4"
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST":
-            return _submit_response(request)
-        if str(request.url) == download_url:
-            return httpx.Response(403, content=b"signature expired")
-        return httpx.Response(
-            200,
-            json={
-                "name": _OPERATION_NAME,
-                "done": True,
-                "response": {"videos": [{"videoUri": download_url}]},
-            },
-        )
-
-    client = _make_client(fake_redis, _handler, max_retries=0, monkeypatch=monkeypatch)
-    try:
-        with pytest.raises(AgentErrorException) as info:
-            await client.generate_i2v(image_bytes=b"i", prompt="x")
-    finally:
-        await client.aclose()
-
-    assert info.value.error.code == "MODEL_INVALID_REQUEST"
-    assert info.value.error.code != "INTERNAL_AUTH_FAILED"
-    # Non-retryable bad URL must not push the breaker toward OPEN.
-    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 0
-
-
-async def test_blob_5xx_is_model_unavailable_and_feeds_breaker(
-    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Counterpart to the 4xx test: a 5xx from the blob host signals
-    upstream sickness and SHOULD feed the breaker so /v1/meta can surface
-    degradation. Maps to MODEL_UNAVAILABLE (retryable signal)."""
+    """A 5xx from the videoUri endpoint signals upstream sickness and
+    SHOULD feed the breaker so /v1/meta can surface degradation. The
+    standard provider-error mapper (shared with submit / poll) maps 5xx to
+    MODEL_UNAVAILABLE (retryable signal)."""
     download_url = "https://veo.test/blobs/transient.mp4"
 
     def _handler(request: httpx.Request) -> httpx.Response:
