@@ -20,10 +20,7 @@ from app.core.errors import (
     not_found_character,
     not_found_checkpoint,
 )
-from app.core.permissions import (
-    assert_can_modify_character,
-    assert_can_read_character,
-)
+from app.core.permissions import assert_can_modify_character
 from app.models.user import User
 from app.prompt.constraints import ReconcileMode, get_constraints_for_mode
 from app.prompt.errors import (
@@ -282,17 +279,21 @@ async def _resolve_motion_parent(
     `parent_type='base'` is a `VALIDATION_MOTION_PARENT_MISMATCH`, not a
     silent 404 — the row exists, just under the wrong kind.
 
-    Mismatch is only surfaced when the sibling (wrong-kind) row belongs
-    to the caller's team. Cross-team sibling rows collapse to 404 so a
-    motion preview can't be used to enumerate other teams' base/alias
-    ids.
+    Mismatch is only surfaced when the caller has WRITE access on the
+    sibling's character (i.e. is the owner). Same-team-non-owner and
+    cross-team callers collapse to 404 — anything else leaks
+    parent-kind/existence information for resources the caller can't
+    modify, which Codex flagged on PR #42 (commit 4e26141, P2): the
+    legitimate "right parent_type but not owner" path returns 403 via
+    `assert_can_modify_character`, so the wrong-parent_type path must
+    not return a more informative 400 to the same caller.
     """
     if parent_type == "base":
         base = await base_repo.get(db, parent_id)
         if base is not None:
             return base.image_key, base.character_id
         sibling_alias = await alias_repo.get_active(db, parent_id)
-        if sibling_alias is not None and await _belongs_to_caller_team(
+        if sibling_alias is not None and await _caller_can_modify_character(
             sibling_alias.character_id, user=user, db=db
         ):
             raise validation_motion_parent_mismatch()
@@ -303,7 +304,7 @@ async def _resolve_motion_parent(
         if alias is not None:
             return alias.image_key, alias.character_id
         sibling_base = await base_repo.get(db, parent_id)
-        if sibling_base is not None and await _belongs_to_caller_team(
+        if sibling_base is not None and await _caller_can_modify_character(
             sibling_base.character_id, user=user, db=db
         ):
             raise validation_motion_parent_mismatch()
@@ -312,21 +313,28 @@ async def _resolve_motion_parent(
     assert_never(parent_type)
 
 
-async def _belongs_to_caller_team(
+async def _caller_can_modify_character(
     character_id: uuid.UUID,
     *,
     user: User,
     db: AsyncSession,
 ) -> bool:
     """Return True iff `character_id` resolves to a non-deleted character
-    in the caller's team. Used by `_resolve_motion_parent` to gate the
-    parent-mismatch envelope so it only fires for legitimate callers."""
+    the caller can modify (same team + owner).
+
+    Used by `_resolve_motion_parent` to gate the parent-mismatch
+    envelope so it only fires for callers who have write access on the
+    sibling row. Cross-team and same-team-non-owner callers get the
+    same 404 they'd get for a missing parent — keeps the error surface
+    consistent with the legitimate parent-resolution path that goes
+    through `assert_can_modify_character` in `preview_create_motion`.
+    """
     character = await character_repo.get_active(db, character_id)
     if character is None:
         return False
     try:
-        assert_can_read_character(character, user)
-    except Exception:  # noqa: BLE001 — collapsing 404 envelope to bool
+        assert_can_modify_character(character, user)
+    except Exception:  # noqa: BLE001 — collapsing the AgentError envelope to bool
         return False
     return True
 

@@ -301,7 +301,12 @@ def test_motion_parent_type_mismatch_against_alias(
 ) -> None:
     """`parent_type='base'` with an alias id surfaces as a structured
     mismatch — the row exists but is the wrong kind. Distinct from
-    NOT_FOUND_* so the frontend can render a "type mismatch" hint."""
+    NOT_FOUND_* so the frontend can render a "type mismatch" hint.
+
+    Note: only fires for owners — same-team-non-owners get 404
+    instead so the error surface is consistent with the legitimate
+    parent path's 403 (see test_motion_parent_mismatch_collapses_for_non_owner).
+    """
     resp = client.post(
         "/v1/prompt/preview",
         headers=auth_headers(access_token),
@@ -314,6 +319,34 @@ def test_motion_parent_type_mismatch_against_alias(
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_MOTION_PARENT_MISMATCH"
+
+
+def test_motion_parent_mismatch_collapses_for_non_owner(
+    client: TestClient,
+    seeded_character: dict[str, Any],
+    seeded_alias: dict[str, Any],
+    second_access_token: str,
+) -> None:
+    """Codex P2 (PR #42, commit 4e26141): a same-team non-owner sending
+    `parent_type='base'` with an alias id from owner's character must
+    NOT see VALIDATION_MOTION_PARENT_MISMATCH (400) — the legitimate
+    `parent_type='alias'` path returns 403 for the same caller, so the
+    mismatch envelope leaks more info than the legitimate path does.
+
+    Bob is in alice's team but doesn't own seeded_character. Sending the
+    alias id under parent_type='base' must collapse to NOT_FOUND_*."""
+    resp = client.post(
+        "/v1/prompt/preview",
+        headers=auth_headers(second_access_token),
+        json={
+            "mode": "create_motion",
+            "parent_type": "base",
+            "parent_id": str(seeded_alias["id"]),
+            "motion_type": "preset_idle",
+        },
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] != "VALIDATION_MOTION_PARENT_MISMATCH"
 
 
 def test_motion_alias_parent_happy(
