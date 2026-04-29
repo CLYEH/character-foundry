@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -115,24 +115,6 @@ def fake_redis(fake_redis_server: fakeredis.FakeServer) -> fakeredis.aioredis.Fa
 @pytest.fixture
 def fake_reconciler_client() -> FakeReconcilerClient:
     return FakeReconcilerClient(_default_responder)
-
-
-# ---------------------------------------------------------------------------
-# DB session bound to TEST_DATABASE_URL (bypasses lru_cached factory).
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def db_session_real(database_url: str) -> AsyncIterator[Any]:
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-    engine = create_async_engine(database_url, future=True)
-    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-    try:
-        async with factory() as session:
-            yield session
-    finally:
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------

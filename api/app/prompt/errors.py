@@ -171,6 +171,31 @@ def validation_motion_parent_mismatch() -> AgentErrorException:
     )
 
 
+def conflict_base_not_set() -> AgentErrorException:
+    """Alias / motion preview was called for a character without a Base.
+
+    Distinct from `NOT_FOUND_CHARACTER` so the frontend can render
+    "請先確立基礎形象" rather than the generic "character not found"
+    copy. T-031's alias-create route will raise the same code at write
+    time; T-035 surfaces it on the read path so the modal can guide
+    users back to Select Base.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="CONFLICT_BASE_NOT_SET",
+            message="請先確立角色的基礎形象",
+            problem="The character does not yet have a Base — alias / motion "
+            "previews are unreachable until Select Base completes.",
+            cause="The creation session for this character is still in_progress "
+            "or was abandoned without selecting a Base.",
+            fix="Open the character's creation session and pick a Base "
+            "checkpoint, then retry the alias / motion preview.",
+            retryable=False,
+        ),
+        status_code=409,
+    )
+
+
 def validation_motion_custom_requires_description() -> AgentErrorException:
     """`motion_type='custom'` was supplied without a description.
 

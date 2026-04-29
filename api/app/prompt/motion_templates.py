@@ -16,13 +16,26 @@ and let the platform constraints (motion_creation block) hold the
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, Literal
 
-PRESET_MOTION_PROMPTS: Final[dict[str, str]] = {
+# Preset-only narrowing of `MotionType`. Keeping the literal here (not
+# in `app/schemas/prompt.py`) means the dict's key type and the
+# narrowing the dispatcher needs travel together — a typo-introduced
+# new preset would surface as a Literal mismatch at the dispatch site,
+# not a silent KeyError when the lookup runs.
+PresetMotionType = Literal[
+    "preset_wave",
+    "preset_nod",
+    "preset_gesture",
+    "preset_happy",
+    "preset_idle",
+]
+
+PRESET_MOTION_PROMPTS: Final[dict[PresetMotionType, str]] = {
     "preset_wave": (
         "the character raises their hand and waves hello to the camera, warm and welcoming"
     ),
-    "preset_nod": ("the character nods their head once in acknowledgement, calm and attentive"),
+    "preset_nod": "the character nods their head once in acknowledgement, calm and attentive",
     "preset_gesture": (
         "the character makes a clear pointing gesture forward to highlight something off-camera"
     ),

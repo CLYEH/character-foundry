@@ -120,38 +120,42 @@ def test_alias_rejects_mask_owned_by_other_character(
 ) -> None:
     """Cross-character mask access collapses to NOT_FOUND_MASK rather
     than a distinct code — otherwise an attacker could probe for the
-    existence of other characters' masks via id enumeration."""
+    existence of other characters' masks via id enumeration.
+
+    Seeds a second character with its own Base so the alias path
+    actually reaches the mask cross-character check (an other-character
+    without a Base would 409 on `CONFLICT_BASE_NOT_SET` before mask
+    validation runs)."""
     import asyncio
 
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
+    from tests.prompt_preview.alias_motion.conftest import (
+        _insert_base,
+        _insert_character,
+        _insert_creation_session_and_checkpoint,
+    )
 
-    async def _make_other_character() -> uuid.UUID:
-        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
-        try:
-            async with engine.connect() as conn:
-                row = (
-                    await conn.execute(
-                        text(
-                            "INSERT INTO characters "
-                            "(team_id, owner_id, name, slug) "
-                            "VALUES (:t, :o, :n, :s) RETURNING id"
-                        ),
-                        {
-                            "t": seeded_user["team_id"],
-                            "o": seeded_user["id"],
-                            "n": "other-char",
-                            "s": "other-char",
-                        },
-                    )
-                ).scalar_one()
-                return uuid.UUID(str(row))
-        finally:
-            await engine.dispose()
+    async def _seed_other_character_with_base() -> uuid.UUID:
+        char_id = await _insert_character(
+            database_url,
+            owner_id=seeded_user["id"],
+            team_id=seeded_user["team_id"],
+            name="other-char",
+            slug="other-char",
+        )
+        session_id, checkpoint_id = await _insert_creation_session_and_checkpoint(
+            database_url,
+            character_id=char_id,
+            initiator_id=seeded_user["id"],
+        )
+        await _insert_base(
+            database_url,
+            character_id=char_id,
+            from_checkpoint_id=checkpoint_id,
+            image_key=f"checkpoints/{session_id}/output/seq-1.png",
+        )
+        return char_id
 
-    other_character_id = asyncio.run(_make_other_character())
-    # `seeded_mask` belongs to seeded_character (different from
-    # other_character_id). Sending it under other_character_id must 404.
+    other_character_id = asyncio.run(_seed_other_character_with_base())
     resp = client.post(
         "/v1/prompt/preview",
         headers=auth_headers(access_token),
@@ -163,18 +167,8 @@ def test_alias_rejects_mask_owned_by_other_character(
             "mask": {"mask_id": str(seeded_mask)},
         },
     )
-    # `other_character_id` doesn't have a Base set up (the seed helper
-    # only ran for seeded_character), so the alias path 404s on the
-    # missing Base before reaching the mask check. That's still the
-    # correct envelope — NOT_FOUND_CHARACTER hides the missing-base
-    # state from callers, mirroring how alias creation will behave.
-    # If/when this test is extended with a Base for the second
-    # character, the assertion should switch to NOT_FOUND_MASK.
     assert resp.status_code == 404
-    assert resp.json()["error"]["code"] in {
-        "NOT_FOUND_MASK",
-        "NOT_FOUND_CHARACTER",
-    }
+    assert resp.json()["error"]["code"] == "NOT_FOUND_MASK"
 
 
 def test_alias_non_owner_returns_403(

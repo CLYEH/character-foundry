@@ -302,14 +302,16 @@ def test_openapi_surfaces_prompt_preview() -> None:
     assert op["tags"] == ["prompt"]
 
     # T-035 makes the request body a discriminated union by `mode`. The
-    # body schema surfaces as `oneOf` (OpenAPI 3.1 with discriminator)
-    # or `anyOf` (FastAPI's default emission for Annotated[Union, ...])
-    # — accept either. What matters is that all three per-mode request
-    # models surface so generated client types can narrow on `mode`.
+    # body schema surfaces as `oneOf` with a proper `discriminator`
+    # mapping so generated TS clients can narrow on `mode` without
+    # manual type-guard boilerplate.
     body_schema = op["requestBody"]["content"]["application/json"]["schema"]
-    union_entries = body_schema.get("oneOf") or body_schema.get("anyOf")
-    assert union_entries, f"expected union body, got {body_schema!r}"
-    one_of_refs = [entry["$ref"].rsplit("/", 1)[-1] for entry in union_entries]
+    assert "oneOf" in body_schema, f"expected oneOf body, got {body_schema!r}"
+    assert body_schema.get("discriminator", {}).get("propertyName") == "mode"
+    discriminator_mapping = body_schema["discriminator"]["mapping"]
+    assert set(discriminator_mapping.keys()) == {"create_base", "create_alias", "create_motion"}
+
+    one_of_refs = [entry["$ref"].rsplit("/", 1)[-1] for entry in body_schema["oneOf"]]
     schemas = schema["components"]["schemas"]
     referenced_models = {schemas[name].get("title") or name for name in one_of_refs}
     # All three mode-specific request models surface; agent callers get

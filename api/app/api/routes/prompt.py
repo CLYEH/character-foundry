@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session, get_current_user, get_prompt_reconciler_dep, get_storage
@@ -51,7 +51,7 @@ router = APIRouter(prefix="/v1/prompt", tags=["prompt"])
     response_model_exclude_none=True,
 )
 async def preview_prompt(
-    body: Annotated[PromptPreviewRequest, Body(...)],
+    body: PromptPreviewRequest,
     db: Annotated[AsyncSession, Depends(db_session)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
     reconciler: Annotated[PromptReconciler, Depends(get_prompt_reconciler_dep)],
