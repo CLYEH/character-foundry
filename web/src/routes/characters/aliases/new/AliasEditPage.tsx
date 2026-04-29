@@ -9,7 +9,12 @@ import { cancelTask, type TaskEvent } from '@/api/endpoints/tasks'
 import { useCancelTask } from '@/api/mutations/useCancelTask'
 import { useCreateAlias } from '@/api/mutations/useCreateAlias'
 import { useUploadMask } from '@/api/mutations/useUploadMask'
-import { AliasInputPanel, InpaintCanvas, type MaskPayload } from '@/components/aliases'
+import {
+  AliasInputPanel,
+  InpaintCanvas,
+  type InpaintCanvasHandle,
+  type MaskPayload,
+} from '@/components/aliases'
 import { GenericErrorPage, NotFoundPage } from '@/components/composite/ErrorPage'
 import { PromptPreviewModal } from '@/components/creation/PromptPreviewModal'
 import type { PromptPreviewAliasRequest } from '@/api/endpoints/prompt'
@@ -133,6 +138,18 @@ function AliasEditBody({
     activeTaskRef.current = task
     setActiveTaskState(task)
   }, [])
+  // Imperative handle on the canvas so submit can flush any in-flight
+  // `canvas.toBlob` before reading the mask. Without this, a fast user
+  // can finish a stroke and click submit in the microsecond window
+  // before `onMaskChange` has fired, building the request without the
+  // just-drawn mask (Codex P1 round 5).
+  const inpaintCanvasRef = useRef<InpaintCanvasHandle | null>(null)
+  // Synchronous mirror of `maskPayload` so `handleSubmit` reads the
+  // fresh value AFTER `flushPendingExport` settles. The state-only
+  // version captures `maskPayload` in the callback's closure at render
+  // time, so even after the flush updates state, the closure sees the
+  // pre-stroke value.
+  const maskPayloadRef = useRef<MaskPayload | null>(null)
   // Synchronous in-flight guard for the submit click. `useMutation.isPending`
   // flips on the *next* render after `mutate(...)`, so a fast double-click
   // can pass the disabled-button check twice and fire two POSTs (mask
@@ -250,20 +267,34 @@ function AliasEditBody({
 
   // ---- submit ----------------------------------------------------------
   const handleSubmit = useCallback(async () => {
-    if (!hasAnyInput) return
     if (submitInFlightRef.current) return
     const trimmedName = aliasName.trim()
     if (!trimmedName) return
+
+    // Flush any pending mask export before reading the mask — a stroke
+    // ended just before submit might still have its `toBlob` in flight,
+    // so the closure-captured `maskPayload` could be stale (Codex P1
+    // round 5). After the flush, `maskPayloadRef.current` reflects the
+    // very latest mask state. We read from the ref (not the closure)
+    // because state hasn't re-rendered yet inside this callback's
+    // execution.
+    await inpaintCanvasRef.current?.flushPendingExport()
+    const liveMask = maskPayloadRef.current
+    const liveHasMask = liveMask !== null
+    const liveHasAnyInput = hasText || hasReference || liveHasMask
+    if (!liveHasAnyInput) return
     submitInFlightRef.current = true
 
     let maskHandle: { mask_id: string } | null = null
-    if (maskPayload) {
+    if (liveMask) {
       try {
-        const { mask_id } = await uploadMaskMutation.mutateAsync(maskPayload.blob)
+        const { mask_id } = await uploadMaskMutation.mutateAsync(liveMask.blob)
         maskHandle = { mask_id }
-      } catch (err) {
-        const agent = AgentError.from(err)
-        toast.agentError(agent)
+      } catch {
+        // The global mutationCache.onError (queryClient.ts) already
+        // routes mask-upload errors to the right UI layer per
+        // mapAgentErrorToUI; double-toasting here would re-fire on
+        // storage/network failures (Codex P2 round 5).
         submitInFlightRef.current = false
         return
       }
@@ -281,7 +312,12 @@ function AliasEditBody({
       return
     }
 
-    const inputMode = computeInputMode()
+    // Re-compute input_mode using the *live* mask state, not the
+    // closure-captured `hasMask` from render time — the flush above may
+    // have just resolved a fresh mask that the closure doesn't see.
+    const flagCount = [hasText, hasReference, liveHasMask].filter(Boolean).length
+    const inputMode: AliasInputMode =
+      flagCount > 1 ? 'mixed' : liveHasMask ? 'inpaint' : hasReference ? 'image' : 'text'
     const referenceIds = referenceUpload.referenceImageIds
 
     let response: Awaited<ReturnType<typeof createAliasMutation.mutateAsync>>
@@ -314,11 +350,9 @@ function AliasEditBody({
     subscribe(response.task_id)
   }, [
     aliasName,
-    computeInputMode,
     createAliasMutation,
-    hasAnyInput,
+    hasReference,
     hasText,
-    maskPayload,
     referenceUpload.referenceImageIds,
     setActiveTask,
     subscribe,
@@ -405,6 +439,9 @@ function AliasEditBody({
 
   // ---- inpaint canvas mask change --------------------------------------
   const handleMaskChange = useCallback((payload: MaskPayload | null) => {
+    // Keep the ref in lockstep with state so post-flush submit reads
+    // the fresh value (state updates are async; the ref is sync).
+    maskPayloadRef.current = payload
     setMaskPayload(payload)
   }, [])
 
@@ -412,7 +449,10 @@ function AliasEditBody({
   // resolution doesn't keep treating the alias as inpaint mode.
   const handleToggleInpaint = useCallback((enabled: boolean) => {
     setInpaintEnabled(enabled)
-    if (!enabled) setMaskPayload(null)
+    if (!enabled) {
+      maskPayloadRef.current = null
+      setMaskPayload(null)
+    }
   }, [])
 
   const handleToggleText = useCallback((enabled: boolean) => {
@@ -445,7 +485,12 @@ function AliasEditBody({
             Base
           </div>
           {inpaintEnabled ? (
-            <InpaintCanvas baseImageUrl={baseImageUrl} enabled onMaskChange={handleMaskChange} />
+            <InpaintCanvas
+              ref={inpaintCanvasRef}
+              baseImageUrl={baseImageUrl}
+              enabled
+              onMaskChange={handleMaskChange}
+            />
           ) : (
             <img
               src={baseImageUrl}

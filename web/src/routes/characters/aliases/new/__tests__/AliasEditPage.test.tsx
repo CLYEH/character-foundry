@@ -57,16 +57,44 @@ vi.mock('@/api/endpoints/prompt', async () => {
 // react-konva can't render in jsdom (no real canvas), and the page-level
 // flow only needs the mask payload to be observable. The fake `<button>`
 // lets tests synthesise a mask without driving the canvas, mirroring the
-// real `onMaskChange` callback signature exactly.
+// real `onMaskChange` callback signature exactly. The mock also exposes
+// `flushPendingExport` via `forwardRef` so the page's submit gate works
+// the same way it does in production.
+//
+// `pendingMaskChangeRef` simulates the production race: a stroke ends
+// (queueing an async toBlob) before the user clicks submit. Tests that
+// call `fake-paint-deferred-mask` enqueue the `onMaskChange` payload
+// without firing it; the page's submit gate must `flushPendingExport()`
+// to drain the queue before reading the mask state. Without the gate,
+// the submit body would carry `mask: null` (Codex P1 round 5).
+const pendingMaskChangeRef: { current: (() => void) | null } = { current: null }
+
 vi.mock('@/components/aliases/InpaintCanvas', async () => {
   const React = await import('react')
-  const InpaintCanvas = ({
-    onMaskChange,
-    enabled,
-  }: {
-    onMaskChange: (mask: { blob: Blob; coveragePercent: number } | null) => void
-    enabled: boolean
-  }) => {
+  const InpaintCanvas = React.forwardRef<
+    { flushPendingExport: () => Promise<void> },
+    {
+      onMaskChange: (mask: { blob: Blob; coveragePercent: number } | null) => void
+      enabled: boolean
+    }
+  >(function MockInpaintCanvas({ onMaskChange, enabled }, ref) {
+    React.useImperativeHandle(
+      ref,
+      () => ({
+        flushPendingExport: async () => {
+          // Drain any deferred onMaskChange enqueued by the deferred-paint
+          // button — production calls `flushPendingExport` precisely so
+          // pending toBlob callbacks settle before the submit gate reads
+          // the mask state.
+          const fire = pendingMaskChangeRef.current
+          if (fire) {
+            pendingMaskChangeRef.current = null
+            fire()
+          }
+        },
+      }),
+      [],
+    )
     return React.createElement(
       'div',
       { 'data-testid': 'inpaint-canvas-fake' },
@@ -88,6 +116,24 @@ vi.mock('@/components/aliases/InpaintCanvas', async () => {
         'button',
         {
           type: 'button',
+          'data-testid': 'fake-paint-deferred-mask',
+          disabled: !enabled,
+          onClick: () => {
+            // Enqueue but don't fire — the page must call
+            // flushPendingExport to drain.
+            pendingMaskChangeRef.current = () =>
+              onMaskChange({
+                blob: new Blob(['deferred-mask-bytes'], { type: 'image/png' }),
+                coveragePercent: 33,
+              })
+          },
+        },
+        'paint-deferred',
+      ),
+      React.createElement(
+        'button',
+        {
+          type: 'button',
           'data-testid': 'fake-clear-mask',
           disabled: !enabled,
           onClick: () => onMaskChange(null),
@@ -95,7 +141,7 @@ vi.mock('@/components/aliases/InpaintCanvas', async () => {
         'clear',
       ),
     )
-  }
+  })
   return { InpaintCanvas }
 })
 
@@ -222,6 +268,7 @@ beforeEach(() => {
   seedAuth()
   sseHandlers.clear()
   sonnerCalls.length = 0
+  pendingMaskChangeRef.current = null
   createAliasMock.mockReset()
   uploadMaskMock.mockReset()
   uploadReferenceMock.mockReset()
@@ -403,6 +450,47 @@ describe('AliasEditPage', () => {
       expect(sonnerCalls.find((c) => c.kind === 'success')?.message).toBe('已取消'),
     )
     expect(screen.getByTestId('alias-submit')).toBeEnabled()
+  })
+
+  it('flushes pending mask export before submit reads mask state', async () => {
+    // Codex P1 round 5: a stroke can end and the user can click submit
+    // before the async canvas.toBlob fires. Without the flush gate, the
+    // page would build the alias body with `mask: null` and silently
+    // downgrade input_mode. With the gate, flushPendingExport drains
+    // the deferred onMaskChange before the submit reads mask state.
+    getCharacterMock.mockResolvedValue({ character: makeDetail() })
+    uploadMaskMock.mockResolvedValue({ mask_id: 'mask-deferred' })
+    createAliasMock.mockResolvedValue({ task_id: 'task-deferred', alias_id: 'alias-deferred' })
+    renderPage()
+
+    await screen.findByTestId('alias-base-image')
+    fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: '剛畫完' } })
+
+    fireEvent.click(screen.getByTestId('section-inpaint-toggle'))
+    expect(await screen.findByTestId('inpaint-canvas-fake')).toBeInTheDocument()
+
+    // Enqueue a mask change but do NOT fire it — production analogue:
+    // stroke ended, canvas.toBlob is in flight. From the parent's
+    // perspective, maskPayload is still null at this instant.
+    fireEvent.click(screen.getByTestId('fake-paint-deferred-mask'))
+
+    // hasAnyInput is false at submit-click time (no text, no ref, mask
+    // payload not yet flushed). Add a freeform note so the submit
+    // button is enabled — the test then verifies that even though
+    // hasMask is closure-false at click time, the flush drains the
+    // mask and the body still ships with `mask: { mask_id }`.
+    fireEvent.change(screen.getByLabelText('Alias 補述內容'), { target: { value: '加文' } })
+
+    fireEvent.click(screen.getByTestId('alias-submit'))
+
+    await waitFor(() => expect(uploadMaskMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(createAliasMock).toHaveBeenCalledTimes(1))
+    const body = createAliasMock.mock.calls[0][1]
+    expect(body).toMatchObject({
+      input_mode: 'mixed',
+      mask: { mask_id: 'mask-deferred' },
+      freeform_note: '加文',
+    })
   })
 
   it('too_late_completed invalidates character detail before navigating', async () => {
