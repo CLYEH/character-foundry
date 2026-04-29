@@ -65,7 +65,7 @@
 
 | # | Ticket | Status |
 |---|---|---|
-| T-029 | Backend Veo 3.1 i2v client + stub | TODO |
+| T-029 | Backend Veo 3.1 i2v client + stub | DONE |
 | T-030 | Backend gpt-image-2 image2image + inpaint extension | TODO |
 | T-031 | Backend Alias generation endpoint + worker | TODO |
 | T-032 | Backend Alias list / detail / rename / delete | TODO |

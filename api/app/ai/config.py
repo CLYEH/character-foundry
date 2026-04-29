@@ -112,6 +112,58 @@ def reconciler_max_tokens() -> int:
     return _int_env("RECONCILER_MAX_TOKENS", default=800)
 
 
+# Veo 3.1 (i2v) tuning — see planning/devops/environment-variables.md §2.2 and
+# planning/backend/ai-integration.md §4. `VEO_API_URL` is required for the real
+# client; `AI_STUB_MODE=true` makes it optional in dev / CI.
+def veo_api_key() -> str | None:
+    return os.environ.get("VEO_API_KEY")
+
+
+def veo_api_url() -> str:
+    return os.environ.get("VEO_API_URL", "https://generativelanguage.googleapis.com/v1beta")
+
+
+def veo_model() -> str:
+    return os.environ.get("VEO_MODEL", "veo-3.1")
+
+
+def veo_timeout_seconds() -> float:
+    """Per-HTTP-request timeout (submit / single-poll / download). Veo's
+    long-running operation can take minutes overall, but each individual
+    HTTP call should respond quickly; the polling loop sleeps between
+    polls rather than holding one long socket open.
+    """
+    return _int_env("VEO_TIMEOUT_MS", default=180_000) / 1000.0
+
+
+def veo_max_retries() -> int:
+    """Retry attempts after the initial submission (so total = retries + 1).
+
+    Default 2 because video generation is expensive — failed submissions
+    burn provider quota even when they don't return bytes. Allows `0` so
+    operators can disable retries during incidents (matches the gpt-image-2
+    knob).
+    """
+    return _int_env("VEO_MAX_RETRIES", default=2, min_value=0)
+
+
+def veo_poll_interval_seconds() -> float:
+    """Sleep between successive `GET /operations/{name}` polls. Defaults
+    to 5s per ai-integration.md §4.2 — Veo doesn't surface progress %, so
+    the worker estimates progress separately (see task-queue.md §5.2).
+    """
+    return _int_env("VEO_POLL_INTERVAL_MS", default=5_000) / 1000.0
+
+
+def veo_max_poll_attempts() -> int:
+    """Cap the polling loop so a stuck operation doesn't block a worker
+    forever. Default 60 polls × 5s = 5 min; matches `VEO_TIMEOUT_MS`
+    default. After this we raise `MODEL_TIMEOUT` and let the breaker /
+    retry layer decide what to do next.
+    """
+    return _int_env("VEO_MAX_POLL_ATTEMPTS", default=60, min_value=1)
+
+
 # Circuit-breaker tuning. Values default to ai-integration.md §3.4 numbers.
 def circuit_failure_threshold() -> int:
     return _int_env("AI_CIRCUIT_FAILURE_THRESHOLD", default=5)

@@ -123,6 +123,28 @@ def model_response_truncated(model: str, *, detail: str | None = None) -> AgentE
     )
 
 
+def model_quota_exceeded(model: str, *, detail: str | None = None) -> AgentErrorException:
+    """Provider returned a hard quota / billing exhaustion signal (e.g. Veo's
+    `RESOURCE_EXHAUSTED` per planning §4.4). Distinct from `MODEL_RATE_LIMIT`
+    because rate limits clear in seconds while quota exhaustion needs an
+    operator action (top-up / billing fix). Non-retryable so the worker
+    surfaces the specific code rather than burning further provider budget.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="MODEL_QUOTA_EXCEEDED",
+            message="模型額度已用完，請聯絡管理員",
+            problem=f"{model} reported quota / resource exhaustion."
+            + (f" Detail: {detail}" if detail else ""),
+            cause="Project-level quota or billing limit reached on the provider side.",
+            fix="Operations: top up the provider account or raise the per-project quota; "
+            "retrying without that change will not succeed.",
+            retryable=False,
+        ),
+        status_code=429,
+    )
+
+
 def model_invalid_request(model: str, *, detail: str | None = None) -> AgentErrorException:
     return AgentErrorException(
         AgentError(

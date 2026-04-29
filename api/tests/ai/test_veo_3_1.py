@@ -1,0 +1,427 @@
+"""Veo31Client + VeoStub behaviour against a mocked Veo API (T-029)."""
+
+from __future__ import annotations
+
+import base64
+import json
+from collections.abc import Callable
+
+import fakeredis.aioredis
+import httpx
+import pytest
+
+from app.ai.factory import get_video_client
+from app.ai.stub import VeoStub
+from app.ai.veo_3_1 import VEO_SERVICE_NAME, Veo31Client
+from app.core.errors import AgentErrorException
+
+_FAKE_MP4 = b"\x00\x00\x00 ftypisom\x00\x00\x02\x00isomiso2avc1mp41" + b"\x00" * 32
+_FAKE_MP4_B64 = base64.b64encode(_FAKE_MP4).decode("ascii")
+
+_API_BASE = "https://veo.test/v1beta"
+_OPERATION_NAME = "models/veo-3.1/operations/abc123"
+
+
+def _make_client(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    handler: Callable[[httpx.Request], httpx.Response],
+    *,
+    max_retries: int = 2,
+    poll_interval_seconds: float = 0.0,
+    max_poll_attempts: int = 5,
+    monkeypatch: pytest.MonkeyPatch | None = None,
+) -> Veo31Client:
+    """Build a Veo31Client wired to an httpx MockTransport.
+
+    `monkeypatch.setattr(asyncio, "sleep", ...)` keeps retry / poll loops
+    instant without depending on real timers.
+    """
+    if monkeypatch is not None:
+
+        async def _no_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("asyncio.sleep", _no_sleep)
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(
+        transport=transport,
+        headers={"x-goog-api-key": "test-key"},
+    )
+    return Veo31Client(
+        redis=fake_redis,
+        api_key="test-key",
+        api_url=_API_BASE,
+        model="veo-3.1",
+        timeout_seconds=2.0,
+        max_retries=max_retries,
+        poll_interval_seconds=poll_interval_seconds,
+        max_poll_attempts=max_poll_attempts,
+        http_client=http_client,
+    )
+
+
+def _submit_response(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"name": _OPERATION_NAME})
+
+
+def _done_response_inline(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "name": _OPERATION_NAME,
+            "done": True,
+            "response": {
+                "videos": [{"bytesBase64Encoded": _FAKE_MP4_B64, "durationSeconds": 5}],
+            },
+            "metadata": {"model": "veo-3.1-preview"},
+        },
+    )
+
+
+def _make_seq_handler(
+    submit_fn: Callable[[httpx.Request], httpx.Response] = _submit_response,
+    poll_fns: list[Callable[[httpx.Request], httpx.Response]] | None = None,
+) -> tuple[Callable[[httpx.Request], httpx.Response], dict[str, int]]:
+    """Build a handler that routes by URL: POSTs go to `submit_fn`, GETs cycle
+    through `poll_fns`. Returns the handler plus a counter dict so tests can
+    assert call sequencing.
+    """
+    counters = {"submit": 0, "poll": 0}
+    polls = list(poll_fns or [_done_response_inline])
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            counters["submit"] += 1
+            return submit_fn(request)
+        index = min(counters["poll"], len(polls) - 1)
+        counters["poll"] += 1
+        return polls[index](request)
+
+    return _handler, counters
+
+
+# ---------------------------------------------------------------------------
+# Stub behaviour
+# ---------------------------------------------------------------------------
+
+
+async def test_stub_returns_valid_mp4_bytes() -> None:
+    stub = VeoStub()
+    result = await stub.generate_i2v(image_bytes=b"img", prompt="wave hello")
+
+    # `ftyp` magic at offset 4 — same check every mp4 magic detector applies.
+    assert result.video_bytes[4:8] == b"ftyp"
+    assert result.video_bytes is stub.video_bytes
+    assert result.model_version == VeoStub.MODEL_VERSION
+    assert result.duration_ms == VeoStub.FIXTURE_DURATION_MS
+    assert result.generation_log_payload["stub"] is True
+
+
+async def test_stub_echoes_caller_duration_seconds() -> None:
+    """The fixture is a fixed-length placeholder, but worker code reads
+    `duration_ms` to display playback length; echo the requested value so
+    the GenerationLog matches what was asked for."""
+    stub = VeoStub()
+    result = await stub.generate_i2v(image_bytes=b"img", prompt="wave", duration_seconds=3.5)
+    assert result.duration_ms == 3500
+
+
+async def test_stub_returns_same_bytes_across_calls() -> None:
+    stub = VeoStub()
+    a = await stub.generate_i2v(image_bytes=b"a", prompt="x")
+    b = await stub.generate_i2v(image_bytes=b"b", prompt="y")
+    assert a.video_bytes == b.video_bytes
+
+
+# ---------------------------------------------------------------------------
+# Real client — happy paths
+# ---------------------------------------------------------------------------
+
+
+async def test_real_client_submit_poll_inline_download_succeeds(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handler, counters = _make_seq_handler(
+        poll_fns=[
+            # First poll: still running.
+            lambda _r: httpx.Response(200, json={"name": _OPERATION_NAME, "done": False}),
+            _done_response_inline,
+        ]
+    )
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(
+            image_bytes=b"parent-png", prompt="wave hello", duration_seconds=5
+        )
+    finally:
+        await client.aclose()
+
+    assert result.video_bytes == _FAKE_MP4
+    assert result.duration_ms == 5000
+    assert result.model_version == "veo-3.1-preview"  # picked from operation.metadata.model
+    assert result.generation_log_payload["operation_name"] == _OPERATION_NAME
+    # The redacted operation envelope must NOT include the base64 video payload.
+    redacted = result.generation_log_payload["operation"]
+    redacted_video = redacted["response"]["videos"][0]
+    assert "bytesBase64Encoded" not in redacted_video
+    assert counters["submit"] == 1
+    assert counters["poll"] == 2
+
+
+async def test_real_client_submit_sends_first_and_last_frame(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Identity-preservation contract (DECISIONS §3): the parent image must
+    be sent as BOTH first frame and last frame."""
+    captured: dict[str, object] = {}
+
+    def _submit(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _submit_response(request)
+
+    handler, _ = _make_seq_handler(submit_fn=_submit, poll_fns=[_done_response_inline])
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        await client.generate_i2v(image_bytes=b"parent-png", prompt="hi")
+    finally:
+        await client.aclose()
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    instance = body["instances"][0]
+    assert instance["image"]["bytesBase64Encoded"] == base64.b64encode(b"parent-png").decode()
+    assert instance["lastFrame"] == instance["image"]
+
+
+async def test_real_client_supports_videoUri_download(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    download_url = "https://veo.test/blobs/abc.mp4"
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if str(request.url) == download_url:
+            return httpx.Response(200, content=_FAKE_MP4)
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {"videos": [{"videoUri": download_url}]},
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(image_bytes=b"img", prompt="x", duration_seconds=4)
+    finally:
+        await client.aclose()
+
+    assert result.video_bytes == _FAKE_MP4
+    assert result.duration_ms == 4000
+
+
+# ---------------------------------------------------------------------------
+# Real client — resilience paths
+# ---------------------------------------------------------------------------
+
+
+async def test_submit_timeout_retries_and_succeeds(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Timeouts during submission are transient — the outer retry envelope
+    should restart the whole submit→poll→download flow."""
+    submits = {"n": 0}
+
+    def _submit(request: httpx.Request) -> httpx.Response:
+        submits["n"] += 1
+        if submits["n"] == 1:
+            raise httpx.ReadTimeout("slow", request=request)
+        return _submit_response(request)
+
+    handler, _ = _make_seq_handler(submit_fn=_submit, poll_fns=[_done_response_inline])
+    client = _make_client(fake_redis, handler, max_retries=2, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(image_bytes=b"i", prompt="hi", duration_seconds=3)
+    finally:
+        await client.aclose()
+
+    assert result.video_bytes == _FAKE_MP4
+    assert submits["n"] == 2
+    # No degraded entry — eventual success cleared in-flight failure state.
+    assert await fake_redis.get(f"degraded:{VEO_SERVICE_NAME}") is None
+
+
+async def test_invalid_argument_does_not_retry_or_open_breaker(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Operation-level INVALID_ARGUMENT (planning §4.4) is a client-side
+    bug, not a transient health signal — must surface as MODEL_INVALID_REQUEST
+    without retry and without breaker pressure."""
+    submits = {"n": 0}
+
+    def _submit(request: httpx.Request) -> httpx.Response:
+        submits["n"] += 1
+        return _submit_response(request)
+
+    poll_invalid = lambda _r: httpx.Response(  # noqa: E731
+        200,
+        json={
+            "name": _OPERATION_NAME,
+            "done": True,
+            "error": {"status": "INVALID_ARGUMENT", "message": "bad prompt"},
+        },
+    )
+    handler, _ = _make_seq_handler(submit_fn=_submit, poll_fns=[poll_invalid])
+    client = _make_client(fake_redis, handler, max_retries=2)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="hi")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_INVALID_REQUEST"
+    assert submits["n"] == 1, "non-retryable error must not retry"
+    assert await fake_redis.get(f"degraded:{VEO_SERVICE_NAME}") is None
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 0
+
+
+async def test_resource_exhausted_maps_to_quota_exceeded(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    poll_quota = lambda _r: httpx.Response(  # noqa: E731
+        200,
+        json={
+            "name": _OPERATION_NAME,
+            "done": True,
+            "error": {"status": "RESOURCE_EXHAUSTED", "message": "quota out"},
+        },
+    )
+    handler, _ = _make_seq_handler(poll_fns=[poll_quota])
+    client = _make_client(fake_redis, handler, max_retries=0)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="hi")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_QUOTA_EXCEEDED"
+    assert info.value.error.retryable is False
+    # Non-retryable → must NOT count toward breaker (see gpt-image-2 contract).
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 0
+
+
+async def test_5xx_during_submit_opens_breaker_after_threshold(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Five failed calls (each a single breaker failure) → breaker OPEN →
+    sixth call short-circuits with MODEL_UNAVAILABLE without making any
+    HTTP requests, and `degraded:veo-3.1` is set in Redis."""
+    calls = {"n": 0}
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503, json={"error": {"message": "down"}})
+
+    client = _make_client(fake_redis, _handler, max_retries=0, monkeypatch=monkeypatch)
+    try:
+        for _ in range(5):
+            with pytest.raises(AgentErrorException):
+                await client.generate_i2v(image_bytes=b"i", prompt="x")
+
+        before = calls["n"]
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+        assert info.value.error.code == "MODEL_UNAVAILABLE"
+        assert calls["n"] == before, "circuit OPEN must not call upstream"
+    finally:
+        await client.aclose()
+
+    raw = await fake_redis.get(f"degraded:{VEO_SERVICE_NAME}")
+    assert raw is not None
+    payload = json.loads(raw)
+    assert payload["reason"] == "CIRCUIT_OPEN"
+
+
+async def test_poll_loop_exhausts_max_attempts_with_model_timeout(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stuck operation that never flips `done` must surface as
+    MODEL_TIMEOUT once the poll budget is exhausted (don't poll forever)."""
+    in_progress = lambda _r: httpx.Response(  # noqa: E731
+        200, json={"name": _OPERATION_NAME, "done": False}
+    )
+    handler, _ = _make_seq_handler(poll_fns=[in_progress])
+    client = _make_client(
+        fake_redis,
+        handler,
+        max_retries=0,
+        max_poll_attempts=3,
+        monkeypatch=monkeypatch,
+    )
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_TIMEOUT"
+
+
+async def test_submit_400_does_not_retry_or_open_breaker(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """A 400 from submission is a client-side payload bug; must not retry
+    and must not push the breaker toward OPEN."""
+    calls = {"n": 0}
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400, json={"error": {"message": "bad payload"}})
+
+    client = _make_client(fake_redis, _handler, max_retries=2)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_INVALID_REQUEST"
+    assert calls["n"] == 1
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 0
+
+
+# ---------------------------------------------------------------------------
+# Factory wiring
+# ---------------------------------------------------------------------------
+
+
+def test_factory_returns_stub_when_AI_STUB_MODE_true(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AI_STUB_MODE", "true")
+    client = get_video_client(fake_redis)
+    assert isinstance(client, VeoStub)
+
+
+def test_factory_returns_real_client_when_AI_STUB_MODE_false(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AI_STUB_MODE", "false")
+    monkeypatch.setenv("VEO_API_KEY", "test-key")
+    client = get_video_client(fake_redis)
+    assert isinstance(client, Veo31Client)
+
+
+def test_factory_default_is_stub_mode(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 1 dev/CI default — never charge the Veo account by accident."""
+    monkeypatch.delenv("AI_STUB_MODE", raising=False)
+    client = get_video_client(fake_redis)
+    assert isinstance(client, VeoStub)
