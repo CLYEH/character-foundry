@@ -88,14 +88,20 @@ def prompt_content_policy(model: str) -> AgentErrorException:
     )
 
 
-def internal_auth_failed(model: str) -> AgentErrorException:
+def internal_auth_failed(model: str, *, key_env_var: str = "OPENAI_API_KEY") -> AgentErrorException:
+    """Surface a provider auth rejection (401/403) with the right env-var name.
+
+    `key_env_var` defaults to `OPENAI_API_KEY` (used by gpt-image-2 and the
+    reconciler) but Veo callers pass `VEO_API_KEY` so on-call sees the
+    correct credential to rotate (Codex P2 round-5 on PR #39).
+    """
     return AgentErrorException(
         AgentError(
             code="INTERNAL_AUTH_FAILED",
             message="系統設定錯誤，請聯絡管理員",
             problem=f"{model} provider rejected the API key (401/403).",
-            cause="OPENAI_API_KEY is missing, expired, or lacks the required scopes.",
-            fix="Operations: rotate the provider API key and restart the API service.",
+            cause=f"{key_env_var} is missing, expired, or lacks the required scopes.",
+            fix=f"Operations: rotate {key_env_var} and restart the API service.",
             retryable=False,
         ),
         status_code=500,
@@ -186,11 +192,18 @@ def _looks_like_content_policy(payload: Any) -> bool:
     return isinstance(message, str) and "content policy" in message.lower()
 
 
-def map_response_to_agent_error(model: str, response: httpx.Response) -> AgentErrorException:
+def map_response_to_agent_error(
+    model: str,
+    response: httpx.Response,
+    *,
+    auth_key_env_var: str = "OPENAI_API_KEY",
+) -> AgentErrorException:
     """Translate a non-2xx HTTP response into the matching AgentError.
 
     Tolerates non-JSON bodies (e.g. HTML 502 from a load balancer) by
-    falling back to status-code routing only.
+    falling back to status-code routing only. `auth_key_env_var` lets the
+    caller (e.g. the Veo client) tell `internal_auth_failed` which env
+    variable to name in the operator-facing remediation.
     """
     status = response.status_code
     payload: Any = None
@@ -204,7 +217,7 @@ def map_response_to_agent_error(model: str, response: httpx.Response) -> AgentEr
         return model_rate_limit(model, retry_after=retry_after)
 
     if status in (401, 403):
-        return internal_auth_failed(model)
+        return internal_auth_failed(model, key_env_var=auth_key_env_var)
 
     if status == 400 and _looks_like_content_policy(payload):
         return prompt_content_policy(model)

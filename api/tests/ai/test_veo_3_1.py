@@ -441,6 +441,77 @@ async def test_poll_loop_exhausts_max_attempts_with_model_timeout(
     assert info.value.error.code == "MODEL_TIMEOUT"
 
 
+async def test_auth_failure_remediation_names_VEO_API_KEY(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Codex P2 round-5: Veo's auth-failure remediation must name
+    `VEO_API_KEY`, not the default `OPENAI_API_KEY` — operators rotating
+    the wrong credential delays incident triage."""
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "bad key"}})
+
+    client = _make_client(fake_redis, _handler, max_retries=0)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    err = info.value.error
+    assert err.code == "INTERNAL_AUTH_FAILED"
+    assert "VEO_API_KEY" in err.cause
+    assert "VEO_API_KEY" in err.fix
+    assert "OPENAI_API_KEY" not in err.cause
+    assert "OPENAI_API_KEY" not in err.fix
+
+
+async def test_redaction_strips_inline_bytes_from_generatedSamples(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 round-5: when Veo returns inline bytes under
+    `response.generateVideoResponse.generatedSamples[].video.bytesBase64-
+    Encoded`, the redacted payload in `generation_log_payload['operation']`
+    must drop the bytes — otherwise multi-MB base64 lands in audit storage.
+    """
+    huge_b64 = "A" * 10_000  # stand-in for a real inline-bytes payload
+
+    poll_done = lambda _r: httpx.Response(  # noqa: E731
+        200,
+        json={
+            "name": _OPERATION_NAME,
+            "done": True,
+            "response": {
+                "generateVideoResponse": {
+                    "generatedSamples": [
+                        {
+                            "video": {
+                                "bytesBase64Encoded": huge_b64,
+                                "durationSeconds": 4,
+                            }
+                        }
+                    ]
+                }
+            },
+        },
+    )
+    handler, _ = _make_seq_handler(poll_fns=[poll_done])
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    redacted = result.generation_log_payload["operation"]
+    # Walk down to the inner `video` dict and assert the bytes key was scrubbed.
+    inner_video = redacted["response"]["generateVideoResponse"]["generatedSamples"][0]["video"]
+    assert "bytesBase64Encoded" not in inner_video
+    # Non-bytes metadata should still be there.
+    assert inner_video["durationSeconds"] == 4
+    # Sanity: the giant string must not appear anywhere in the redacted blob.
+    assert huge_b64 not in json.dumps(redacted)
+
+
 async def test_real_client_supports_generatedSamples_response_shape(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:

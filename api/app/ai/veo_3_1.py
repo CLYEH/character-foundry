@@ -65,6 +65,11 @@ _logger = logging.getLogger(__name__)
 # rendering the same `service` identifier even after we rotate model SKUs.
 VEO_SERVICE_NAME = "veo-3.1"
 
+# Env var name surfaced in operator-facing auth-failure remediation. Threaded
+# into `map_response_to_agent_error` so a Veo 401/403 says "rotate VEO_API_KEY"
+# rather than the default `OPENAI_API_KEY` message — Codex P2 round-5.
+_VEO_AUTH_KEY_ENV = "VEO_API_KEY"
+
 
 class Veo31Client:
     """Implements `app.ai.base.VideoClient` against the Veo 3.1 long-running API."""
@@ -238,7 +243,9 @@ class Veo31Client:
 
         response = await self._post_json(path, body)
         if not response.is_success:
-            raise map_response_to_agent_error(self.model, response)
+            raise map_response_to_agent_error(
+                self.model, response, auth_key_env_var=_VEO_AUTH_KEY_ENV
+            )
 
         payload = _safe_json(response)
         name = payload.get("name") if isinstance(payload, dict) else None
@@ -260,7 +267,9 @@ class Veo31Client:
         for _ in range(self.max_poll_attempts):
             response = await self._get(operation_name)
             if not response.is_success:
-                raise map_response_to_agent_error(self.model, response)
+                raise map_response_to_agent_error(
+                    self.model, response, auth_key_env_var=_VEO_AUTH_KEY_ENV
+                )
 
             payload = _safe_json(response)
             if not isinstance(payload, dict):
@@ -340,7 +349,9 @@ class Veo31Client:
         except httpx.HTTPError as exc:
             raise map_exception_to_agent_error(self.model, exc) from exc
         if not response.is_success:
-            raise map_response_to_agent_error(self.model, response)
+            raise map_response_to_agent_error(
+                self.model, response, auth_key_env_var=_VEO_AUTH_KEY_ENV
+            )
         return response.content
 
     # -- HTTP plumbing -------------------------------------------------------
@@ -493,32 +504,34 @@ def _extract_duration_seconds(operation: dict[str, Any]) -> float | None:
 
 
 def _redacted_operation(operation: dict[str, Any]) -> dict[str, Any]:
-    """Strip the (potentially huge) base64 video payload out of the
-    operation envelope so workers can persist a useful audit record
-    without bloating GenerationLog. Only `bytesBase64Encoded` is removed;
-    `videoUri`, durations, and other metadata stay.
+    """Strip the (potentially multi-MB) base64 video payload out of the
+    operation envelope so workers can persist a useful audit record without
+    bloating GenerationLog or leaking raw media into log storage.
+
+    Recursive — drops any `bytesBase64Encoded` key wherever it appears in
+    the response tree. Catches both shapes the client supports:
+      - `response.videos[].bytesBase64Encoded`
+      - `response.generateVideoResponse.generatedSamples[].video.bytesBase64Encoded`
+    plus any future shape Veo introduces. Codex P2 round-5 caught that the
+    earlier per-shape redactor missed the nested path once round-4 added
+    that path back to `_extract_videos`.
+
+    Only `bytesBase64Encoded` is removed; URIs, durations, model metadata,
+    and everything else stay so the audit record remains useful.
     """
-    redacted: dict[str, Any] = {}
-    for key, value in operation.items():
-        if key == "response" and isinstance(value, dict):
-            redacted[key] = _redact_response(value)
-        else:
-            redacted[key] = value
-    return redacted
+    scrubbed = _scrub_inline_bytes(operation)
+    # `_scrub_inline_bytes` recurses on Any, but the top-level operation is
+    # always a dict — narrow the type for mypy without runtime cost.
+    assert isinstance(scrubbed, dict)
+    return scrubbed
 
 
-def _redact_response(response: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key, value in response.items():
-        if key == "videos" and isinstance(value, list):
-            out[key] = [_redact_video(v) if isinstance(v, dict) else v for v in value]
-        else:
-            out[key] = value
-    return out
-
-
-def _redact_video(video: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in video.items() if k != "bytesBase64Encoded"}
+def _scrub_inline_bytes(node: Any) -> Any:
+    if isinstance(node, dict):
+        return {k: _scrub_inline_bytes(v) for k, v in node.items() if k != "bytesBase64Encoded"}
+    if isinstance(node, list):
+        return [_scrub_inline_bytes(item) for item in node]
+    return node
 
 
 def _map_operation_error(model: str, error: dict[str, Any]) -> AgentErrorException:
