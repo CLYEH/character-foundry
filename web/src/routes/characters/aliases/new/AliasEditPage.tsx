@@ -237,7 +237,7 @@ function AliasEditBody({
     [characterId, onCompleted, queryClient, setActiveTask],
   )
 
-  const { subscribe } = useTaskStream({ onTerminal: handleTerminal })
+  const { subscribe, unsubscribe } = useTaskStream({ onTerminal: handleTerminal })
 
   // ---- unmount cancel --------------------------------------------------
   // Spec: 頁面離開（unmount）→ POST /tasks/{id}/cancel.  Fire-and-forget;
@@ -379,16 +379,24 @@ function AliasEditBody({
     }
     cancelTaskMutation.mutate(task.taskId, {
       onSuccess: ({ cancel_outcome }) => {
+        // Every outcome except `cancel_pending` is already terminal —
+        // the backend may not emit a trailing SSE event, so the stream
+        // would otherwise stay open until unmount. Repeated submit /
+        // cancel cycles would accumulate orphaned streams (Codex P2
+        // round 7). Unsubscribe explicitly here; `cancel_pending` keeps
+        // the subscription so the eventual SSE settles the page.
         switch (cancel_outcome) {
           case 'cancelled_immediately':
+            unsubscribe(task.taskId)
             toast.success('已取消')
             setActiveTask(null)
             break
           case 'cancel_pending':
             toast.info('取消中…')
-            // Keep activeTask — SSE will deliver the final status.
+            // Keep activeTask + subscription — SSE will deliver the final status.
             break
           case 'too_late_completed':
+            unsubscribe(task.taskId)
             // Symmetric with the SSE `completed` branch: the alias was
             // actually created server-side (the cancel raced and lost),
             // so the navigation back to /characters/:id must land on a
@@ -402,13 +410,14 @@ function AliasEditBody({
             onCompleted()
             break
           case 'too_late_failed':
+            unsubscribe(task.taskId)
             toast.warning('來不及取消，Alias 生成失敗')
             setActiveTask(null)
             break
         }
       },
     })
-  }, [cancelTaskMutation, characterId, onCompleted, queryClient, setActiveTask])
+  }, [cancelTaskMutation, characterId, onCompleted, queryClient, setActiveTask, unsubscribe])
 
   // ---- prompt preview --------------------------------------------------
   // T-040 ships the modal with a `create_alias` mode that mirrors the

@@ -147,10 +147,21 @@ vi.mock('@/components/aliases/InpaintCanvas', async () => {
 
 // SSE: identical pattern to CreationSessionPage tests — capture the
 // `onmessage` handler keyed by URL so tests can `pushSse` synthetic events.
+// We also wire the AbortSignal to drop the handler, mirroring production:
+// `useTaskStream`'s `unsubscribe` (or a terminal SSE event) aborts the
+// controller, and a real EventSource would close at that point. The mock
+// removes the handler from the map so post-unsubscribe `pushSse` throws,
+// which lets tests assert that unsubscribe really closed the stream.
 const sseHandlers = new Map<string, (msg: { data: string }) => void>()
 vi.mock('@microsoft/fetch-event-source', () => ({
-  fetchEventSource: (url: string, opts: { onmessage: (msg: { data: string }) => void }) => {
+  fetchEventSource: (
+    url: string,
+    opts: { onmessage: (msg: { data: string }) => void; signal?: AbortSignal },
+  ) => {
     sseHandlers.set(url, opts.onmessage)
+    opts.signal?.addEventListener('abort', () => {
+      sseHandlers.delete(url)
+    })
     return new Promise<void>(() => {
       /* never resolves — abort comes from the AbortController in the hook */
     })
@@ -629,6 +640,46 @@ describe('AliasEditPage', () => {
     // the orphaned task to avoid burning quota on an alias the user will
     // never see.
     await waitFor(() => expect(cancelTaskMock).toHaveBeenCalledWith('task-orphan'))
+  })
+
+  it('cancelled_immediately unsubscribes the SSE stream so it cannot leak', async () => {
+    // Codex P2 round 7: the immediate-cancel path is already terminal
+    // server-side, so the SSE may never emit a closing event. Without
+    // explicit unsubscribe, the stream stays open until unmount and
+    // repeated submit/cancel cycles would accumulate orphaned streams.
+    getCharacterMock.mockResolvedValue({ character: makeDetail() })
+    createAliasMock.mockResolvedValue({ task_id: 'task-stream-leak', alias_id: 'alias-leak' })
+    cancelTaskMock.mockResolvedValue({
+      task: {} as unknown as CancelTaskResponse['task'],
+      cancel_outcome: 'cancelled_immediately',
+    })
+    renderPage()
+
+    await screen.findByTestId('alias-base-image')
+    fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: '無流' } })
+    fireEvent.change(screen.getByLabelText('Alias 補述內容'), { target: { value: 'x' } })
+
+    fireEvent.click(screen.getByTestId('alias-submit'))
+    await waitFor(() => expect(createAliasMock).toHaveBeenCalledTimes(1))
+    // Subscribe must have happened — handler is registered.
+    await waitFor(() =>
+      expect(
+        Array.from(sseHandlers.keys()).some((u) => u.includes('/tasks/task-stream-leak/stream')),
+      ).toBe(true),
+    )
+
+    fireEvent.click(screen.getByTestId('alias-cancel'))
+    await waitFor(() => expect(cancelTaskMock).toHaveBeenCalledWith('task-stream-leak'))
+
+    // Stream is now unsubscribed — the abort signal removed the handler
+    // from the mock map, so a synthetic SSE for that task can no longer
+    // be delivered.
+    await waitFor(() =>
+      expect(
+        Array.from(sseHandlers.keys()).some((u) => u.includes('/tasks/task-stream-leak/stream')),
+      ).toBe(false),
+    )
+    expect(() => pushSse('task-stream-leak', { status: 'cancelled' })).toThrow(/No SSE handler/)
   })
 
   it('cancel_pending then SSE cancelled emits the success confirmation toast', async () => {
