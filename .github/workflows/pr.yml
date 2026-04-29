@@ -130,6 +130,10 @@ jobs:
           STORAGE_ROOT=/storage
           WORKER_CONCURRENCY=4
           LOG_LEVEL=INFO
+          # Default is true (`api/app/ai/config.py`); set explicitly so a
+          # future config change can't silently flip CI onto the real
+          # OpenAI client and start charging the account.
+          AI_STUB_MODE=true
           SOFT_DELETE_RETENTION_DAYS=30
           TASK_TERMINAL_RETENTION_HOURS=24
           VITE_API_BASE_URL=/api

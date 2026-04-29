@@ -33,6 +33,10 @@ E2E_PASSWORD = "TestPassword123!"  # noqa: S105 — fixture password, not a secr
 E2E_USERS: tuple[tuple[str, str], ...] = (
     ("test+alice@example.com", "Alice"),
     ("test+bob@example.com", "Bob"),
+    # Sprint 2 character-creation E2E uses its own identity so checkpoint
+    # / character pollution from those specs can't bleed into the auth-only
+    # specs that anchor on Alice (T-026).
+    ("test+sprint2@example.com", "Sprint2"),
 )
 
 

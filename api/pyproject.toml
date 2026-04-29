@@ -51,6 +51,15 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+# Ship non-Python assets bundled with the API package. Without this the
+# default setuptools wheel drops the stub PNG, so any non-editable install
+# (e.g. the Docker image's `pip install .`) crashes on the first stub
+# checkpoint with `FileNotFoundError: .../app/ai/_fixtures/sample_base.png`.
+# Editable installs on the host don't hit this because the source tree is
+# the import root, but T-026 E2E exposes the wheel path.
+"app.ai._fixtures" = ["*.png"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
