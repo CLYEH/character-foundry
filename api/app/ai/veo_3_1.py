@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -221,9 +222,14 @@ class Veo31Client:
             "image": image_payload,
             "lastFrame": image_payload,
         }
-        parameters: dict[str, Any] = {
-            "personGeneration": "allow_all",
-        }
+        # No `personGeneration` is sent by default. The earlier draft
+        # hardcoded `allow_all` (per planning §4.2 speculation) but Veo i2v
+        # rejects that value, and the per-region rules (EU/UK/CH/MENA require
+        # `allow_adult`) make a single static default wrong everywhere.
+        # Letting Veo apply its server-side default is the safer Phase 1
+        # stance; per-region configurability is deferred until we have a
+        # real deployment to tune for (Codex P1 round-4 on PR #39).
+        parameters: dict[str, Any] = {}
         if duration_seconds is not None:
             parameters["durationSeconds"] = duration_seconds
 
@@ -279,40 +285,34 @@ class Veo31Client:
     async def _fetch_video_bytes(self, operation: dict[str, Any]) -> bytes:
         """Pull the mp4 bytes out of the terminal operation envelope.
 
-        Two shapes are supported because Veo's published responses use
-        either the inline `bytesBase64Encoded` form (small clips) or a
-        signed `videoUri` (large clips); both have appeared in the public
-        examples for Veo 3.x. We try inline first to skip the extra hop.
+        `_extract_videos` normalises Veo's two response shapes (direct
+        `response.videos[]` and nested `response.generateVideoResponse
+        .generatedSamples[].video`) into a single list of `_VideoItem`
+        records — so the inline-vs-uri branching here only deals with
+        ONE schema regardless of which payload Veo returned.
         """
-        videos = _extract_videos(operation)
-        if not videos:
+        items = _extract_videos(operation)
+        if not items:
             raise model_invalid_request(
-                self.model, detail="operation.response did not include any videos[]"
+                self.model, detail="operation.response did not include any video items"
             )
 
-        first = videos[0]
-        if not isinstance(first, dict):
-            raise model_invalid_request(
-                self.model, detail="operation.response.videos[0] was not an object"
-            )
-
-        b64_payload = first.get("bytesBase64Encoded")
-        if isinstance(b64_payload, str) and b64_payload:
+        first = items[0]
+        if first.bytes_base64:
             try:
-                return base64.b64decode(b64_payload)
+                return base64.b64decode(first.bytes_base64)
             except (ValueError, TypeError) as exc:
                 raise map_exception_to_agent_error(
                     self.model, RuntimeError(f"video b64 decode failed: {exc}")
                 ) from exc
 
-        video_uri = first.get("videoUri")
-        if not isinstance(video_uri, str) or not video_uri.strip():
-            raise model_invalid_request(
-                self.model,
-                detail="operation.response.videos[0] missing both bytesBase64Encoded and videoUri",
-            )
+        if first.uri:
+            return await self._download_video_uri(first.uri)
 
-        return await self._download_video_uri(video_uri)
+        raise model_invalid_request(
+            self.model,
+            detail="video item missing both bytesBase64Encoded and uri",
+        )
 
     async def _download_video_uri(self, url: str) -> bytes:
         """Fetch the bytes from a `videoUri` returned by a completed operation.
@@ -402,29 +402,75 @@ def _safe_json(response: httpx.Response) -> Any:
         return None
 
 
-def _extract_videos(operation: dict[str, Any]) -> list[Any]:
-    """Return the canonical `response.videos[]` list (Phase 1 supported shape).
+@dataclass(frozen=True)
+class _VideoItem:
+    """Normalised view of one video result, regardless of which Veo response
+    shape it came from. Either `bytes_base64` or `uri` will be set on a
+    well-formed payload (caller validates downstream)."""
 
-    A previous draft also folded `generateVideoResponse.generatedSamples` —
-    a different published shape with a different inner schema (`video.uri`
-    vs `videoUri`, etc.) — into the same list. That made downstream helpers
-    inconsistent: `_fetch_video_bytes` only knows `videoUri`/`bytesBase64Encoded`,
-    so a successfully-completed `generatedSamples` operation would have raised
-    `MODEL_INVALID_REQUEST` even though the bytes were present (Codex P1
-    round-2 on PR #39).
+    uri: str | None
+    bytes_base64: str | None
+    duration_seconds: float | None
 
-    Removed the fallback rather than partially supporting it. Per the ticket
-    Notes ("真實串接時若欄位名不同，client 內部包一層 adapter 即可"), the
-    adapter for any real Veo response shape goes in at integration time —
-    speculative half-support is worse than honest single-shape support.
+
+def _extract_videos(operation: dict[str, Any]) -> list[_VideoItem]:
+    """Normalise Veo's terminal-operation video payload to a single list.
+
+    Two shapes are observed in current Google Veo REST examples (Codex P1
+    round-2 + round-4 on PR #39):
+
+    1. **Direct** — `response.videos[]` with
+       `{bytesBase64Encoded, videoUri, durationSeconds}`.
+    2. **Nested** — `response.generateVideoResponse.generatedSamples[].video`
+       with the inner schema using `uri` instead of `videoUri`.
+
+    Round-2 caught that supporting both shapes inconsistently was worse
+    than picking one. The adapter ground-truth round-4 supplied lets us
+    flip back to full normalisation, but only via this single chokepoint
+    so downstream helpers (`_fetch_video_bytes`,
+    `_extract_duration_seconds`) never branch on shape.
     """
     response = operation.get("response")
     if not isinstance(response, dict):
         return []
-    videos = response.get("videos")
-    if isinstance(videos, list):
-        return videos
-    return []
+
+    items: list[_VideoItem] = []
+
+    direct = response.get("videos")
+    if isinstance(direct, list):
+        for v in direct:
+            if isinstance(v, dict):
+                items.append(_video_item_from(v, uri_keys=("videoUri",)))
+
+    nested = response.get("generateVideoResponse")
+    if isinstance(nested, dict):
+        samples = nested.get("generatedSamples")
+        if isinstance(samples, list):
+            for sample in samples:
+                if not isinstance(sample, dict):
+                    continue
+                video = sample.get("video")
+                if isinstance(video, dict):
+                    # `generatedSamples` uses `uri` on the inner object;
+                    # tolerate `videoUri` too in case Google unifies them.
+                    items.append(_video_item_from(video, uri_keys=("uri", "videoUri")))
+
+    return items
+
+
+def _video_item_from(video: dict[str, Any], *, uri_keys: tuple[str, ...]) -> _VideoItem:
+    uri: str | None = None
+    for key in uri_keys:
+        value = video.get(key)
+        if isinstance(value, str) and value.strip():
+            uri = value
+            break
+    b64 = video.get("bytesBase64Encoded")
+    if not isinstance(b64, str) or not b64:
+        b64 = None
+    duration_raw = video.get("durationSeconds")
+    duration = float(duration_raw) if isinstance(duration_raw, int | float) else None
+    return _VideoItem(uri=uri, bytes_base64=b64, duration_seconds=duration)
 
 
 def _extract_model_version(operation: dict[str, Any]) -> str | None:
@@ -437,16 +483,12 @@ def _extract_model_version(operation: dict[str, Any]) -> str | None:
 
 
 def _extract_duration_seconds(operation: dict[str, Any]) -> float | None:
-    response = operation.get("response")
-    if not isinstance(response, dict):
-        return None
-    videos = response.get("videos")
-    if isinstance(videos, list) and videos:
-        first = videos[0]
-        if isinstance(first, dict):
-            value = first.get("durationSeconds")
-            if isinstance(value, int | float):
-                return float(value)
+    """Return the first non-null `durationSeconds` from any normalised video
+    item. Reuses `_extract_videos` so both response shapes are covered with
+    one source of truth."""
+    for item in _extract_videos(operation):
+        if item.duration_seconds is not None:
+            return item.duration_seconds
     return None
 
 

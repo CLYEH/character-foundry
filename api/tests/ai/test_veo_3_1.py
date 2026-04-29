@@ -194,6 +194,37 @@ async def test_real_client_submit_sends_first_and_last_frame(
     assert instance["lastFrame"] == instance["image"]
 
 
+async def test_submit_body_does_not_send_personGeneration(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1 round-4: hardcoding `personGeneration: allow_all` is rejected
+    for Veo i2v and explicitly forbidden in EU/UK/CH/MENA where only
+    `allow_adult` is allowed. Phase 1 omits the parameter entirely so Veo
+    applies its own server-side default; per-region configurability is
+    deferred until we have a real deployment to tune for.
+    """
+    captured: dict[str, object] = {}
+
+    def _submit(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _submit_response(request)
+
+    handler, _ = _make_seq_handler(submit_fn=_submit, poll_fns=[_done_response_inline])
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        await client.generate_i2v(image_bytes=b"i", prompt="hi")
+    finally:
+        await client.aclose()
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    parameters = body.get("parameters", {})
+    assert "personGeneration" not in parameters, (
+        "personGeneration must not be hardcoded — Veo i2v rejects allow_all and "
+        "regional rules vary; let the server default apply."
+    )
+
+
 async def test_real_client_supports_videoUri_download(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -410,31 +441,67 @@ async def test_poll_loop_exhausts_max_attempts_with_model_timeout(
     assert info.value.error.code == "MODEL_TIMEOUT"
 
 
-async def test_unknown_response_shape_raises_invalid_request(
+async def test_real_client_supports_generatedSamples_response_shape(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Codex P1 round-2: an earlier draft tried to fold
-    `generateVideoResponse.generatedSamples` into the canonical `videos[]`
-    list, but the inner schema differed (`uri` vs `videoUri`) and made
-    downstream helpers inconsistent. Phase 1 only supports
-    `response.videos[]`; alternate shapes need an adapter at real-Veo
-    integration time. Lock in that an unsupported shape surfaces as
-    MODEL_INVALID_REQUEST (loud + actionable) rather than silently
-    succeeding or producing garbage.
+    """Codex P1 round-4: current Google Veo REST examples return the
+    `response.generateVideoResponse.generatedSamples[].video` shape with
+    `uri` (not `videoUri`) on the inner object. The client must
+    normalise this shape into the same canonical pipeline as
+    `response.videos[]` so a successful operation is downloaded properly.
     """
-    poll_unknown_shape = lambda _r: httpx.Response(  # noqa: E731
+    download_url = "https://veo.test/blobs/sample.mp4"
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if str(request.url) == download_url:
+            return httpx.Response(200, content=_FAKE_MP4)
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {
+                    "generateVideoResponse": {
+                        "generatedSamples": [
+                            {"video": {"uri": download_url, "durationSeconds": 6}}
+                        ],
+                    }
+                },
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(image_bytes=b"img", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert result.video_bytes == _FAKE_MP4
+    # When duration_seconds isn't supplied by the caller, fall back to the
+    # operation's reported duration — which lives at the inner `video.durationSeconds`
+    # path under generatedSamples.
+    assert result.duration_ms == 6000
+
+
+async def test_truly_empty_response_raises_invalid_request(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A done operation with no recognised video shape (neither
+    `response.videos[]` nor `generateVideoResponse.generatedSamples`)
+    surfaces as MODEL_INVALID_REQUEST so callers see a loud error rather
+    than silently succeeding with no bytes.
+    """
+    poll_empty = lambda _r: httpx.Response(  # noqa: E731
         200,
         json={
             "name": _OPERATION_NAME,
             "done": True,
-            "response": {
-                "generateVideoResponse": {
-                    "generatedSamples": [{"video": {"uri": "https://veo.test/x.mp4"}}],
-                }
-            },
+            "response": {"unrelatedField": "no videos here"},
         },
     )
-    handler, _ = _make_seq_handler(poll_fns=[poll_unknown_shape])
+    handler, _ = _make_seq_handler(poll_fns=[poll_empty])
     client = _make_client(fake_redis, handler, max_retries=0, monkeypatch=monkeypatch)
     try:
         with pytest.raises(AgentErrorException) as info:
