@@ -169,6 +169,18 @@ class GptImage2Client:
         optional supplementary images uploaded by the user. We don't send
         an explicit `size` — the provider infers from the input — so the
         edit preserves base dimensions naturally.
+
+        **Caller contract — bytes must be PNG-encoded.** The multipart
+        parts are hard-labeled `image/png` because the provider matches
+        the declared MIME against the payload and 4xx's on mismatch.
+        Reference uploads accept JPEG / WebP at the upload layer (see
+        `validation_reference_image_unsupported_type`), so the worker
+        invoking this method is responsible for normalization via
+        `app.utils.thumbnails.ensure_png_bytes` before each `bytes`
+        argument is passed in. This mirrors the pattern in
+        `app.workers.jobs.create_checkpoint` for the existing
+        `generate_image_image2image` path (which has the same hard-coded
+        label) and is part of the T-031 alias-worker scope.
         """
         # Repeated `image` field name for the base + each reference
         # matches OpenAI's gpt-image-1 multi-image edits contract; httpx
@@ -209,6 +221,12 @@ class GptImage2Client:
 
         Like `edit_image2image`, no explicit `size` is sent — the
         provider preserves base dimensions on edit calls.
+
+        **Caller contract — bytes must be PNG-encoded** (same reason as
+        `edit_image2image`: hard-labeled `image/png` multipart parts).
+        Mask is always PNG by frontend construction (react-konva canvas
+        export); base bytes come from storage where T-017 / T-031
+        normalize via `ensure_png_bytes` before calling.
         """
         validate_inpaint_mask(base_image_bytes, mask_png_bytes)
 
