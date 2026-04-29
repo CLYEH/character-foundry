@@ -1,13 +1,13 @@
-"""Public AI-client surface used by workers (T-014, extended T-030).
+"""Public AI-client surface used by workers (T-014, extended T-029 + T-030).
 
-`AIClient` is a `Protocol` (not an ABC) so the stub and the real client are
-duck-typed: callers depend only on the methods listed below. The narrower
-fields on `AIGenerationResult` match what T-014 asks for (`image_bytes`,
-`model_version`, `cost_units`, `duration_ms`); the planning doc's richer
-`ImageGenerationResult` shape is a Sprint 2/3 concern that downstream
+`AIClient` / `VideoClient` are `Protocol`s (not ABCs) so the stub and real
+clients are duck-typed: callers depend only on the methods listed here.
+The narrower fields on `AIGenerationResult` / `VeoResult` match what each
+ticket asks for; the planning doc's richer `ImageGenerationResult` /
+`VideoGenerationResult` shapes are Sprint 2/3 concerns that downstream
 callers can extend later.
 
-Two method families coexist:
+Two `AIClient` method families coexist:
 
   - `generate_image_*` — Sprint 2 checkpoint flows (text2image,
     image2image with single reference, inpaint with positional args).
@@ -15,12 +15,14 @@ Two method families coexist:
   - `edit_image2image` / `edit_inpaint` — T-030, Sprint 3 alias flows.
     Kwarg-only with a separate `base_image_bytes` and a list of
     references; mask validation lives in the implementation.
+
+`VideoClient` (T-029) is the i2v surface for Veo 3.1 motion generation.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,27 @@ class AIGenerationResult:
     model_version: str
     cost_units: float
     duration_ms: int
+
+
+@dataclass(frozen=True)
+class VeoResult:
+    """Output of `VideoClient.generate_i2v` (T-029).
+
+    `duration_ms` is the *video playback* duration, not the call wall-clock
+    — workers measure latency themselves when writing GenerationLog. For
+    the stub it equals the bundled fixture length; for the real client it
+    equals the `duration_seconds` requested (Veo honours it deterministically).
+
+    `generation_log_payload` is an opaque dict the worker (T-033) folds into
+    GenerationLog.parameters / raw_response. Keeping it loose here avoids
+    coupling the AI layer to the GenerationLog schema; that mapping is the
+    worker's job.
+    """
+
+    video_bytes: bytes
+    model_version: str
+    duration_ms: int
+    generation_log_payload: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -85,3 +108,27 @@ class AIClient(Protocol):
         mask_png_bytes: bytes,
         prompt: str,
     ) -> AIGenerationResult: ...
+
+
+@runtime_checkable
+class VideoClient(Protocol):
+    """i2v surface (T-029). Phase 1 only needs Veo 3.1.
+
+    `image_bytes` is the parent (Base / Alias) frame. The client is
+    responsible for sending it as both first frame *and* last frame to
+    Veo — that's the identity-preservation trick decided in DECISIONS §3.
+    Callers stay oblivious; they just hand over the parent image and a
+    prompt.
+
+    Same resilience contract as `AIClient`: per-model breaker, provider
+    error → AgentError mapping, return a fully-populated `VeoResult` on
+    success.
+    """
+
+    async def generate_i2v(
+        self,
+        *,
+        image_bytes: bytes,
+        prompt: str,
+        duration_seconds: float | None = None,
+    ) -> VeoResult: ...

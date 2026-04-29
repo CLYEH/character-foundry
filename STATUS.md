@@ -1,6 +1,6 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-04-29 — T-040 (frontend modal extension) + T-035 (backend prompt-preview alias/motion + MaskInput schema) both done; closes backlog S2-5 and S3-1.
+> **Last updated:** 2026-04-30 — T-029 (backend Veo 3.1 i2v client + stub) done.
 > **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張）**
 
 ---
@@ -65,7 +65,7 @@
 
 | # | Ticket | Status |
 |---|---|---|
-| T-029 | Backend Veo 3.1 i2v client + stub | TODO |
+| T-029 | Backend Veo 3.1 i2v client + stub | DONE |
 | T-030 | Backend gpt-image-2 image2image + inpaint extension | DONE |
 | T-031 | Backend Alias generation endpoint + worker | TODO |
 | T-032 | Backend Alias list / detail / rename / delete | TODO |

@@ -53,12 +53,14 @@ include = ["app*"]
 
 [tool.setuptools.package-data]
 # Ship non-Python assets bundled with the API package. Without this the
-# default setuptools wheel drops the stub PNG, so any non-editable install
-# (e.g. the Docker image's `pip install .`) crashes on the first stub
-# checkpoint with `FileNotFoundError: .../app/ai/_fixtures/sample_base.png`.
+# default setuptools wheel drops the stub fixtures, so any non-editable
+# install (e.g. the Docker image's `pip install .`) crashes on the first
+# stub checkpoint with `FileNotFoundError: .../app/ai/_fixtures/...`.
 # Editable installs on the host don't hit this because the source tree is
 # the import root, but T-026 E2E exposes the wheel path.
-"app.ai._fixtures" = ["*.png"]
+# `*.mp4` covers the Veo placeholder fixture (T-029); add new globs as the
+# stub fixture set grows.
+"app.ai._fixtures" = ["*.png", "*.mp4"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
