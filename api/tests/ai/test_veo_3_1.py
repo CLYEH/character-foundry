@@ -783,6 +783,82 @@ async def test_videoUri_cross_host_redirect_strips_api_key(
     assert "x-goog-api-key" not in foreign_request_headers
 
 
+async def test_videoUri_same_origin_with_explicit_port_keeps_api_key(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 round-9: `veo.test` and `veo.test:443` are the same origin
+    over HTTPS; the raw `netloc` string compare in round-8 would have
+    treated them as different and stripped the api-key, breaking a valid
+    same-provider redirect."""
+    initial_url = "https://veo.test/v1beta/operations/abc/media"
+    same_origin_explicit_port = "https://veo.test:443/blobs/abc.mp4"
+    final_request_headers: dict[str, str] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if str(request.url) == initial_url:
+            return httpx.Response(302, headers={"Location": same_origin_explicit_port})
+        # httpx normalises the URL when sending, so match on path+host instead
+        # of full string to be robust to its handling of the explicit `:443`.
+        if request.url.host == "veo.test" and request.url.path == "/blobs/abc.mp4":
+            final_request_headers.update(dict(request.headers))
+            return httpx.Response(200, content=_FAKE_MP4)
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {"videos": [{"videoUri": initial_url}]},
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, monkeypatch=monkeypatch)
+    try:
+        await client.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=2)
+    finally:
+        await client.aclose()
+
+    # Same origin → key MUST stay attached.
+    assert final_request_headers.get("x-goog-api-key") == "test-key"
+
+
+async def test_videoUri_case_insensitive_host_keeps_api_key(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DNS hostnames are case-insensitive, so `Veo.Test` is the same host
+    as the configured `veo.test`. A naive case-sensitive netloc compare
+    would have treated them as cross-origin (Codex P2 round-9)."""
+    initial_url = "https://veo.test/v1beta/operations/abc/media"
+    mixed_case_url = "https://Veo.Test/blobs/abc.mp4"
+    final_request_headers: dict[str, str] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _submit_response(request)
+        if str(request.url) == initial_url:
+            return httpx.Response(302, headers={"Location": mixed_case_url})
+        if request.url.host.lower() == "veo.test" and request.url.path == "/blobs/abc.mp4":
+            final_request_headers.update(dict(request.headers))
+            return httpx.Response(200, content=_FAKE_MP4)
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {"videos": [{"videoUri": initial_url}]},
+            },
+        )
+
+    client = _make_client(fake_redis, _handler, monkeypatch=monkeypatch)
+    try:
+        await client.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=2)
+    finally:
+        await client.aclose()
+
+    assert final_request_headers.get("x-goog-api-key") == "test-key"
+
+
 async def test_videoUri_same_host_redirect_keeps_api_key(
     fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
 ) -> None:

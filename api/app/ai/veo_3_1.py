@@ -371,12 +371,12 @@ class Veo31Client:
           as `MODEL_INVALID_REQUEST`.
         """
         client = await self._http()
-        api_host = urlparse(self.api_url).netloc
+        api_origin = _origin_tuple(self.api_url)
         current_url = url
 
         for _ in range(_VEO_MAX_REDIRECTS):
             request = client.build_request("GET", current_url)
-            if urlparse(current_url).netloc != api_host:
+            if _origin_tuple(current_url) != api_origin:
                 request.headers.pop("x-goog-api-key", None)
             try:
                 response = await client.send(request)
@@ -455,6 +455,35 @@ class Veo31Client:
 # Operation-payload helpers — kept module-level so they're easy to unit test
 # without the breaker / HTTP scaffolding.
 # ---------------------------------------------------------------------------
+
+
+def _origin_tuple(url: str) -> tuple[str, str, int]:
+    """Return a normalised `(scheme, host, port)` tuple for same-origin
+    comparison.
+
+    Raw `urlparse(...).netloc` keeps user-supplied formatting verbatim, so
+    `veo.test` and `veo.test:443` (the implicit https port) compare unequal
+    even though they're the same origin. Likewise `Example.COM` and
+    `example.com`. That false negative matters for the cross-host api-key
+    strip in `_download_video_uri`: a same-origin redirect with an explicit
+    `:443` would otherwise drop the auth header and fail the download
+    with 401/403 (Codex P2 round-9 on PR #39).
+
+    Scheme is included so an https→http redirect is treated as cross-origin
+    (and the key stripped), even when the host is identical.
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if parsed.port is not None:
+        port = parsed.port
+    elif scheme == "https":
+        port = 443
+    elif scheme == "http":
+        port = 80
+    else:
+        port = -1
+    return scheme, host, port
 
 
 def _clamp_duration_seconds(value: float) -> float:
