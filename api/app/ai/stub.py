@@ -130,15 +130,21 @@ class VeoStub:
         prompt: str,  # noqa: ARG002
         duration_seconds: float | None = None,
     ) -> VeoResult:
+        from app.ai.veo_3_1 import _clamp_duration_seconds
+
         if self.sleep_seconds > 0:
             await asyncio.sleep(self.sleep_seconds)
         if duration_seconds is not None:
-            duration_ms = int(duration_seconds * 1000)
+            # Mirror the real client's clamp so callers see consistent
+            # `duration_ms` regardless of stub vs real mode (Codex P1 round-6).
+            clamped = _clamp_duration_seconds(duration_seconds)
+            duration_ms = int(clamped * 1000)
         else:
+            clamped = None
             duration_ms = self.FIXTURE_DURATION_MS
         payload: dict[str, Any] = {
             "model": self.MODEL_VERSION,
-            "duration_seconds": duration_seconds,
+            "duration_seconds": clamped,
             "stub": True,
         }
         return VeoResult(

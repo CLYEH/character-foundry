@@ -70,6 +70,17 @@ VEO_SERVICE_NAME = "veo-3.1"
 # rather than the default `OPENAI_API_KEY` message — Codex P2 round-5.
 _VEO_AUTH_KEY_ENV = "VEO_API_KEY"
 
+# Caller-supplied `duration_seconds` is clamped to this band before submission.
+# Per planning/backend/ai-integration.md §4.3 the Phase 1 callers stay in
+# 3–10s (preset 3–5, custom 3–10), and Veo rejects out-of-range values with
+# a non-retryable INVALID_ARGUMENT — clamping turns "user typed 99" into a
+# normalised generation rather than a hard failure (Codex P1 round-6 on
+# PR #39). The min is intentionally below the 3s caller floor so Veo's own
+# minimum (currently ≥1s in published examples) governs the lower bound;
+# update both bounds when real-Veo integration reveals a tighter spec.
+_VEO_DURATION_MIN_SECONDS = 1.0
+_VEO_DURATION_MAX_SECONDS = 10.0
+
 
 class Veo31Client:
     """Implements `app.ai.base.VideoClient` against the Veo 3.1 long-running API."""
@@ -133,10 +144,16 @@ class Veo31Client:
         """
         await self._breaker.raise_if_open()
 
+        # Clamp once at the entry point so submit body, generation_log_payload,
+        # and the returned `duration_ms` all agree on the same effective value.
+        clamped_duration = (
+            _clamp_duration_seconds(duration_seconds) if duration_seconds is not None else None
+        )
+
         operation_name = await self._submit_with_retry(
             image_bytes=image_bytes,
             prompt=prompt,
-            duration_seconds=duration_seconds,
+            duration_seconds=clamped_duration,
         )
 
         try:
@@ -156,8 +173,8 @@ class Veo31Client:
         # caller didn't supply one, fall back to whatever the operation
         # response advertises so callers / GenerationLog still see a value.
         effective_duration = (
-            duration_seconds
-            if duration_seconds is not None
+            clamped_duration
+            if clamped_duration is not None
             else _extract_duration_seconds(operation)
         )
         duration_ms = int((effective_duration or 0.0) * 1000)
@@ -404,6 +421,15 @@ class Veo31Client:
 # Operation-payload helpers — kept module-level so they're easy to unit test
 # without the breaker / HTTP scaffolding.
 # ---------------------------------------------------------------------------
+
+
+def _clamp_duration_seconds(value: float) -> float:
+    """Clamp a caller-supplied duration into Veo's accepted band."""
+    if value < _VEO_DURATION_MIN_SECONDS:
+        return _VEO_DURATION_MIN_SECONDS
+    if value > _VEO_DURATION_MAX_SECONDS:
+        return _VEO_DURATION_MAX_SECONDS
+    return value
 
 
 def _safe_json(response: httpx.Response) -> Any:

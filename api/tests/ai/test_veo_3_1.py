@@ -441,6 +441,93 @@ async def test_poll_loop_exhausts_max_attempts_with_model_timeout(
     assert info.value.error.code == "MODEL_TIMEOUT"
 
 
+async def test_duration_seconds_clamps_above_max_before_submit(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1 round-6 + planning §4.3: out-of-range durations must be
+    clamped to the supported band (1.0–10.0s in Phase 1) BEFORE the
+    submit body is built. Veo otherwise rejects with a non-retryable
+    INVALID_ARGUMENT, turning a recoverable user mistake into a hard
+    failure."""
+    captured: dict[str, object] = {}
+
+    def _submit(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _submit_response(request)
+
+    handler, _ = _make_seq_handler(submit_fn=_submit, poll_fns=[_done_response_inline])
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=99.0)
+    finally:
+        await client.aclose()
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["parameters"]["durationSeconds"] == 10.0  # clamped to max
+    # The result's duration_ms must reflect the clamped value, not the
+    # caller's raw request — otherwise GenerationLog would record a value
+    # that doesn't match the actual rendered video length.
+    assert result.duration_ms == 10000
+
+
+async def test_duration_seconds_clamps_below_min_before_submit(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counterpart to the above: durations below the minimum (e.g. 0.1s)
+    are clamped UP to the floor."""
+    captured: dict[str, object] = {}
+
+    def _submit(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _submit_response(request)
+
+    handler, _ = _make_seq_handler(submit_fn=_submit, poll_fns=[_done_response_inline])
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=0.1)
+    finally:
+        await client.aclose()
+
+    body = captured["body"]
+    assert body["parameters"]["durationSeconds"] == 1.0  # clamped to min
+    assert result.duration_ms == 1000
+
+
+async def test_duration_seconds_in_range_passes_through_unchanged(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 1 preset durations (3-5s) sit comfortably inside the band and
+    must pass through without modification."""
+    captured: dict[str, object] = {}
+
+    def _submit(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _submit_response(request)
+
+    handler, _ = _make_seq_handler(submit_fn=_submit, poll_fns=[_done_response_inline])
+    client = _make_client(fake_redis, handler, monkeypatch=monkeypatch)
+    try:
+        result = await client.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=3.5)
+    finally:
+        await client.aclose()
+
+    body = captured["body"]
+    assert body["parameters"]["durationSeconds"] == 3.5
+    assert result.duration_ms == 3500
+
+
+async def test_stub_clamps_duration_seconds_for_consistency() -> None:
+    """The stub must apply the same clamp as the real client so callers
+    see consistent duration_ms regardless of which mode is wired in
+    (Codex P1 round-6)."""
+    stub = VeoStub()
+    high = await stub.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=99.0)
+    assert high.duration_ms == 10000
+    low = await stub.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=0.1)
+    assert low.duration_ms == 1000
+
+
 async def test_auth_failure_remediation_names_VEO_API_KEY(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
