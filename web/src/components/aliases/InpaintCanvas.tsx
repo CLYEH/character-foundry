@@ -91,24 +91,25 @@ export function InpaintCanvas({ baseImageUrl, enabled, onMaskChange }: InpaintCa
     }
   }, [baseImageUrl])
 
-  // Disabling the canvas blanks the parent's mask handle. We don't drop
-  // the strokes here (toggling back on should restore them), but the
-  // parent must treat the mask as absent for input-mode resolution.
-  useEffect(() => {
-    if (enabled) return
-    if (lastSentRef.current === 'null') return
-    onMaskChange(null)
-    lastSentRef.current = 'null'
-  }, [enabled, onMaskChange])
+  // `strokesRef` mirrors `strokes` synchronously so the imperative
+  // `exportMaskNow` (called from endStroke / handleClear) reads the
+  // latest array without a render-time closure capturing stale state.
+  const strokesRef = useRef<Stroke[]>([])
+  // Track the latest in-flight `toBlob` callback so a new export request
+  // (or unmount) can abort the previous one — the late blob would
+  // otherwise land in the parent as a stale mask handle.
+  const exportAbortRef = useRef<{ aborted: boolean } | null>(null)
 
-  // Rebuild the mask payload whenever strokes or the base image change.
-  // Bumping the layer to full opacity for the export, then restoring,
-  // sidesteps having to maintain two parallel layer instances.
-  useEffect(() => {
+  // Imperative export: runs on stroke completion (pointerup / leave /
+  // cancel) and on canvas clear, NOT on every pointer-move. The previous
+  // implementation re-ran `toCanvas + getImageData + toBlob` on every
+  // setStrokes and stalled drawing on 1K+ images / mobile (Codex P2
+  // round 2).
+  const exportMaskNow = useCallback(() => {
     if (!enabled) return
     const layer = maskLayerRef.current
     if (!layer || !image) return
-    if (strokes.length === 0) {
+    if (strokesRef.current.length === 0) {
       if (lastSentRef.current === 'null') return
       onMaskChange(null)
       lastSentRef.current = 'null'
@@ -135,20 +136,51 @@ export function InpaintCanvas({ baseImageUrl, enabled, onMaskChange }: InpaintCa
       }
     }
 
-    // `canvas.toBlob` is async. If the user toggles the canvas off (or
-    // unmounts the component) between the queue and the callback, the
-    // late blob would land in the parent as a stale mask handle and
-    // ride along into the next submit. Abort with a per-effect flag.
-    let aborted = false
+    // Abort any prior pending toBlob so its late callback doesn't race
+    // a newer export with stale data.
+    if (exportAbortRef.current) exportAbortRef.current.aborted = true
+    const guard = { aborted: false }
+    exportAbortRef.current = guard
+
     canvas.toBlob((blob) => {
-      if (aborted || !blob) return
+      if (guard.aborted || !blob) return
       onMaskChange({ blob, coveragePercent: coverage })
       lastSentRef.current = 'mask'
     }, 'image/png')
-    return () => {
-      aborted = true
+  }, [enabled, image, onMaskChange])
+
+  // Disabling the canvas blanks the parent's mask handle. We don't drop
+  // the strokes here (toggling back on should restore them), but the
+  // parent must treat the mask as absent for input-mode resolution.
+  useEffect(() => {
+    if (enabled) {
+      // Re-enable: flush whatever strokes exist now (covers
+      // toggle-off-then-on without losing the painted mask).
+      exportMaskNow()
+      return
     }
-  }, [enabled, image, strokes, onMaskChange])
+    if (lastSentRef.current === 'null') return
+    if (exportAbortRef.current) exportAbortRef.current.aborted = true
+    onMaskChange(null)
+    lastSentRef.current = 'null'
+  }, [enabled, exportMaskNow, onMaskChange])
+
+  // Image load: the first time we have dimensions, sync the parent so
+  // an empty mask reads as `null` and the layer is ready to export. No
+  // strokes can exist yet, so this is a one-time idempotent emit.
+  useEffect(() => {
+    if (!enabled || !image) return
+    exportMaskNow()
+    // Only fire on initial image arrival, not every exportMaskNow churn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, image])
+
+  // Cancel any in-flight toBlob if the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (exportAbortRef.current) exportAbortRef.current.aborted = true
+    }
+  }, [])
 
   // ---- Pointer handlers --------------------------------------------------
 
@@ -159,7 +191,12 @@ export function InpaintCanvas({ baseImageUrl, enabled, onMaskChange }: InpaintCa
       const pointer = stage?.getRelativePointerPosition()
       if (!pointer) return
       isDrawingRef.current = true
-      setStrokes((prev) => [...prev, { tool, size: brushSize, points: [pointer.x, pointer.y] }])
+      const next: Stroke[] = [
+        ...strokesRef.current,
+        { tool, size: brushSize, points: [pointer.x, pointer.y] },
+      ]
+      strokesRef.current = next
+      setStrokes(next)
     },
     [brushSize, enabled, tool],
   )
@@ -169,12 +206,13 @@ export function InpaintCanvas({ baseImageUrl, enabled, onMaskChange }: InpaintCa
     const stage = event.target.getStage()
     const pointer = stage?.getRelativePointerPosition()
     if (!pointer) return
-    setStrokes((prev) => {
-      if (prev.length === 0) return prev
-      const last = prev[prev.length - 1]
-      const updated: Stroke = { ...last, points: [...last.points, pointer.x, pointer.y] }
-      return [...prev.slice(0, -1), updated]
-    })
+    const prev = strokesRef.current
+    if (prev.length === 0) return
+    const last = prev[prev.length - 1]
+    const updated: Stroke = { ...last, points: [...last.points, pointer.x, pointer.y] }
+    const next = [...prev.slice(0, -1), updated]
+    strokesRef.current = next
+    setStrokes(next)
   }, [])
 
   // `endStroke` covers every way a pointer interaction can finish:
@@ -183,14 +221,18 @@ export function InpaintCanvas({ baseImageUrl, enabled, onMaskChange }: InpaintCa
   // (touch interruption — phone call, scroll gesture takeover). Without
   // the leave/cancel paths, `isDrawingRef` would stay `true` and the
   // next pointer move would extend the previous stroke without a fresh
-  // press.
+  // press. Export only fires here (stroke complete), not per pointer-move.
   const endStroke = useCallback(() => {
+    if (!isDrawingRef.current) return
     isDrawingRef.current = false
-  }, [])
+    exportMaskNow()
+  }, [exportMaskNow])
 
   const handleClear = useCallback(() => {
+    strokesRef.current = []
     setStrokes([])
-  }, [])
+    exportMaskNow()
+  }, [exportMaskNow])
 
   // ---- Render ------------------------------------------------------------
 

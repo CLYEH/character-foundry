@@ -394,6 +394,50 @@ describe('AliasEditPage', () => {
     expect(screen.getByTestId('alias-submit')).toBeEnabled()
   })
 
+  it('cancels the orphan task when user unmounts mid-POST (after task_id resolves)', async () => {
+    getCharacterMock.mockResolvedValue({ character: makeDetail() })
+    cancelTaskMock.mockResolvedValue({
+      task: {} as unknown as CancelTaskResponse['task'],
+      cancel_outcome: 'cancelled_immediately',
+    })
+
+    // Hold the createAlias resolution so we can unmount while the POST
+    // is still in flight. This is the Codex P1 round 2 scenario: backend
+    // accepted the task and minted a task_id, but the user navigated
+    // away before the page could subscribe to the SSE stream.
+    let resolveCreate: (value: CreateAliasResponse) => void = () => {}
+    createAliasMock.mockImplementation(
+      () =>
+        new Promise<CreateAliasResponse>((resolve) => {
+          resolveCreate = resolve
+        }),
+    )
+
+    const { unmount } = renderPage()
+
+    await screen.findByTestId('alias-base-image')
+    fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: '孤兒版' } })
+    fireEvent.change(screen.getByLabelText('Alias 補述內容'), { target: { value: '某些字' } })
+
+    fireEvent.click(screen.getByTestId('alias-submit'))
+    await waitFor(() => expect(createAliasMock).toHaveBeenCalledTimes(1))
+
+    // Unmount before the POST resolves.
+    unmount()
+
+    // Backend now mints task_id and returns it.
+    await act(async () => {
+      resolveCreate({ task_id: 'task-orphan', alias_id: 'alias-orphan' })
+      // Let the awaiting handleSubmit microtask drain.
+      await Promise.resolve()
+    })
+
+    // The page must have detected the unmount and fired a cancel against
+    // the orphaned task to avoid burning quota on an alias the user will
+    // never see.
+    await waitFor(() => expect(cancelTaskMock).toHaveBeenCalledWith('task-orphan'))
+  })
+
   it('cancel_pending then SSE cancelled emits the success confirmation toast', async () => {
     getCharacterMock.mockResolvedValue({ character: makeDetail() })
     createAliasMock.mockResolvedValue({ task_id: 'task-cp', alias_id: 'alias-cp' })

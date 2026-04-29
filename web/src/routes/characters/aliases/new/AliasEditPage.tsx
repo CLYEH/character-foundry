@@ -131,6 +131,14 @@ function AliasEditBody({
   // upload + alias create) before React commits the disabled state. The
   // ref short-circuits the second click in the same tick.
   const submitInFlightRef = useRef(false)
+  // Set true in the unmount cleanup so the awaiting `handleSubmit` can
+  // detect that the page was abandoned mid-POST and fire-and-forget a
+  // cancel against the freshly-minted task_id. Without this, leaving via
+  // breadcrumb / browser back during the submit window (after POST
+  // started but before `task_id` resolved into `activeTaskRef`) would
+  // orphan the backend task — it'd run to completion, mint an alias the
+  // user never sees, and burn API quota (Codex P1 round 2).
+  const isUnmountedRef = useRef(false)
 
   // Reference upload hook reused with the character-scoped uploader so the
   // multi-file UX (validation, retries, capacity, object-URL cleanup)
@@ -199,12 +207,17 @@ function AliasEditBody({
   // future synchronous shim doesn't make the `.catch` chain blow up.
   useEffect(() => {
     return () => {
+      isUnmountedRef.current = true
       const task = activeTaskRef.current
       if (task) {
         Promise.resolve(cancelTask(task.taskId)).catch(() => {
           // Swallow — we're unmounting, nothing useful to surface.
         })
       }
+      // The orphan-during-submit case is handled by `handleSubmit`'s
+      // post-await unmount check (see below) — the awaited mutateAsync
+      // will resolve after this cleanup runs, see `isUnmountedRef.current
+      // === true`, and fire its own cancel.
     }
   }, [])
 
@@ -242,28 +255,34 @@ function AliasEditBody({
     const inputMode = computeInputMode()
     const referenceIds = referenceUpload.referenceImageIds
 
-    createAliasMutation.mutate(
-      {
+    let response: Awaited<ReturnType<typeof createAliasMutation.mutateAsync>>
+    try {
+      response = await createAliasMutation.mutateAsync({
         name: trimmedName,
         input_mode: inputMode,
         freeform_note: hasText ? trimmedNote : null,
         reference_image_ids: referenceIds.length > 0 ? referenceIds : null,
         mask: maskHandle,
-      },
-      {
-        onSuccess: ({ task_id, alias_id }) => {
-          setActiveTask({ taskId: task_id, aliasId: alias_id })
-          subscribe(task_id)
-        },
-        // The mutationCache (queryClient.ts) handles surfacing the
-        // AgentError as a toast — there's no field-level form here, so
-        // we don't override `onError` and just let the global handler
-        // fire the toast.
-        onSettled: () => {
-          submitInFlightRef.current = false
-        },
-      },
-    )
+      })
+    } catch {
+      // mutationCache (queryClient.ts) already surfaced the AgentError
+      // as a toast; nothing more to do here.
+      submitInFlightRef.current = false
+      return
+    } finally {
+      submitInFlightRef.current = false
+    }
+
+    if (isUnmountedRef.current) {
+      // User navigated away while the POST was in flight. The backend
+      // accepted the task and is generating; cancel it so we don't burn
+      // quota on an alias the user will never see (Codex P1 round 2).
+      Promise.resolve(cancelTask(response.task_id)).catch(() => {})
+      return
+    }
+
+    setActiveTask({ taskId: response.task_id, aliasId: response.alias_id })
+    subscribe(response.task_id)
   }, [
     aliasName,
     computeInputMode,
@@ -280,19 +299,13 @@ function AliasEditBody({
 
   // ---- cancel ----------------------------------------------------------
   const handleCancel = useCallback(() => {
-    if (submitInFlightRef.current && !activeTaskRef.current) {
-      // Submit is mid-flight (mask upload or alias create POST in
-      // progress) but the SSE subscription hasn't been set up yet.
-      // Navigating away now would let the impending `onSuccess`
-      // register a `subscribe(taskId)` against a torn-down hook — the
-      // SSE connection lingers until the worker finishes the task.
-      // Easier UX: tell the user to wait the half-second.
-      toast.info('正在送出，請稍候')
-      return
-    }
     const task = activeTaskRef.current
     if (!task) {
-      // No in-flight task yet — treat [取消] as "go back".
+      // No active task yet. Either the user hasn't submitted, or submit
+      // is mid-POST (no task_id back yet). In either case [取消] just
+      // navigates back; if a submit is in flight, the unmount cleanup
+      // sets `isUnmountedRef` and the awaiting `handleSubmit` cancels
+      // the orphan task once the POST resolves.
       onCompleted()
       return
     }
