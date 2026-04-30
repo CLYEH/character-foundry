@@ -28,18 +28,32 @@ from app.workers.jobs.create_checkpoint import run_create_checkpoint
 from app.workers.jobs.create_motion import run_create_motion
 from app.workers.jobs.noop import run_noop
 
-# Per-function timeout for the motion worker (Codex T-033 P1 round-5):
-# Veo i2v worst-case budget is submit (≤180s, `VEO_TIMEOUT_MS`) + poll
-# (60 attempts × 5s = 300s, `VEO_MAX_POLL_ATTEMPTS` × `VEO_POLL_INTERVAL_MS`)
-# + download (≤180s) = up to ~660s before storage / DB finalisation.
-# The pool-wide default `job_timeout=300s` would cancel a long-but-valid
-# generation mid-flight; arq's CancelledError raises outside the worker's
-# `except Exception` path and leaves the task row stuck `running`.
+# Per-function timeout for the motion worker (Codex T-033 P1 round-5/6).
+# The pool-wide default `job_timeout=300s` cancels long-but-valid
+# generations mid-flight; arq's CancelledError raises outside the
+# worker's `except Exception` path and leaves the task row stuck
+# `running`.
 #
-# 720s gives 60s of headroom over the worst-case Veo budget for storage
-# put + copy + DB writes. The pool default stays tight at 300s for noop
-# / checkpoint / cleanup so a runaway in those paths is still bounded.
-_MOTION_JOB_TIMEOUT_SECONDS = 720
+# Worst-case Veo i2v budget (round-6 includes submit retries):
+#   - submit retries:  (VEO_MAX_RETRIES=2 default) → 3 attempts ×
+#                      VEO_TIMEOUT_MS=180s + 1s + 2s exponential
+#                      backoff between attempts ≈ 543s. The
+#                      `_submit_with_retry` envelope in `Veo31Client`
+#                      only protects this step; the per-attempt
+#                      timeout is the same `VEO_TIMEOUT_MS`.
+#   - poll:            VEO_MAX_POLL_ATTEMPTS=60 × VEO_POLL_INTERVAL_MS=5s
+#                      = 300s. No retry envelope post-submit.
+#   - download:        ≤ VEO_TIMEOUT_MS = 180s. Single shot.
+#   - storage + DB:    storage put + copy + INSERT + commit ≈ 30s
+#                      headroom on a healthy backend.
+# Total: ≈ 1053s before timeout pressure.
+#
+# 1200s gives ~150s additional headroom and keeps a single round
+# number for ops dashboards. The pool default stays tight at 300s for
+# noop / checkpoint / cleanup so a runaway in those paths is still
+# bounded — only the motion worker gets the extended budget where Veo
+# actually needs it.
+_MOTION_JOB_TIMEOUT_SECONDS = 1200
 
 _logger = logging.getLogger(__name__)
 
