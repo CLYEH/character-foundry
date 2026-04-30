@@ -60,8 +60,8 @@
 > **Current status**（每完成一個 wave 就更新本表）：
 >
 > - Wave A：**done**（2026-04-30 全部 5 張 squash-merged：PR #38 #39 #40 #41 #42）
-> - Wave B：**進行中**（2026-04-30 開 worktree：T-031 / T-033 各一條）
-> - Wave C：blocked by Wave B
+> - Wave B：**done**（2026-04-30 全部 2 張 squash-merged：PR #46 T-031, PR #47 T-033）
+> - Wave C：**待開工**（解鎖；可以開 T-032, T-034 兩個 worktree）
 > - Wave D：blocked by Wave C
 > - Wave E：blocked by Wave D
 > - Wave F：blocked by Wave E
