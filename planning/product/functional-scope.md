@@ -242,7 +242,7 @@ Character（角色，最上層容器）
 | B1 | Copy 範圍 | Base + Aliases，**不含 Motions** | 若使用者反映不便再加 |
 | B2 | 檔案儲存 | **本機檔案系統**，backend 用 abstract storage interface | 無痛切 S3 / MinIO |
 | B3 | 部署目標 | **內網自架 server** | 規模擴大後上雲 |
-| B4 | 認證機制 | **簡單帳密 + JWT** | OAuth / SSO |
+| B4 | 認證機制 | Phase 1 起步：**簡單帳密 + JWT**（access 15min, refresh 30d）。**M3.5 升級為 OAuth 2.1 + PKCE**（human auth code+PKCE / agent client credentials），dual-stack migration。詳見 `../auth/`。 | OAuth scope expansion / SSO 後續評估 |
 | B5 | Team 模型 | **單一 team**（schema 保留 `team_id`）| 多 team |
 | B6 | 成本控管 | **軟性 quota** — UI 顯示使用量，不硬擋 | 硬性 quota / admin approval |
 | B7 | 語言策略 | **UI 中文 + Prompt 英文**（由 LLM reconciler 翻譯注入）| 雙語 UI |

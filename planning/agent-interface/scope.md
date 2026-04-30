@@ -56,7 +56,7 @@
 |---|---|---|
 | Sprint 3.5a | OAuth provider 抉擇 + spec 確認；MCP transport 抉擇 | 1 週 plan |
 | Sprint 3.5b | OAuth migration（auth.py + refresh_token + signed-URL）| 1.5 週 |
-| Sprint 3.5c | MCP server 骨架 + 5 個核心 tool（建 character / 加 alias / 生 motion / 下載 / 列 character）| 2 週 |
+| Sprint 3.5c | MCP server 骨架 + 4 個 M3-範圍核心 tool（建 character / 加 alias / 生 motion / 列 character）| 2 週 |
 | Sprint 3.5d | Agent E2E smoke：用一個外部 agent 跑完 §1 完成條件 | 0.5 週 |
 
 實際時程要看 Phase 1 M3 收尾速度與你決定的 OAuth provider。
