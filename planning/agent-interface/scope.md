@@ -61,25 +61,28 @@
 
 ```
 Step 1：agent-interface agent 拍板（先做，~1 週）
-       ├─ Q1 MCP transport
-       ├─ Q2 Tool 顆粒度（packaging vs 1:1）
-       ├─ Q3 Async task agent 體驗（sync await + progress vs polling）
-       └─ Q4 Tool naming convention
+       └─ open-questions.md 全部 9 條：
+            Q1 transport / Q2 顆粒度 / Q3 async / Q4 naming /
+            Q5 agent vs human scope / Q6 signed URL（與 auth Q5 互鎖）/
+            Q7 MCP exposure / Q8 versioning / Q9 endpoint blacklist
        output: MCP tool surface 雛形 + agent vs human 互動模型輪廓
                 ↓
 Step 2：auth agent 拍板（接續 step 1，~1 週）
-       ├─ Q1 OAuth provider 選型（Authentik / Google / 其他）
-       ├─ Q2 Agent token 取得方式（client credentials vs delegation）
-       ├─ Q3 Scope 清單細切
-       └─ Q5 Signed URL 與 OAuth 解耦驗證
+       └─ ../auth/open-questions.md 全部 8 條：
+            Q1 provider / Q2 agent grants / Q3 scope / Q4 JWT migration /
+            Q5 signed URL（與 agent-interface Q6 互鎖，一起拍板）/
+            Q6 refresh token / Q7 UI cutover（最終 UI 實作落 Step 4 frontend，
+            策略決策仍在本步） / Q8 MCP-OAuth integration（與 step 1 Q1 transport 互鎖）
        Input dependency: step 1 的 tool surface（決定 scope 細粒度）
                 ↓
 Step 3：backend agent review（短，~0.5 週）
        └─ endpoint scope decorator + MCP tool 條目該怎麼長進每張 ticket
                 ↓
 Step 4：frontend + devops（並行，~0.5 + 0.5 週）
-       ├─ frontend: authStore / login UI 改動範圍
+       ├─ frontend: authStore / login UI 改動範圍 + auth Q7 UI cutover 細節落地
        └─ devops: OAuth provider docker stack（若選自架）
+
+> 17 條（agent-interface 9 + auth 8）每一條都有指定的 step owner；agent 不該因 bullet list 沒顯式列就以為「不必處理」。Step 1+2 各自的 open-questions.md 是 source of truth，本表只是 step ownership map。
 ```
 
 **為什麼是這個順序：**
