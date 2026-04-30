@@ -119,6 +119,18 @@
    - 若還有 `IN_PROGRESS` / `QUEUED` / `PENDING` → 繼續 loop 等
    - 沒有任何 check 也算紅（保險：repo 應該至少要有 PR workflow 跑 lint/test）
 
+   ⚠ **「沒有任何 check」可能是 PR merge conflict 造成的**（GitHub 對 `mergeable: CONFLICTING` 的 PR **靜默跳過 CI workflow**，不會回任何 check）。Loop tick 看到 0 check 時加查：
+
+   ```bash
+   gh pr view N --json mergeable,mergeStateStatus
+   ```
+
+   - `mergeable: CONFLICTING` / `mergeStateStatus: DIRTY` → 真正原因是 conflict，**不是 CI 壞掉、不是 billing、不是 concurrency limit**。修法是 rebase onto `origin/main` 解 conflict 後 force-push，CI 會自動重跑
+   - `mergeable: MERGEABLE` 但無 check → 才是真的 CI 沒觸發，可能 workflow 條件 / billing
+   - `mergeable: UNKNOWN` → GitHub 還在算，等下個 tick 再查
+
+   來源：T-033 worktree agent 2026-04-30 踩過——CI 神祕停跑於單一 PR 時，先查 mergeable，省去追 billing / concurrency / workflow 假說的時間。
+
    理由：branch protection 不一定有設好 required checks，Codex `+1` 也只代表程式碼層次的 review pass，不代表 tooling/CI pass。merge red PR 會把壞 main 推給後續 ticket。Loop 必須自己把關。
 
    **CI 紅且 Codex `+1`（衝突情境）：** 不 merge。判讀 CI failure log（`gh run view <run-id> --log-failed`），是 flake → 重跑（`gh run rerun <run-id>`）；是 real failure → 推 fix commit，繼續 loop（CI 重跑後 Codex 也會再 react，重新走完整流程）。**不要因為已經有 `+1` 就跳過修 CI**——`+1` 對應的是當時 commit 的 review，新 commit 推上去 Codex 會重新評估。
