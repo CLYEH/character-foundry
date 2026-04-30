@@ -368,6 +368,16 @@ async def test_worker_idempotent_retry_finalises_existing_motion(
                 },
             )
 
+        # Pre-create the canonical video file so the Phase 1.5 short-
+        # circuit recognises this as a clean "row durable + canonical
+        # present" retry. Without this, the round-3 `storage.exists`
+        # check in Phase 1.5 would fall through to the re-promote
+        # branch (correct behaviour for the canonical-missing case,
+        # exercised by a separate test if needed).
+        canonical_video_path = storage_root / "bases" / base_id / "motions" / f"{motion_id}.mp4"
+        canonical_video_path.parent.mkdir(parents=True, exist_ok=True)
+        canonical_video_path.write_bytes(b"placeholder mp4 from prior attempt")
+
         # Simulate the post-commit crash: insert the motion row directly
         # so the up-front idempotency lookup finds it on retry.
         async def _seed_committed() -> None:
