@@ -90,7 +90,7 @@ Step 4：frontend + devops（並行，~0.5 + 0.5 週）
 - step 2 之前動 step 3 → endpoint 還不知道要保護什麼，decorator 設計沒方向
 - step 3 之前動 step 4 → frontend / devops 沒底層合約可實作
 
-**怎麼啟動：** 開新 session 時對 Claude 說「請用 agent-interface agent 的視角，從 open-questions.md 開始，跟我把 Q1-Q4 拍板」。auth 同 pattern。Step 3 是 backend agent 視角接到 agent-interface 收斂的 spec。
+**怎麼啟動：** 開新 session 時對 Claude 說「請用 agent-interface agent 的視角，從 open-questions.md 開始，把 9 條全部拍板」。auth 同 pattern（8 條全部）。Step 3 是 backend agent 視角接到 agent-interface + auth 收斂後的 spec。
 
 ### 5.3 暫定時序（plan phase 收斂後）
 
