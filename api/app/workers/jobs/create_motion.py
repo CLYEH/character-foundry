@@ -367,8 +367,22 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
     # mark_completed, finalise the task here and skip the (expensive)
     # Veo call. PK collision deeper in the pipeline handles late
     # races; this is the cheap up-front path.
+    #
+    # Canonical-bytes verification (Codex T-033 P1 round-3): we ALSO
+    # require the canonical video file to exist before short-
+    # circuiting. If a previous attempt committed the row but the
+    # post-commit `storage.copy(temp → canonical)` failed (e.g. disk
+    # full at the moment of promotion), the row is durable but the
+    # mp4 isn't. Without this check, the retry would mark_completed
+    # against a row whose `video_url` would 404 forever.
+    #
+    # Falling through to the full pipeline lets Veo run again,
+    # writes fresh bytes to a new temp key, hits the PK-collision
+    # branch on INSERT (row already exists), and the collision
+    # recovery there re-promotes from the new temp into the still-
+    # missing canonical key.
     existing_row = await _existing_motion_for_payload(session_factory, payload)
-    if existing_row is not None:
+    if existing_row is not None and storage.exists(existing_row.video_key):
         dto = build_motion_dto(existing_row, storage)
         result_payload = {"motion": dto.model_dump(mode="json")}
         async with session_factory() as db:
@@ -395,6 +409,19 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
             task_uuid,
         )
         return {"task_id": task_id, "ok": True, "reason": "already_committed"}
+
+    if existing_row is not None:
+        # Row durable, canonical missing — re-promote path. Logged at
+        # WARNING because this path means a previous attempt's
+        # post-commit copy failed, which is itself a noteworthy ops
+        # event.
+        _logger.warning(
+            "create_motion: row %s exists but canonical %s missing; "
+            "falling through to re-promote (task %s)",
+            existing_row.id,
+            existing_row.video_key,
+            task_uuid,
+        )
 
     # ----- Phase 2: real work.
     motion_committed = False
@@ -575,17 +602,12 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
                         # below safe. A copy failure here re-raises;
                         # because `motion_committed=True`, the outer
                         # except re-raises for arq retry instead of
-                        # marking the task failed. Phase 1.5 in the
-                        # retry finalises the task against the durable
-                        # row (canonical file would remain missing
-                        # until we re-promote — realistic copy failures
-                        # are catastrophic, e.g. disk full; not worth
-                        # heroics in Phase 1, see TODO below).
-                        # TODO(T-034 / hardening): consider probing
-                        # `storage.exists(video_key)` in the Phase 1.5
-                        # short-circuit and logging when the row exists
-                        # but canonical is missing — closes the
-                        # post-commit-copy-fail observability gap.
+                        # marking the task failed. The Phase 1.5
+                        # short-circuit now probes
+                        # `storage.exists(video_key)` and falls through
+                        # to the re-promote branch in the PK-collision
+                        # recovery (Codex round-3 P1) so a copy failure
+                        # here recovers cleanly on the next attempt.
                         storage.copy(temp_video_key, video_key)
                         if thumb_temp_written:
                             try:
@@ -610,16 +632,54 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
                         # attempt's bytes to `video_key` yet, so the
                         # existing row's canonical mp4 is intact. The
                         # finally below cleans up our temp file.
+                        #
+                        # Round-3 P1 re-promote: if the canonical file
+                        # is MISSING (a previous attempt's post-commit
+                        # copy failed before the temp was deleted),
+                        # promote our fresh temp into the still-empty
+                        # canonical key.
+                        #
+                        # `storage.exists`-raise here is benign: the
+                        # exception propagates out the inner try; the
+                        # finally below scrubs the temp; the outer
+                        # except sees `motion_committed=True` and
+                        # re-raises for arq retry. The next attempt's
+                        # Phase 1.5 verification re-detects the
+                        # missing canonical and tries again.
                         if "motions_pkey" in err_text:
                             existing = await motion_repo.get_any(db, motion_id)
                             if existing is not None:
                                 motion_row = existing
                                 motion_committed = True
+                                canonical_was_missing = not storage.exists(existing.video_key)
+                                if canonical_was_missing:
+                                    # Mirror the post-commit copy
+                                    # ordering: re-promote MUST raise
+                                    # on failure (not swallow). Reviewer
+                                    # round-3 caught that swallowing
+                                    # the StorageError would mark the
+                                    # task `completed` with a row
+                                    # pointing at missing bytes — the
+                                    # exact bug we're fixing. With
+                                    # `motion_committed=True` already
+                                    # set, the outer except re-raises
+                                    # for arq retry (NOT
+                                    # `_commit_failed`), so the next
+                                    # attempt's Phase 1.5 will detect
+                                    # the missing canonical again.
+                                    storage.copy(temp_video_key, existing.video_key)
+                                    _logger.info(
+                                        "create_motion: re-promoted canonical for "
+                                        "motion %s (recovered from prior post-commit "
+                                        "copy failure)",
+                                        motion_id,
+                                    )
                                 _logger.info(
                                     "create_motion: idempotent retry — "
                                     "motion %s already committed; reusing row "
-                                    "(canonical video untouched, temp scrubbed)",
+                                    "(canonical %s, temp scrubbed)",
                                     motion_id,
+                                    "re-promoted" if canonical_was_missing else "intact",
                                 )
                             else:
                                 raise
