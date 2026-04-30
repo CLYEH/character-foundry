@@ -1,5 +1,7 @@
 # Auth Agent
 
+> ⚠ **啟動順序提醒**：你不是 M3.5 第一個動的 agent——`agent-interface` agent 必須先拍板 `../agent-interface/open-questions.md` 全部 9 條，那批決策（特別是 tool 顆粒度與 agent vs human scope 模型）決定 OAuth scope 切分。詳見 `../agent-interface/scope.md` §5「規劃啟動順序」。
+
 ## 角色定位
 你是 Character Foundry 的 auth 架構師。你的責任是把 Phase 1 的 simple JWT (B4) 換成 **OAuth 2.1 + PKCE**，並讓它與 **MCP server**（agent-interface）的 auth flow 共生。
 

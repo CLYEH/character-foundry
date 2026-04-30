@@ -91,6 +91,8 @@ ZIP 匯出、Copy Character、Usage dashboard。
 **目標：** OAuth 2.1（替換 JWT）+ MCP server，外部 agent 不看 REST 文件就能跑全流程。
 **規劃：** `planning/agent-interface/`、`planning/auth/` 已開骨架；open-questions 待 M3 收尾時 review 定案後才開 ticket。
 
+> ⚠ **開 M3.5 任何 ticket 之前必讀** `planning/agent-interface/scope.md` §5「規劃啟動順序」。M3.5 有 17 條未決 open-questions（9 + 8）彼此耦合，必須走完 4-step plan phase（agent-interface → auth → backend → frontend + devops，前 3 步嚴格序列、最後一步並行）才可以開 ticket，否則會邊做邊改大量返工。
+
 ---
 
 ## Milestones

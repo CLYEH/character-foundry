@@ -50,14 +50,56 @@
 | Task SSE | MCP progress notification | wrapper 即可 |
 | `/v1/meta` `degraded_services` | MCP `tools/list` 上能看到 | 加欄位 |
 
-## 5. 暫定時序（M3 後接續）
+## 5. 規劃啟動順序（**開任何 M3.5 ticket 前必讀**）
+
+> ⚠ M3.5 不是「開 ticket → 直接做」可以動的——open-questions.md 有 9 條 + auth open-questions.md 有 8 條未決，多數彼此耦合。沒走完 plan phase 就開 ticket = 紙上空想 → 邊做邊改 → 大量返工。
+
+### 5.1 前置條件
+- **M3 必須 ship 完**（Sprint 3 全 ticket merge，M3 milestone 勾起來）。M3 前的 endpoint contract 還在動，MCP tool surface 沒對象可 wrap，OAuth scope 也沒實體可保護。
+
+### 5.2 Plan phase 順序（**這條是 load-bearing**）
+
+```
+Step 1：agent-interface agent 拍板（先做，~1 週）
+       └─ open-questions.md 全部 9 條：
+            Q1 transport / Q2 顆粒度 / Q3 async / Q4 naming /
+            Q5 agent vs human scope / Q6 signed URL（與 auth Q5 互鎖）/
+            Q7 MCP exposure / Q8 versioning / Q9 endpoint blacklist
+       output: MCP tool surface 雛形 + agent vs human 互動模型輪廓
+                ↓
+Step 2：auth agent 拍板（接續 step 1，~1 週）
+       └─ ../auth/open-questions.md 全部 8 條：
+            Q1 provider / Q2 agent grants / Q3 scope / Q4 JWT migration /
+            Q5 signed URL（與 agent-interface Q6 互鎖，一起拍板）/
+            Q6 refresh token / Q7 UI cutover（最終 UI 實作落 Step 4 frontend，
+            策略決策仍在本步） / Q8 MCP-OAuth integration（與 step 1 Q1 transport 互鎖）
+       Input dependency: step 1 的 tool surface（決定 scope 細粒度）
+                ↓
+Step 3：backend agent review（短，~0.5 週）
+       └─ endpoint scope decorator + MCP tool 條目該怎麼長進每張 ticket
+                ↓
+Step 4：frontend + devops（並行，~0.5 + 0.5 週）
+       ├─ frontend: authStore / login UI 改動範圍 + auth Q7 UI cutover 細節落地
+       └─ devops: OAuth provider docker stack（若選自架）
+
+> 17 條（agent-interface 9 + auth 8）每一條都有指定的 step owner；agent 不該因 bullet list 沒顯式列就以為「不必處理」。Step 1+2 各自的 open-questions.md 是 source of truth，本表只是 step ownership map。
+```
+
+**為什麼是這個順序：**
+- step 1 之前動 step 2 → 不知道 tool 顆粒度，scope 沒辦法準確切（會切太粗或太細）
+- step 2 之前動 step 3 → endpoint 還不知道要保護什麼，decorator 設計沒方向
+- step 3 之前動 step 4 → frontend / devops 沒底層合約可實作
+
+**怎麼啟動：** 開新 session 時對 Claude 說「請用 agent-interface agent 的視角，從 open-questions.md 開始，把 9 條全部拍板」。auth 同 pattern（8 條全部）。Step 3 是 backend agent 視角接到 agent-interface + auth 收斂後的 spec。
+
+### 5.3 暫定時序（plan phase 收斂後）
 
 | 階段 | 內容 | 估時 |
 |---|---|---|
-| Sprint 3.5a | OAuth provider 抉擇 + spec 確認；MCP transport 抉擇 | 1 週 plan |
-| Sprint 3.5b | OAuth migration（auth.py + refresh_token + signed-URL）| 1.5 週 |
-| Sprint 3.5c | MCP server 骨架 + 4 個 M3-範圍核心 tool（建 character / 加 alias / 生 motion / 列 character）| 2 週 |
-| Sprint 3.5d | Agent E2E smoke：用一個外部 agent 跑完 §1 完成條件 | 0.5 週 |
+| Plan phase | §5.2 step 1-4 | ~3 週 |
+| Sprint 3.5a | OAuth migration（auth.py + refresh_token + signed-URL）| 1.5 週 |
+| Sprint 3.5b | MCP server 骨架 + 4 個 M3-範圍核心 tool（建 character / 加 alias / 生 motion / 列 character）| 2 週 |
+| Sprint 3.5c | Agent E2E smoke：用一個外部 agent 跑完 §1 完成條件 | 0.5 週 |
 
 實際時程要看 Phase 1 M3 收尾速度與你決定的 OAuth provider。
 
