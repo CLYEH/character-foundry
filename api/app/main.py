@@ -3,6 +3,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from starlette.responses import Response as StarletteResponse
 
+from app.api.routes.aliases import router as aliases_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.characters import router as characters_router
 from app.api.routes.checkpoints import router as checkpoints_router
@@ -59,4 +60,5 @@ app.include_router(characters_router)
 app.include_router(creation_sessions_router)
 app.include_router(reference_images_router)
 app.include_router(checkpoints_router)
+app.include_router(aliases_router)
 app.include_router(prompt_router)
