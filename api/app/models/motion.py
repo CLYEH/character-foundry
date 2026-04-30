@@ -64,6 +64,31 @@ class Motion(Base):
             unique=True,
             postgresql_where=text("alias_id IS NOT NULL AND deleted_at IS NULL"),
         ),
+        # Preset-slot uniqueness per F-20 ("5 fixed preset positions per
+        # parent"). Custom motions are deliberately excluded via the
+        # `motion_type LIKE 'preset_%'` predicate — duplicate names
+        # under the same parent are caught by uq_motions_*_name above,
+        # but customs CAN repeat the same logical action under different
+        # names. Migration 20260430_015 adds these (Codex T-033 P2:
+        # without DB-level guards the service-side pre-check is TOCTOU).
+        Index(
+            "uq_motions_base_motion_type",
+            "base_id",
+            "motion_type",
+            unique=True,
+            postgresql_where=text(
+                "base_id IS NOT NULL AND deleted_at IS NULL AND motion_type LIKE 'preset_%'"
+            ),
+        ),
+        Index(
+            "uq_motions_alias_motion_type",
+            "alias_id",
+            "motion_type",
+            unique=True,
+            postgresql_where=text(
+                "alias_id IS NOT NULL AND deleted_at IS NULL AND motion_type LIKE 'preset_%'"
+            ),
+        ),
         Index(
             "idx_motions_base",
             "base_id",
