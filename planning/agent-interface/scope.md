@@ -50,14 +50,53 @@
 | Task SSE | MCP progress notification | wrapper 即可 |
 | `/v1/meta` `degraded_services` | MCP `tools/list` 上能看到 | 加欄位 |
 
-## 5. 暫定時序（M3 後接續）
+## 5. 規劃啟動順序（**開任何 M3.5 ticket 前必讀**）
+
+> ⚠ M3.5 不是「開 ticket → 直接做」可以動的——open-questions.md 有 9 條 + auth open-questions.md 有 8 條未決，多數彼此耦合。沒走完 plan phase 就開 ticket = 紙上空想 → 邊做邊改 → 大量返工。
+
+### 5.1 前置條件
+- **M3 必須 ship 完**（Sprint 3 全 ticket merge，M3 milestone 勾起來）。M3 前的 endpoint contract 還在動，MCP tool surface 沒對象可 wrap，OAuth scope 也沒實體可保護。
+
+### 5.2 Plan phase 順序（**這條是 load-bearing**）
+
+```
+Step 1：agent-interface agent 拍板（先做，~1 週）
+       ├─ Q1 MCP transport
+       ├─ Q2 Tool 顆粒度（packaging vs 1:1）
+       ├─ Q3 Async task agent 體驗（sync await + progress vs polling）
+       └─ Q4 Tool naming convention
+       output: MCP tool surface 雛形 + agent vs human 互動模型輪廓
+                ↓
+Step 2：auth agent 拍板（接續，可與 step 3 平行，~1 週）
+       ├─ Q1 OAuth provider 選型（Authentik / Google / 其他）
+       ├─ Q2 Agent token 取得方式（client credentials vs delegation）
+       ├─ Q3 Scope 清單細切
+       └─ Q5 Signed URL 與 OAuth 解耦驗證
+       Input dependency: step 1 的 tool surface（決定 scope 細粒度）
+                ↓
+Step 3：backend agent review（短，~0.5 週）
+       └─ endpoint scope decorator + MCP tool 條目該怎麼長進每張 ticket
+                ↓
+Step 4：frontend + devops（並行，~0.5 + 0.5 週）
+       ├─ frontend: authStore / login UI 改動範圍
+       └─ devops: OAuth provider docker stack（若選自架）
+```
+
+**為什麼是這個順序：**
+- step 1 之前動 step 2 → 不知道 tool 顆粒度，scope 沒辦法準確切（會切太粗或太細）
+- step 2 之前動 step 3 → endpoint 還不知道要保護什麼，decorator 設計沒方向
+- step 3 之前動 step 4 → frontend / devops 沒底層合約可實作
+
+**怎麼啟動：** 開新 session 時對 Claude 說「請用 agent-interface agent 的視角，從 open-questions.md 開始，跟我把 Q1-Q4 拍板」。auth 同 pattern。Step 3 是 backend agent 視角接到 agent-interface 收斂的 spec。
+
+### 5.3 暫定時序（plan phase 收斂後）
 
 | 階段 | 內容 | 估時 |
 |---|---|---|
-| Sprint 3.5a | OAuth provider 抉擇 + spec 確認；MCP transport 抉擇 | 1 週 plan |
-| Sprint 3.5b | OAuth migration（auth.py + refresh_token + signed-URL）| 1.5 週 |
-| Sprint 3.5c | MCP server 骨架 + 4 個 M3-範圍核心 tool（建 character / 加 alias / 生 motion / 列 character）| 2 週 |
-| Sprint 3.5d | Agent E2E smoke：用一個外部 agent 跑完 §1 完成條件 | 0.5 週 |
+| Plan phase | §5.2 step 1-4 | ~3 週 |
+| Sprint 3.5a | OAuth migration（auth.py + refresh_token + signed-URL）| 1.5 週 |
+| Sprint 3.5b | MCP server 骨架 + 4 個 M3-範圍核心 tool（建 character / 加 alias / 生 motion / 列 character）| 2 週 |
+| Sprint 3.5c | Agent E2E smoke：用一個外部 agent 跑完 §1 完成條件 | 0.5 週 |
 
 實際時程要看 Phase 1 M3 收尾速度與你決定的 OAuth provider。
 
