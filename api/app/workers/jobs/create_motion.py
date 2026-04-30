@@ -573,20 +573,24 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
                             # whether the conflict is detected pre- or
                             # post-task.
                             raise conflict_motion_duplicate_name() from exc
-                        elif "uq_motions_base_motion_type" in err_text:
-                            # Phase 1 has no DB-level UNIQUE index on
-                            # (parent, motion_type) for presets — the
-                            # service layer pre-check is the only
-                            # guard. Keep the branch open so a future
-                            # migration adding such an index maps
-                            # cleanly to the right code without a
-                            # second worker change. (Codex T-033 P2:
-                            # don't lump `chk_motions_type` here — that
-                            # CHECK catches malformed `motion_type`,
-                            # not a preset-slot collision; mapping it
-                            # to `CONFLICT_PRESET_ALREADY_EXISTS` would
-                            # mislead ops triage. Falls through to
-                            # `raise` below as INTERNAL.)
+                        elif (
+                            "uq_motions_base_motion_type" in err_text
+                            or "uq_motions_alias_motion_type" in err_text
+                        ):
+                            # Preset-slot uniqueness — F-20's "5 fixed
+                            # slots per parent" enforced by partial
+                            # UNIQUE (migration 20260430_015). Catches
+                            # the TOCTOU window between
+                            # `find_active_preset_for_parent` and the
+                            # worker's INSERT (Codex T-033 P2 review).
+                            #
+                            # Note: `chk_motions_type` is intentionally
+                            # NOT in this branch — that CHECK catches
+                            # malformed `motion_type`, not a preset-
+                            # slot collision; mapping it to
+                            # `CONFLICT_PRESET_ALREADY_EXISTS` would
+                            # mislead ops triage. It falls through to
+                            # `raise` below as INTERNAL.
                             raise conflict_motion_preset_already_exists() from exc
                         else:
                             raise
