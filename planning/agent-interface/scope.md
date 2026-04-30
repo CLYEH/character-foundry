@@ -67,7 +67,7 @@ Step 1：agent-interface agent 拍板（先做，~1 週）
        └─ Q4 Tool naming convention
        output: MCP tool surface 雛形 + agent vs human 互動模型輪廓
                 ↓
-Step 2：auth agent 拍板（接續，可與 step 3 平行，~1 週）
+Step 2：auth agent 拍板（接續 step 1，~1 週）
        ├─ Q1 OAuth provider 選型（Authentik / Google / 其他）
        ├─ Q2 Agent token 取得方式（client credentials vs delegation）
        ├─ Q3 Scope 清單細切
