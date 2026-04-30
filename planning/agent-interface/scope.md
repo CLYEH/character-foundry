@@ -8,7 +8,9 @@
 
 ## 1. M3.5 milestone 定義
 
-**完成條件：** 一個只讀過 OAuth 設定 + MCP tool schema 的外部 agent，能在不看 REST 文件的情況下走完「登入 → 建 character → 確立 base → 加 alias → 生 motion → 下載 ZIP」全流程。
+**完成條件：** 一個只讀過 OAuth 設定 + MCP tool schema 的外部 agent，能在不看 REST 文件的情況下走完 **M3 範圍內**所有功能（登入 → 建 character → 確立 base → 加 alias → 生 motion）。
+
+> ⚠ 不含 ZIP 下載 / Copy / Usage——那是 M4 範圍，M3.5 ship 時還沒實作。M4 ticket 從 day 1 就會帶 scope decorator + MCP tool 條目，agent 自然拿到（per `STATUS.md` Sprint 4 規劃）。
 
 這條件失敗 → M3.5 沒過。
 
