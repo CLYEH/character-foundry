@@ -240,3 +240,75 @@ def validation_motion_custom_requires_description() -> AgentErrorException:
         ),
         status_code=422,
     )
+
+
+def validation_motion_name_invalid() -> AgentErrorException:
+    """Motion `name` failed the DB-side character-class regex.
+
+    Mirrors `validation_name_invalid` on characters but with motion-
+    specific copy. The Pydantic layer enforces length 1-50 +
+    whitespace-strip; this fires when the (post-strip) string contains
+    anything outside the allowed Chinese / ASCII / `_-` set, before
+    the row hits the DB CHECK constraint and surfaces as a generic 500.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_INVALID_CHARS",
+            message="動作名稱含有不允許的字元",
+            problem="Motion name does not match the required character set: "
+            "Chinese (U+4E00–U+9FFF), ASCII letters, digits, underscore, hyphen.",
+            cause="Input contains spaces, punctuation, or other unsupported characters.",
+            fix="Limit the name to Chinese characters, English letters, digits, `_`, or `-`.",
+            retryable=False,
+        ),
+        status_code=400,
+    )
+
+
+def conflict_motion_duplicate_name() -> AgentErrorException:
+    """A non-deleted motion with the same `name` already exists under
+    this parent (Base or Alias).
+
+    Distinct from the character-level `CONFLICT_DUPLICATE_NAME` only in
+    the Chinese copy — the code string stays the same so frontend
+    handlers don't have to multiplex on resource type. Per parent
+    uniqueness mirrors the partial UNIQUE indexes
+    (`uq_motions_base_name` / `uq_motions_alias_name`) on the table.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="CONFLICT_DUPLICATE_NAME",
+            message="此動作名稱在此 Base / Alias 下已存在",
+            problem="A non-deleted motion with this name already exists "
+            "under the same parent (Base or Alias).",
+            cause="Motion names are unique per parent — see partial UNIQUE "
+            "indexes on `motions(base_id, name)` / `motions(alias_id, name)`.",
+            fix="Pick a different name, or rename / delete the existing motion first.",
+            retryable=False,
+        ),
+        status_code=409,
+    )
+
+
+def conflict_motion_preset_already_exists() -> AgentErrorException:
+    """The same preset_* slot has already been generated under this parent.
+
+    Phase 1 fixes 5 preset slots per parent (F-20). The frontend renders
+    the existing motion in that slot rather than offering a "generate"
+    button, so this 409 is the structured signal for an agent caller
+    that bypassed the UI.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="CONFLICT_PRESET_ALREADY_EXISTS",
+            message="此預設動作在此 Base / Alias 下已生成過",
+            problem="A non-deleted motion of the same preset type already "
+            "exists under this parent.",
+            cause="Phase 1 fixes the 5 preset slots per parent (F-20); "
+            "regeneration must go through delete + recreate.",
+            fix="Delete the existing preset motion first if you want to "
+            "regenerate it, or pick a different preset / custom motion.",
+            retryable=False,
+        ),
+        status_code=409,
+    )

@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-04-30 — T-031 (backend alias generation endpoint + worker) done; Wave B unblocked T-032/T-033/T-034.
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-035 / T-036 / T-040 done）**
+> **Last updated:** 2026-04-30 — T-033 (backend motion generation endpoint + worker) lands the Veo i2v pipeline end-to-end on top of T-031 (alias generation); Wave B unblocked T-032/T-034.
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-033 / T-035 / T-036 / T-040 done）**
 
 ---
 
@@ -69,7 +69,7 @@
 | T-030 | Backend gpt-image-2 image2image + inpaint extension | DONE |
 | T-031 | Backend Alias generation endpoint + worker | DONE |
 | T-032 | Backend Alias list / detail / rename / delete | TODO |
-| T-033 | Backend Motion generation endpoint + worker | TODO |
+| T-033 | Backend Motion generation endpoint + worker | DONE |
 | T-034 | Backend Motion list / detail / rename / delete | TODO |
 | T-035 | Backend Prompt preview extension（alias / motion mode + MaskInput schema）| DONE |
 | T-036 | Frontend Alias edit page (P-06) + InpaintCanvas | DONE |
