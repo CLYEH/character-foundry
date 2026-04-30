@@ -49,6 +49,33 @@ def test_upload_alias_mask_rejects_non_png(
     assert resp.json()["error"]["code"] == "VALIDATION_REFERENCE_IMAGE_TYPE"
 
 
+def test_upload_alias_mask_rejects_jpeg_with_lying_content_type(
+    client: TestClient,
+    access_token: str,
+    seeded_character_with_base: dict[str, Any],
+) -> None:
+    """A JPEG sent with Content-Type: image/png must be rejected — the
+    actual bytes determine the format, not the header. Otherwise the
+    stored mask would be JPEG (no alpha) but the worker expects
+    PNG-with-transparent-pixels, surfacing later as a confusing
+    VALIDATION_MASK_EMPTY mid-pipeline (Codex P2)."""
+    import io as _io
+
+    from PIL import Image as _Image
+
+    im = _Image.new("RGB", (32, 32), (255, 0, 0))
+    buf = _io.BytesIO()
+    im.save(buf, format="JPEG")
+    files = {"file": ("mask.png", buf.getvalue(), "image/png")}
+    resp = client.post(
+        f"/v1/characters/{seeded_character_with_base['id']}/aliases/masks",
+        files=files,
+        headers=auth_headers(access_token),
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_REFERENCE_IMAGE_TYPE"
+
+
 def test_upload_alias_mask_rejects_non_owner(
     client: TestClient,
     seeded_character_with_base: dict[str, Any],
@@ -121,6 +148,30 @@ def test_create_alias_text_mode_happy(
     payload = resp.json()
     uuid.UUID(payload["task_id"])
     uuid.UUID(payload["alias_id"])
+
+
+def test_create_alias_invalid_name_chars_rejected(
+    client: TestClient,
+    access_token: str,
+    seeded_character_with_base: dict[str, Any],
+) -> None:
+    """Names with spaces / unsupported punctuation must be rejected
+    upfront — the DB CHECK constraint `chk_aliases_name_chars` would
+    otherwise surface as a generic worker failure after burning an AI
+    call (Codex P1). Mirror character_service.create_character's
+    `name_pattern_ok` gate."""
+    resp = _create_alias(
+        client,
+        token=access_token,
+        character_id=seeded_character_with_base["id"],
+        body={
+            "name": "has spaces",
+            "input_mode": "text",
+            "freeform_note": "anything",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_INVALID_CHARS"
 
 
 def test_create_alias_empty_input_rejected(

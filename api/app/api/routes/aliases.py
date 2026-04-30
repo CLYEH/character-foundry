@@ -17,12 +17,14 @@ the write path so the frontend (T-036) can drive end-to-end.
 
 from __future__ import annotations
 
+import io
 import logging
 import uuid
 from typing import Annotated
 
 from arq.connections import ArqRedis
 from fastapi import APIRouter, Depends, File, UploadFile
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -51,7 +53,6 @@ from app.services import alias_service
 from app.services.alias_service import EnqueuedAlias
 from app.storage.backend import StorageBackend
 from app.storage.errors import StorageError
-from app.utils.thumbnails import ensure_png_bytes
 
 router = APIRouter(prefix="/v1/characters", tags=["aliases"])
 _logger = logging.getLogger(__name__)
@@ -115,14 +116,23 @@ async def upload_alias_mask(
 
     payload = b"".join(chunks)
 
-    # Decode-validate so corrupted bytes / mislabeled MIME types fail at
-    # upload time, not as a delayed worker error. `ensure_png_bytes` calls
-    # `.load()` which forces a real decode (Codex P2 round-5 lesson from
-    # the reference-image path).
+    # Decode-validate AND verify the actual bytes are PNG (not JPEG with
+    # a lying Content-Type header). For masks the format matters
+    # semantically — JPEG drops alpha, which is exactly the channel the
+    # inpaint convention uses to mark the edit region. Accepting a
+    # mislabelled JPEG and re-encoding to PNG (`ensure_png_bytes`'s
+    # fallback) would discard alpha and produce a "no transparent
+    # pixels" mask the worker rejects with VALIDATION_MASK_EMPTY —
+    # surfacing as a confusing failure mid-pipeline instead of a clean
+    # rejection at upload time (Codex P2 round-1).
     try:
-        ensure_png_bytes(payload)
-    except ValueError as exc:
+        with Image.open(io.BytesIO(payload)) as im:
+            actual_format = (im.format or "").upper()
+            im.load()  # force real decode; truncated PNG fails here
+    except (OSError, UnidentifiedImageError, ValueError) as exc:
         raise validation_reference_image_undecodable() from exc
+    if actual_format != "PNG":
+        raise validation_reference_image_unsupported_type()
 
     # Storage layout per T-031 ticket Notes:
     #   creation-sessions/{character_id}/masks/{mask_id}.png

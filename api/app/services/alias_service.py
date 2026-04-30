@@ -33,6 +33,7 @@ from app.core.errors import (
     conflict_duplicate_alias_name,
     not_found_character,
     validation_alias_empty_input,
+    validation_name_invalid,
 )
 from app.core.permissions import assert_can_modify_character
 from app.models.user import User
@@ -50,6 +51,7 @@ from app.repositories import (
     reference_image_repo,
 )
 from app.schemas.alias import CreateAliasRequest
+from app.schemas.character import name_pattern_ok
 from app.services import task_service
 
 _logger = logging.getLogger(__name__)
@@ -144,6 +146,16 @@ async def enqueue_alias(
         raise not_found_character()
     # Cross-team → 404 inside, same-team-non-owner → 403.
     assert_can_modify_character(character, user)
+
+    # Validate name characters before any DB / queue work. `NameStr`
+    # only enforces length + whitespace strip (Pydantic level); the
+    # character-class regex (CJK + ASCII alphanumerics + _ + -) is the
+    # DB CHECK constraint `chk_aliases_name_chars` and would otherwise
+    # surface as a generic IntegrityError after the worker burns an AI
+    # call. Mirror character_service.create_character's pattern (Codex
+    # P1 round-1).
+    if not name_pattern_ok(body.name):
+        raise validation_name_invalid()
 
     # Cheap structural checks first — surface 422 / 409 before paying
     # for any DB lookups (mask, base, references) on a body that's
