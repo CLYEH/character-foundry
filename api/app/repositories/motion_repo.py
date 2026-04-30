@@ -35,6 +35,36 @@ async def get_active(db: AsyncSession, motion_id: uuid.UUID) -> Motion | None:
     return result.scalar_one_or_none()
 
 
+async def get_any(db: AsyncSession, motion_id: uuid.UUID) -> Motion | None:
+    """Fetch by id, including soft-deleted rows.
+
+    Used by worker idempotency lookups. The active read path (and any
+    user-visible read endpoint T-034 ships) should keep using
+    `get_active` so soft-deleted motions stay invisible — this helper
+    exists specifically so a worker retry that runs AFTER T-034's
+    soft-delete races with the original attempt can still recognise
+    the durable row and finalise the task. Without it, the pattern
+    would be:
+
+      1. Worker attempt A commits the motion row, crashes pre-mark_completed.
+      2. T-034 soft-delete fires (or a future T-034 cleanup job).
+      3. Arq retries; up-front `get_active` returns None → worker
+         re-runs Veo (paying again), `motion_repo.insert` PK-collides,
+         `get_active` returns None again → falls into `else: raise` →
+         `INTERNAL_UNEXPECTED_ERROR` masks what was actually a
+         successful (then deleted) generation.
+
+    `get_any` lets the worker treat "row durable but invisible" the
+    same as "row durable and visible": the task finalises against the
+    soft-deleted row's id, and the user/API surface still sees the
+    delete via the active read path. Codex review on the T-033 PR
+    flagged this as a divergence from `create_checkpoint.py`
+    (checkpoints aren't soft-deleted, so the issue doesn't exist
+    there).
+    """
+    return await db.get(Motion, motion_id)
+
+
 async def find_active_by_parent_and_name(
     db: AsyncSession,
     *,

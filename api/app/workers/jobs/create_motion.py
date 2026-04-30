@@ -123,10 +123,16 @@ def _resolve_storage_from_ctx(ctx: dict[str, Any]) -> StorageBackend:
 def _resolve_video_client(ctx: dict[str, Any]) -> VideoClient:
     """Workers can override the video client via ctx (test harness),
     otherwise we go through the standard factory which honours
-    AI_STUB_MODE — same shape as `_resolve_ai_client` for image."""
+    AI_STUB_MODE — same shape as `_resolve_ai_client` for image.
+
+    `VideoClient` is `@runtime_checkable` so `isinstance` is the safer
+    check; a test that ever stashes a wrong type on ctx surfaces
+    immediately rather than crashing inside `generate_i2v` (Codex
+    T-033 nit).
+    """
     override = ctx.get("video_client")
-    if override is not None:
-        return cast(VideoClient, override)
+    if isinstance(override, VideoClient):
+        return override
     return get_video_client(ctx["redis"])
 
 
@@ -240,7 +246,14 @@ async def _resolve_prompt_for_custom(reconciler: PromptReconciler, description: 
 async def _existing_motion_for_payload(session_factory: Any, payload: Mapping[str, Any]) -> Any:
     """Return a committed motion row matching `payload['motion_id']`,
     or None. Used for the idempotent retry short-circuit (mirrors
-    `run_create_checkpoint._existing_checkpoint_for_payload`)."""
+    `run_create_checkpoint._existing_checkpoint_for_payload`).
+
+    Uses `get_any` (NOT `get_active`) so a soft-deleted row from a
+    previous attempt still finalises the task cleanly — without that,
+    a retry between commit + soft-delete would re-run Veo, PK-collide,
+    and surface as INTERNAL_UNEXPECTED_ERROR. See `motion_repo.get_any`
+    for the full rationale.
+    """
     raw = payload.get("motion_id")
     if not raw:
         return None
@@ -249,7 +262,7 @@ async def _existing_motion_for_payload(session_factory: Any, payload: Mapping[st
     except (TypeError, ValueError):
         return None
     async with session_factory() as db:
-        return await motion_repo.get_active(db, mid)
+        return await motion_repo.get_any(db, mid)
 
 
 # ---------------------------------------------------------------------------
@@ -533,10 +546,11 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
                         err_text = str(exc.orig or exc)
                         # Idempotent retry recovery: a previous attempt
                         # committed the row but the worker died before
-                        # mark_completed. Pull the row and proceed to
-                        # the success branch.
+                        # mark_completed. Use `get_any` so a soft-
+                        # deleted row from a stale retry still finalises
+                        # the task cleanly (Codex review on T-033).
                         if "motions_pkey" in err_text:
-                            existing = await motion_repo.get_active(db, motion_id)
+                            existing = await motion_repo.get_any(db, motion_id)
                             if existing is not None:
                                 motion_row = existing
                                 video_orphaned = False
@@ -559,16 +573,20 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
                             # whether the conflict is detected pre- or
                             # post-task.
                             raise conflict_motion_duplicate_name() from exc
-                        elif "uq_motions_base_motion_type" in err_text or (
-                            "chk_motions_type" in err_text
-                        ):
+                        elif "uq_motions_base_motion_type" in err_text:
                             # Phase 1 has no DB-level UNIQUE index on
                             # (parent, motion_type) for presets — the
                             # service layer pre-check is the only
                             # guard. Keep the branch open so a future
                             # migration adding such an index maps
                             # cleanly to the right code without a
-                            # second worker change.
+                            # second worker change. (Codex T-033 P2:
+                            # don't lump `chk_motions_type` here — that
+                            # CHECK catches malformed `motion_type`,
+                            # not a preset-slot collision; mapping it
+                            # to `CONFLICT_PRESET_ALREADY_EXISTS` would
+                            # mislead ops triage. Falls through to
+                            # `raise` below as INTERNAL.)
                             raise conflict_motion_preset_already_exists() from exc
                         else:
                             raise

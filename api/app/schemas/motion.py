@@ -45,6 +45,9 @@ class MotionParentRef(BaseModel):
     id: uuid.UUID
 
 
+_MOTION_DESCRIPTION_MAX_LENGTH = 2000
+
+
 class CreateMotionRequest(BaseModel):
     """Body for `POST /v1/bases/{id}/motions` and `POST /v1/aliases/{id}/motions`.
 
@@ -53,11 +56,18 @@ class CreateMotionRequest(BaseModel):
     `app.prompt.motion_templates.PRESET_MOTION_PROMPTS`). The cross-
     field check happens in the service layer so it can raise the
     structured `VALIDATION_MOTION_DESCRIPTION_REQUIRED` envelope.
+
+    `max_length=2000` caps wire payload size so the reconciler isn't
+    fed a runaway prompt (Codex T-033 nit). The DB column is `TEXT`
+    with no cap; this lives at the boundary so internal callers /
+    backfills can store longer strings if a future ticket needs them.
     """
 
     motion_type: MotionType
     name: MotionNameStr
-    description: str | None = None
+    description: (
+        Annotated[str, StringConstraints(max_length=_MOTION_DESCRIPTION_MAX_LENGTH)] | None
+    ) = None
 
 
 class CreateMotionResponse(BaseModel):
