@@ -202,8 +202,9 @@ Character（角色，最上層容器）
 - 穩定 UUID，跨呼叫可組合
 - 非同步任務（i2v）支援 polling 與 webhook
 
-**F-51. MCP Server（Phase 2，暫緩）**
-- 原則保留，實作延後到第一個 agent 使用者出現
+**F-51. MCP Server（Phase 1 M3.5；2026-04-30 從 Phase 2 拉回）**
+- agent-first / agent-native / agent-friendly 是 Character Foundry 靈魂；MCP server 從 Phase 2 暫緩拉回 Phase 1 M3.5（M3 ship 後接續），與 OAuth 2.1 配對
+- 詳細規劃見 `planning/agent-interface/`、`planning/auth/`
 
 ### 4.7 歷史與來源追蹤
 
@@ -224,7 +225,6 @@ Character（角色，最上層容器）
 - **Image-to-3D**（立體模型生成）— 願景保留但實作暫緩
 - **Share link / 公開瀏覽**
 - **多 team / 跨 team 協作**
-- **MCP server 實作**
 - **即時串流 API / webhook 訂閱**
 - **版本控制 / branching**（Base 不可變，沒有 v2/v3 概念）
 - **付費 / 計費系統**
@@ -242,7 +242,7 @@ Character（角色，最上層容器）
 | B1 | Copy 範圍 | Base + Aliases，**不含 Motions** | 若使用者反映不便再加 |
 | B2 | 檔案儲存 | **本機檔案系統**，backend 用 abstract storage interface | 無痛切 S3 / MinIO |
 | B3 | 部署目標 | **內網自架 server** | 規模擴大後上雲 |
-| B4 | 認證機制 | **簡單帳密 + JWT** | OAuth / SSO |
+| B4 | 認證機制 | Phase 1 起步：**簡單帳密 + JWT**（access 15min, refresh 30d）。**M3.5 升級為 OAuth 2.1 + PKCE**（human auth code+PKCE / agent client credentials），dual-stack migration。詳見 `../auth/`。 | OAuth scope expansion / SSO 後續評估 |
 | B5 | Team 模型 | **單一 team**（schema 保留 `team_id`）| 多 team |
 | B6 | 成本控管 | **軟性 quota** — UI 顯示使用量，不硬擋 | 硬性 quota / admin approval |
 | B7 | 語言策略 | **UI 中文 + Prompt 英文**（由 LLM reconciler 翻譯注入）| 雙語 UI |
