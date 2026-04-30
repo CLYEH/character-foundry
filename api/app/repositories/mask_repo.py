@@ -1,9 +1,8 @@
-"""Pure DB ops for the `masks` table (T-035).
+"""Pure DB ops for the `masks` table.
 
-The `masks` row is written by the alias-mask upload endpoint (T-031).
-T-035 only reads it — to validate that a `mask_id` referenced in a
-prompt-preview body exists and belongs to a character the caller can
-see.
+The row is a thin handle over the storage key — bytes live under
+`creation-sessions/{character_id}/masks/{mask_id}.png` per T-031 ticket
+Notes. T-035 reads via `get`; T-031 adds `insert` for the upload route.
 """
 
 from __future__ import annotations
@@ -21,3 +20,30 @@ async def get(db: AsyncSession, mask_id: uuid.UUID) -> Mask | None:
     itself doesn't carry that signal directly (it points at a
     character)."""
     return await db.get(Mask, mask_id)
+
+
+async def insert(
+    db: AsyncSession,
+    *,
+    mask_id: uuid.UUID,
+    character_id: uuid.UUID,
+    uploaded_by_user_id: uuid.UUID,
+    storage_key: str,
+    mime_type: str,
+    size_bytes: int,
+) -> Mask:
+    """Insert with caller-supplied id so the storage key derived from the
+    same UUID stays in sync with the row's id (mirrors
+    `reference_image_repo.insert`)."""
+    row = Mask(
+        id=mask_id,
+        character_id=character_id,
+        uploaded_by_user_id=uploaded_by_user_id,
+        storage_key=storage_key,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+    )
+    db.add(row)
+    await db.flush()
+    await db.refresh(row)
+    return row

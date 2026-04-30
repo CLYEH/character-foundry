@@ -497,6 +497,48 @@ def conflict_base_locked() -> AgentErrorException:
     )
 
 
+def conflict_duplicate_alias_name() -> AgentErrorException:
+    """Alias names are unique per character (planning/data/db-schema.md
+    §3.7 partial UNIQUE). Mirrors `conflict_duplicate_name` in shape
+    but keeps a distinct code so the frontend can render a more
+    targeted "造型名稱已存在" hint instead of conflating with character
+    naming."""
+    return AgentErrorException(
+        AgentError(
+            code="CONFLICT_DUPLICATE_NAME",
+            message="此造型名稱已存在",
+            problem="A non-deleted alias with this name already exists for this character.",
+            cause="Alias names are unique per character (planning/data/db-schema.md §3.7).",
+            fix="Pick a different name, or restore / hard-delete the existing alias first.",
+            retryable=False,
+        ),
+        status_code=409,
+    )
+
+
+def validation_alias_empty_input() -> AgentErrorException:
+    """Alias-create body provided no usable signal: no freeform_note,
+    no reference_image_ids, no mask. Same code as the prompt-preview
+    surface (VALIDATION_EMPTY_INPUT) so callers can share a single
+    handler — the alias-create matrix is a stricter superset of the
+    preview rule.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_EMPTY_INPUT",
+            message="請至少提供補述、參考圖或 inpaint 範圍其一",
+            problem="Alias create body has no freeform_note, "
+            "reference_image_ids, or mask.",
+            cause="At least one input signal is required so the worker has "
+            "something to condition the AI call on.",
+            fix="Populate one of freeform_note / reference_image_ids / mask "
+            "before retrying.",
+            retryable=False,
+        ),
+        status_code=422,
+    )
+
+
 def conflict_task_already_terminal() -> AgentErrorException:
     return AgentErrorException(
         AgentError(

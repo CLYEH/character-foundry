@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-04-30 — T-029 (Veo 3.1 i2v client + stub), T-035 (backend prompt-preview alias/motion + MaskInput schema), T-036 (alias edit page + InpaintCanvas), T-040 (frontend modal extension) all done; closes backlog S2-5 and S3-1.
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-035 / T-036 / T-040 done）**
+> **Last updated:** 2026-04-30 — T-031 (backend alias generation endpoint + worker) done; Wave B unblocked T-032/T-033/T-034.
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-035 / T-036 / T-040 done）**
 
 ---
 
@@ -67,7 +67,7 @@
 |---|---|---|
 | T-029 | Backend Veo 3.1 i2v client + stub | DONE |
 | T-030 | Backend gpt-image-2 image2image + inpaint extension | DONE |
-| T-031 | Backend Alias generation endpoint + worker | TODO |
+| T-031 | Backend Alias generation endpoint + worker | DONE |
 | T-032 | Backend Alias list / detail / rename / delete | TODO |
 | T-033 | Backend Motion generation endpoint + worker | TODO |
 | T-034 | Backend Motion list / detail / rename / delete | TODO |
