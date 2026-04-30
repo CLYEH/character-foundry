@@ -16,9 +16,11 @@
 
 ## 2. Phase 1 Scope
 
-**做：** image generation（Base + Alias）+ i2v motion（Preset 5 + Custom）+ ZIP 下載 + Team 共享與 Copy
+**做：** image generation（Base + Alias）+ i2v motion（Preset 5 + Custom）+ ZIP 下載 + Team 共享與 Copy + **OAuth 2.1 + MCP server**（M3.5；2026-04-30 fold 進 Phase 1，原因見下）
 **暫緩：** Lip sync、Image-to-3D（願景保留，Phase 1 不實作）
-**不做：** Share link、多 team、MCP server 實作、行動版
+**不做：** Share link、多 team、行動版
+
+> **2026-04-30 變更：MCP server + OAuth 從「不做」拉回 Phase 1 M3.5。** 觸發：使用者重申 agent-first / agent-native / agent-friendly 是 Character Foundry 的靈魂，缺了即喪失定位。原 F-51「MCP server Phase 2 暫緩」改為「Phase 1 M3.5 必做」；OAuth 2.1（B4 升級）配對加入。詳見 `planning/agent-interface/` 與 `planning/auth/`。
 
 ---
 
@@ -89,7 +91,7 @@ Character（角色）= 最上層容器
 | B1 | Copy 範圍 | Base + Aliases（不含 Motions）|
 | B2 | 檔案儲存 | 本機 FS + abstract interface（之後可切 S3）|
 | B3 | 部署 | 內網自架 server（單機）|
-| B4 | 認證 | 簡單帳密 + JWT（access 15min, refresh 30d）|
+| B4 | 認證 | Phase 1 起步：簡單帳密 + JWT（access 15min, refresh 30d）。**M3.5 升級為 OAuth 2.1 + PKCE**（human auth code+PKCE / agent client credentials），dual-stack migration。詳見 `planning/auth/`。 |
 | B5 | Team 模型 | 單一 team（schema 保留 team_id）|
 | B6 | 成本控管 | 軟性 quota（UI 顯示不擋）|
 | B7 | 語言 | UI 中文 + Prompt 英文（LLM 翻譯） |

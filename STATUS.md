@@ -87,6 +87,10 @@ ZIP 匯出、Copy Character、Usage dashboard。
 ### Sprint 5 — Polish（尚未開單）
 剩餘錯誤處理、E2E coverage、效能調整。
 
+### Sprint 3.5 — Agent-native baseline（M3 ship 後展開；尚未開單）
+**目標：** OAuth 2.1（替換 JWT）+ MCP server，外部 agent 不看 REST 文件就能跑全流程。
+**規劃：** `planning/agent-interface/`、`planning/auth/` 已開骨架；open-questions 待 M3 收尾時 review 定案後才開 ticket。
+
 ---
 
 ## Milestones
@@ -95,6 +99,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 - [x] **M1** — Login works end-to-end【Sprint 1 完成】
 - [x] **M2** — Create Character (template mode) end-to-end【Sprint 2 完成】
 - [ ] **M3** — Aliases + Motions working【Sprint 3 完成】
+- [ ] **M3.5** — Agent-native baseline：OAuth 2.1 + MCP server，外部 agent 能不看 REST 文件跑全流程【2026-04-30 從 Phase 2 拉回 Phase 1；詳見 `planning/agent-interface/`、`planning/auth/`】
 - [ ] **M4** — Download ZIP works【Sprint 4 完成】
 - [ ] **M5** — First internal user feedback【Sprint 5 完成】
 
