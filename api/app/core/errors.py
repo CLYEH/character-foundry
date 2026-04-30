@@ -527,12 +527,10 @@ def validation_alias_empty_input() -> AgentErrorException:
         AgentError(
             code="VALIDATION_EMPTY_INPUT",
             message="請至少提供補述、參考圖或 inpaint 範圍其一",
-            problem="Alias create body has no freeform_note, "
-            "reference_image_ids, or mask.",
+            problem="Alias create body has no freeform_note, reference_image_ids, or mask.",
             cause="At least one input signal is required so the worker has "
             "something to condition the AI call on.",
-            fix="Populate one of freeform_note / reference_image_ids / mask "
-            "before retrying.",
+            fix="Populate one of freeform_note / reference_image_ids / mask before retrying.",
             retryable=False,
         ),
         status_code=422,

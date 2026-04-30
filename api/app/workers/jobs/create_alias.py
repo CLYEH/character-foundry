@@ -198,9 +198,7 @@ def _decide_dispatch(payload: Mapping[str, Any]) -> str:
     return "edit_image2image"
 
 
-async def _existing_alias_for_payload(
-    session_factory: Any, payload: Mapping[str, Any]
-) -> Any:
+async def _existing_alias_for_payload(session_factory: Any, payload: Mapping[str, Any]) -> Any:
     """Return a committed alias row matching `payload['alias_id']`, or
     None. Used to short-circuit retries on idempotent reruns."""
     raw = payload.get("alias_id")

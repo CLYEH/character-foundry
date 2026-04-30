@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from tests.aliases.conftest import _png_bytes, auth_headers
 
-
 # ---------------------------------------------------------------------------
 # Mask upload
 # ---------------------------------------------------------------------------
@@ -223,9 +222,7 @@ def test_create_alias_duplicate_name_conflict(
     # rather than the API so the duplicate trigger is independent of
     # any side effect from the create call (no worker run, no race).
     async def _seed() -> None:
-        engine = create_async_engine(
-            database_url, future=True, isolation_level="AUTOCOMMIT"
-        )
+        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
         try:
             async with engine.connect() as conn:
                 await conn.execute(

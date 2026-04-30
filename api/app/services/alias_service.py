@@ -160,9 +160,7 @@ async def enqueue_alias(
     # index still backs us up against races (worker-side INSERT will
     # IntegrityError); this read just gives the caller a fast, friendly
     # 409 instead of a delayed task failure.
-    if await alias_repo.name_exists_for_character(
-        db, character_id=character.id, name=body.name
-    ):
+    if await alias_repo.name_exists_for_character(db, character_id=character.id, name=body.name):
         raise conflict_duplicate_alias_name()
 
     base = await base_repo.get_by_character_id(db, character.id)
