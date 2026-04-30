@@ -312,7 +312,116 @@ git rebase --continue
 
 ---
 
-## 8. Cleanup / 收尾
+## 8. Docker + Worktree 注意事項（**動 docker 前必讀**）
+
+> 來源：T-033 PR #47 在主 worktree 留下 motion 檔案的污染事件（2026-04-30）。Root cause 已確診；T-031 在同情境下用對的 pattern 過關，本節把學到的 do/don't 釘死。
+
+### 8.1 為什麼這條會踩
+
+`docker-compose.yml` + `docker-compose.override.yml` 寫死 bind-mount：
+
+```yaml
+api:
+  volumes:
+    - ./api/app:/app/app          # 解析 = 主 repo 的 api/app → container /app/app
+    - ./api/alembic:/app/alembic
+    - ./api/tests:/app/tests
+```
+
+**`./` 是 docker-compose.yml 所在目錄**——也就是**主 repo `C:/character-foundry`**，不是任何 worktree。整個 docker compose stack 的 `character-foundry-api-1` 永遠看到主 repo 的 code，跟你工作 cwd / 工作 branch 無關。
+
+**含意：**
+- Worktree 內改 code → `character-foundry-api-1` **看不到**（讀的是主 repo 的舊版本）
+- 對 container 的 `/app/app` 寫東西 → 反向洩漏到主 repo 的 `api/app/`（因為是 bind-mount）
+
+### 8.2 ❌ 不要做
+
+```bash
+# 把 worktree 的 code 推進共享 container ——bind-mount 反向洩漏到主 repo
+docker cp C:/character-foundry.wt/T-XXX/api/app/. character-foundry-api-1:/app/app
+
+# 對共享 container 寫檔到 /app/... ——同樣反向洩漏
+docker exec character-foundry-api-1 sh -c 'echo "..." > /app/app/something.py'
+
+# 從共享 container 跑 test 來「測 worktree 的 code」——你跑的是主 repo 的 code，不是 worktree 的
+docker exec character-foundry-api-1 python -m pytest tests/aliases/
+```
+
+任何讓 container 寫 `/app/...` 的動作都算這類（含 `pytest --cov` 寫 cache 等）。
+
+### 8.3 ✅ 正確做法（T-031 已驗證）
+
+**起新 container，自己 bind-mount worktree**——不碰共享 stack 的 long-running container：
+
+```bash
+# 起 transient container 用 worktree 自己的 code，連到 stack 的 redis / postgres
+MSYS_NO_PATHCONV=1 docker run --rm \
+    --network character-foundry_default \
+    -v "/c/character-foundry.wt/T-XXX/api:/app" \
+    -w "/app" \
+    -e DATABASE_URL="postgresql+asyncpg://cf_app:${POSTGRES_PASSWORD}@postgres:5432/character_foundry" \
+    -e REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/0" \
+    -e PYTHONPATH=/app \
+    character-foundry-api \
+    python -m pytest tests/aliases/
+```
+
+關鍵：
+
+1. `docker run --rm`：起新 container，跑完即丟（**不是** `docker exec` 進共享的）
+2. `-v "/c/character-foundry.wt/T-XXX/api:/app"`：自己指定 bind-mount 到**自己的** worktree
+3. `--network character-foundry_default`：連到 docker compose 的 redis / postgres（DB / cache 不寫 host 檔，沒 leak 風險）
+4. `character-foundry-api`：reuse 同一份 image（dev parity），所以 deps 一致
+5. `MSYS_NO_PATHCONV=1`（Windows / Git Bash only）：避免 `/c/...` 被 MSYS 翻譯成奇怪格式
+
+**Pytest cache / `__pycache__` 寫回的位置 = bind-mount 來源 = 自己的 worktree。**乾淨。
+
+### 8.4 替代做法：純 host-side test（無 docker）
+
+如果不需要 redis / postgres，最簡單就是 host-side 跑：
+
+```bash
+cd C:/character-foundry.wt/T-XXX/api
+uv run pytest tests/aliases/        # in-process，完全不碰 docker
+```
+
+只能測純單元；要碰 DB / Redis 還是回 §8.3。
+
+### 8.5 替代做法：per-worktree docker stack（重武器，僅在 §8.3 不夠時）
+
+如果非要起完整 stack（含 nginx / web / worker 都來自 worktree）：
+
+```bash
+cd C:/character-foundry.wt/T-XXX
+docker compose -p t-xxx up -d        # -p 不同 project name → 獨立 stack
+# 之後 docker exec t-xxx-api-1 ... 才安全（bind-mount 來自 worktree 自己的 docker-compose.yml）
+```
+
+代價：
+- 多吃 ports（need 改 override.yml 避撞 host port 5432 / 8000 / 5173 / 80）
+- redis / postgres 多開一份（disk + RAM）
+- 不適合每個 ticket 都起；只在「真的要從 host 用瀏覽器測整套」時用
+
+### 8.6 出錯了怎麼辦
+
+如果你已經 `docker cp` 過、發現主 worktree 有非預期的 modifications + untracked files：
+
+1. **不要急著 stash / commit**——先確認到底污染了什麼：
+   ```bash
+   cd C:/character-foundry
+   git status --short
+   ```
+2. 如果污染內容跟你 worktree 裡已 commit / 已 push 的內容**一致**（用 `diff` 對比）：
+   - 主 worktree 的污染**將在你 PR merge 後 self-resolve**（squash merge 把這些檔寫進 main HEAD，working tree 跟 HEAD 一致 → git status 自然乾淨）
+   - **不必手動清**，等 merge 即可
+3. 如果污染內容跟 worktree **不一致**（例如某些半成品中間態洩漏）：
+   - 在主 repo `git stash --include-untracked -m "<reason>"` 暫存
+   - 完工後決定 unstash 或 drop
+4. **永遠不要**在主 repo 對污染檔 `git add` + `git commit`——污染會被你的 docs / planning PR 帶進 main，造成意料外的 main 改動
+
+---
+
+## 9. Cleanup / 收尾
 
 Sprint 3 全部 ticket merge 後：
 
@@ -332,7 +441,7 @@ done
 
 ---
 
-## 9. 關聯文件
+## 10. 關聯文件
 
 - `tickets/README.md` — Ticket 工作流（單張、非並行情境）
 - `CONTRIBUTING.md` — Git / PR / review 規則
