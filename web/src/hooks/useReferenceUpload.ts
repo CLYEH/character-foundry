@@ -1,8 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { uploadReferenceImage } from '@/api/endpoints/reference-images'
+import {
+  uploadReferenceImage,
+  type ReferenceImageUploadResponse,
+} from '@/api/endpoints/reference-images'
 import { AgentError } from '@/lib/agentError'
 import { toast } from '@/stores/toastStore'
+
+/**
+ * Pluggable uploader. The session-scoped default (`uploadReferenceImage`)
+ * targets `/v1/creation-sessions/{id}/reference-images`; the alias-edit
+ * page (T-036) passes a character-scoped variant that hits T-031's
+ * mirror endpoint. Defaulting keeps Sprint-2 call sites untouched.
+ */
+export type ReferenceUploader = (
+  scopeId: string,
+  file: File,
+) => Promise<ReferenceImageUploadResponse>
 
 export const MAX_REFERENCE_IMAGES = 3
 export const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
@@ -43,7 +57,10 @@ interface PendingUpload {
  *     when the response lands. URLs are revoked on success / removal /
  *     unmount to avoid leaking blob references in long sessions.
  */
-export function useReferenceUpload(sessionId: string) {
+export function useReferenceUpload(
+  sessionId: string,
+  uploader: ReferenceUploader = uploadReferenceImage,
+) {
   const [items, setItems] = useState<ReferenceImageItem[]>([])
 
   // Track which localIds own which object URLs so we can revoke exactly
@@ -109,7 +126,7 @@ export function useReferenceUpload(sessionId: string) {
       // `useMutation` here because TanStack tracks one mutation state
       // at a time and we need N parallel observations with N
       // independent state slots.
-      void uploadReferenceImage(sessionId, file)
+      void uploader(sessionId, file)
         .then((response) => {
           // Bail if the hook has unmounted OR the session has changed
           // since this upload was kicked off. Otherwise a session-A
@@ -143,7 +160,7 @@ export function useReferenceUpload(sessionId: string) {
           )
         })
     },
-    [revokeObjectUrl, sessionId],
+    [revokeObjectUrl, sessionId, uploader],
   )
 
   const addFiles = useCallback(

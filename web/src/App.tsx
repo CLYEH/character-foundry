@@ -7,6 +7,7 @@ import LoginPage from '@/routes/login'
 import NewCharacterPage from '@/routes/characters/new/NewCharacterPage'
 import CreationSessionPage from '@/routes/characters/new/session/CreationSessionPage'
 import CharacterDetailPage from '@/routes/characters/detail/CharacterDetailPage'
+import AliasEditPage from '@/routes/characters/aliases/new/AliasEditPage'
 import NotFoundPage from '@/routes/not-found'
 import { queryClient } from '@/api/queryClient'
 
@@ -22,6 +23,7 @@ const router = createBrowserRouter([
       { path: '/characters/new', element: <NewCharacterPage /> },
       { path: '/characters/new/session/:id', element: <CreationSessionPage /> },
       { path: '/characters/:id', element: <CharacterDetailPage /> },
+      { path: '/characters/:id/aliases/new', element: <AliasEditPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },
