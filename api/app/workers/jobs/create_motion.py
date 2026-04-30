@@ -425,21 +425,29 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
 
     # ----- Phase 2: real work.
     motion_committed = False
-    motion_id = uuid.UUID(str(payload["motion_id"]))
-    parent_type = str(payload["parent_type"])
-    parent_id = uuid.UUID(str(payload["parent_id"]))
-    parent_image_key = str(payload["parent_image_key"])
-    motion_type = str(payload["motion_type"])
-    motion_name = str(payload["name"])
-    description: str | None = (
-        str(payload["description"]) if payload.get("description") is not None else None
-    )
-    character_id_raw = payload.get("character_id")
-    character_id_uuid = uuid.UUID(str(character_id_raw)) if character_id_raw else None
-    video_key = _motion_storage_key(parent_type, parent_id, motion_id)
-    thumb_key = thumbnail_key_for(video_key)
 
     try:
+        # Payload parsing lives INSIDE the try (Codex T-033 P1
+        # round-4): a malformed UUID / missing key in `payload` (e.g.
+        # stale producer schema, manual backfill) would otherwise
+        # raise before the outer except, bypass `_commit_failed`, and
+        # leave the task row `running` forever — breaking the
+        # worker's "unhandled exceptions become terminal task status"
+        # contract documented in the module docstring.
+        motion_id = uuid.UUID(str(payload["motion_id"]))
+        parent_type = str(payload["parent_type"])
+        parent_id = uuid.UUID(str(payload["parent_id"]))
+        parent_image_key = str(payload["parent_image_key"])
+        motion_type = str(payload["motion_type"])
+        motion_name = str(payload["name"])
+        description: str | None = (
+            str(payload["description"]) if payload.get("description") is not None else None
+        )
+        character_id_raw = payload.get("character_id")
+        character_id_uuid = uuid.UUID(str(character_id_raw)) if character_id_raw else None
+        video_key = _motion_storage_key(parent_type, parent_id, motion_id)
+        thumb_key = thumbnail_key_for(video_key)
+
         if await _is_cancel_requested(session_factory, task_uuid):
             await _commit_cancelled(session_factory, task_uuid, redis)
             return {"task_id": task_id, "ok": False, "reason": "cancelled"}
