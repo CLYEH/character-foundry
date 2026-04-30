@@ -19,7 +19,7 @@
 ### 2.1 OAuth 2.1 auth flow
 - **Authorization Code + PKCE** 給 human user（替換現有 JWT login）
 - **Client Credentials** 給 agent / M2M（headless agent 取 token 不需要人）
-- Scope 模型：人的 scope vs agent 的 scope 可能不同（見 §4 open question）
+- Scope 模型：人的 scope vs agent 的 scope 可能不同（見 `open-questions.md` Q5）
 - Refresh token 整合既有 `refresh_token` model
 
 ### 2.2 MCP server
@@ -45,7 +45,7 @@
 |---|---|---|
 | `auth.py`（既有 JWT login） | OAuth 取代 JWT | 並存一段時間，JWT 漸進關閉 |
 | `refresh_token` model | OAuth refresh 共用 | 加欄位區分 token 來源 |
-| `STORAGE_SIGNED_URL_SECRET` | 與 OAuth 共生 | 見 §4 open question |
+| `STORAGE_SIGNED_URL_SECRET` | 與 OAuth 共生 | 見 `open-questions.md` Q6 |
 | `AgentError` schema | MCP error mapping | 直接對應 |
 | Task SSE | MCP progress notification | wrapper 即可 |
 | `/v1/meta` `degraded_services` | MCP `tools/list` 上能看到 | 加欄位 |
