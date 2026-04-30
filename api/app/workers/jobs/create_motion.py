@@ -478,26 +478,44 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
                 await _commit_cancelled(session_factory, task_uuid, redis)
                 return {"task_id": task_id, "ok": False, "reason": "cancelled"}
 
-            # Step 4: storage write. The video bytes are the source of
-            # truth; the thumbnail is best-effort. For Phase 1 we use
-            # the parent image as the thumbnail — the identity-anchor
-            # in Veo (DECISIONS §3) makes the first frame visually
-            # near-identical to the parent, so re-encoding the parent
-            # bytes via PIL avoids pulling in a heavy ffmpeg dep just
-            # to extract a frame. The ticket's `imageio[ffmpeg]`
-            # alternative is documented but deferred — if the
-            # difference ever matters, swap the body of
-            # `_thumbnail_bytes_for_motion` and the call site stays
-            # unchanged.
-            storage.put(video_key, veo_result.video_bytes, _CONTENT_TYPE_MP4)
-            video_orphaned = True
+            # Step 4: storage write — temp-key staging so a PK-collision
+            # recovery never overwrites the canonical bytes referenced
+            # by the surviving row (Codex T-033 P2 round-2). Veo i2v
+            # output isn't byte-deterministic between attempts, so the
+            # earlier "put-then-INSERT" shape could clobber the
+            # established row's mp4 with the racer's freshly-generated
+            # bytes — silent data corruption.
+            #
+            # Pattern:
+            #   1. put bytes to `{key}.tmp.{attempt_uuid}` (per-attempt)
+            #   2. INSERT motion row with the CANONICAL `video_key`
+            #   3a. commit OK → storage.copy(temp, canonical) promotes
+            #   3b. PK collision → DON'T copy; canonical stays intact
+            #   finally: always delete temp (per-attempt, throwaway)
+            #
+            # Thumbnail is best-effort throughout; failure on
+            # put/copy logs but doesn't fail the task.
+            attempt_uuid = uuid.uuid4()
+            temp_video_key = f"{video_key}.tmp.{attempt_uuid}"
+            temp_thumb_key = f"{thumb_key}.tmp.{attempt_uuid}"
 
+            storage.put(temp_video_key, veo_result.video_bytes, _CONTENT_TYPE_MP4)
+
+            # Thumbnail: parent image re-encoded (see
+            # `_thumbnail_bytes_for_motion`). Veo's identity-anchor
+            # makes the first frame visually near-identical to the
+            # parent, so this avoids a heavy ffmpeg dep.
             thumb_bytes = _thumbnail_bytes_for_motion(parent_image_bytes)
+            thumb_temp_written = False
             if thumb_bytes is not None:
                 try:
-                    storage.put(thumb_key, thumb_bytes, _CONTENT_TYPE_PNG)
+                    storage.put(temp_thumb_key, thumb_bytes, _CONTENT_TYPE_PNG)
+                    thumb_temp_written = True
                 except StorageError:
-                    _logger.warning("create_motion: thumbnail put failed for %s", video_key)
+                    _logger.warning(
+                        "create_motion: temp thumbnail put failed for %s",
+                        temp_thumb_key,
+                    )
 
             # Step 5: write generation_log + motion atomically.
             try:
@@ -539,8 +557,46 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
                             generation_log_id=log_row.id,
                         )
                         await db.commit()
-                        video_orphaned = False
+                        # Row is durable as of this line — set the
+                        # post-commit flag BEFORE any further work that
+                        # could raise (round-2 review on T-033).
+                        # Without this ordering, a `storage.copy`
+                        # failure below would propagate to the outer
+                        # handler with `motion_committed=False`, which
+                        # would call `_commit_failed` and mark the
+                        # task `failed` even though the row IS in DB —
+                        # the same task/row inconsistency
+                        # `run_create_checkpoint` round-14 closes for
+                        # checkpoint workers.
                         motion_committed = True
+                        # Promote temp → canonical AFTER commit. Until
+                        # this succeeds, canonical bytes are untouched,
+                        # which is what makes the PK-collision branch
+                        # below safe. A copy failure here re-raises;
+                        # because `motion_committed=True`, the outer
+                        # except re-raises for arq retry instead of
+                        # marking the task failed. Phase 1.5 in the
+                        # retry finalises the task against the durable
+                        # row (canonical file would remain missing
+                        # until we re-promote — realistic copy failures
+                        # are catastrophic, e.g. disk full; not worth
+                        # heroics in Phase 1, see TODO below).
+                        # TODO(T-034 / hardening): consider probing
+                        # `storage.exists(video_key)` in the Phase 1.5
+                        # short-circuit and logging when the row exists
+                        # but canonical is missing — closes the
+                        # post-commit-copy-fail observability gap.
+                        storage.copy(temp_video_key, video_key)
+                        if thumb_temp_written:
+                            try:
+                                storage.copy(temp_thumb_key, thumb_key)
+                            except StorageError:
+                                _logger.warning(
+                                    "create_motion: canonical thumbnail copy "
+                                    "failed for %s; DTO will surface "
+                                    "thumbnail_url=null",
+                                    thumb_key,
+                                )
                     except IntegrityError as exc:
                         await db.rollback()
                         err_text = str(exc.orig or exc)
@@ -549,15 +605,20 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
                         # mark_completed. Use `get_any` so a soft-
                         # deleted row from a stale retry still finalises
                         # the task cleanly (Codex review on T-033).
+                        #
+                        # Critical safety: we have NOT copied this
+                        # attempt's bytes to `video_key` yet, so the
+                        # existing row's canonical mp4 is intact. The
+                        # finally below cleans up our temp file.
                         if "motions_pkey" in err_text:
                             existing = await motion_repo.get_any(db, motion_id)
                             if existing is not None:
                                 motion_row = existing
-                                video_orphaned = False
                                 motion_committed = True
                                 _logger.info(
                                     "create_motion: idempotent retry — "
-                                    "motion %s already committed; reusing row",
+                                    "motion %s already committed; reusing row "
+                                    "(canonical video untouched, temp scrubbed)",
                                     motion_id,
                                 )
                             else:
@@ -605,15 +666,16 @@ async def run_create_motion(ctx: dict[str, Any], task_id: str) -> dict[str, Any]
                             exc_info=True,
                         )
             finally:
-                if video_orphaned:
-                    for stale_key in (video_key, thumb_key):
-                        try:
-                            storage.delete(stale_key)
-                        except StorageError:
-                            _logger.warning(
-                                "create_motion: orphan cleanup failed for %s",
-                                stale_key,
-                            )
+                # Temp keys are per-attempt and never canonical — always
+                # clean them up (idempotent on missing files).
+                for stale_key in (temp_video_key, temp_thumb_key):
+                    try:
+                        storage.delete(stale_key)
+                    except StorageError:
+                        _logger.warning(
+                            "create_motion: temp cleanup failed for %s",
+                            stale_key,
+                        )
 
         # Build the DTO post-commit (mirrors run_create_checkpoint's
         # round-11 fix). Row is durable; if DTO build hiccups we fall
