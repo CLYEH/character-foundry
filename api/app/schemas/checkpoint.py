@@ -83,10 +83,13 @@ class CreateCheckpointRequest(BaseModel):
     menu_selections: dict[str, Any] | None = None
     freeform_note: str | None = None
     reference_image_ids: list[uuid.UUID] | None = None
-    # Caller-supplied aspect ratio for the generated image. Accepted on
-    # `fresh` mode; for `retry_same` / `remix` the worker re-derives from
-    # the source checkpoint's generation_log so iterations stay consistent
-    # with the user's original framing intent (T-047).
+    # Caller-supplied aspect ratio for the generated image. Honored across
+    # all modes (fresh / retry_same / remix) — the request value rides
+    # straight through to the worker. Frontend retry_same reuses whatever
+    # ratio the user has selected in the dropdown, which matches user
+    # intent ("retry with my current ratio"). Strict source-inheritance
+    # is intentionally deferred (T-047 Notes); it would require a
+    # generation_log_repo.get_by_entity helper that's out of scope.
     aspect_ratio: CheckpointAspectRatio = DEFAULT_ASPECT_RATIO
 
 
