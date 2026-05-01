@@ -91,23 +91,34 @@ class GptImage2Client:
 
     # ------------------------------------------------------------------ public
 
+    # OpenAI's `gpt-image-*` series rejects three params the original
+    # client (modelled on the dall-e-3 contract) used to send:
+    #   - `response_format`: dall-e-2/3 only; GPT models always return
+    #     `b64_json` and 400 on the param.
+    #   - `quality="hd"`: dall-e-3 legacy value. GPT accepts only
+    #     `low/medium/high/auto`; we omit the field entirely and let the
+    #     provider default to `auto`.
+    #   - `seed`: not in the gpt-image schema at all. The Python signature
+    #     keeps `seed` so callers / tests don't break, but we never
+    #     forward it. Audit rows still record the requested seed via
+    #     `generation_logs.parameters` (see workers/jobs/create_checkpoint).
+    # Empirical probe 2026-05-01 against real provider confirmed each
+    # of those three params returns 400 in isolation; baseline
+    # `{model, prompt, size, n}` returns 200. (T-042)
+
     async def generate_image_text2image(
         self,
         prompt: str,
         *,
         aspect_ratio: str = "1:1",
-        seed: int | None = None,
+        seed: int | None = None,  # accepted but not forwarded — see header note
     ) -> AIGenerationResult:
         json_body: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
             "size": self._size_for(aspect_ratio),
             "n": 1,
-            "response_format": "b64_json",
-            "quality": "hd",
         }
-        if seed is not None:
-            json_body["seed"] = seed
         return await self._call_with_resilience("/images/generations", json_body=json_body)
 
     async def generate_image_image2image(
@@ -116,7 +127,7 @@ class GptImage2Client:
         image: bytes,
         *,
         aspect_ratio: str = "1:1",
-        seed: int | None = None,
+        seed: int | None = None,  # accepted but not forwarded — see header note
     ) -> AIGenerationResult:
         files: dict[str, tuple[str, bytes, str]] = {
             "image": ("image.png", image, "image/png"),
@@ -126,10 +137,7 @@ class GptImage2Client:
             "prompt": prompt,
             "size": self._size_for(aspect_ratio),
             "n": "1",
-            "response_format": "b64_json",
         }
-        if seed is not None:
-            data["seed"] = str(seed)
         return await self._call_with_resilience("/images/edits", form_data=data, files=files)
 
     async def generate_image_inpaint(
@@ -139,7 +147,7 @@ class GptImage2Client:
         mask: bytes,
         *,
         aspect_ratio: str = "1:1",
-        seed: int | None = None,
+        seed: int | None = None,  # accepted but not forwarded — see header note
     ) -> AIGenerationResult:
         files: dict[str, tuple[str, bytes, str]] = {
             "image": ("image.png", image, "image/png"),
@@ -150,10 +158,7 @@ class GptImage2Client:
             "prompt": prompt,
             "size": self._size_for(aspect_ratio),
             "n": "1",
-            "response_format": "b64_json",
         }
-        if seed is not None:
-            data["seed"] = str(seed)
         return await self._call_with_resilience("/images/edits", form_data=data, files=files)
 
     async def edit_image2image(
@@ -197,7 +202,6 @@ class GptImage2Client:
             "model": self.model,
             "prompt": prompt,
             "n": "1",
-            "response_format": "b64_json",
         }
         return await self._call_with_resilience(
             "/images/edits", form_data=data, files=multipart_files
@@ -238,7 +242,6 @@ class GptImage2Client:
             "model": self.model,
             "prompt": prompt,
             "n": "1",
-            "response_format": "b64_json",
         }
         return await self._call_with_resilience(
             "/images/edits", form_data=data, files=multipart_files
@@ -372,7 +375,10 @@ class GptImage2Client:
                 self.model, RuntimeError(f"b64 decode failed: {exc}")
             ) from exc
 
-        # cost_units: hd = 1.0, standard = 0.5 (planning §6).
+        # cost_units: placeholder 1.0 per call. The original hd/standard
+        # split (planning §6) no longer applies — gpt-image-* uses
+        # token-based pricing and doesn't expose `quality=hd`. Revisit
+        # when cost tracking lands as its own ticket.
         cost = 1.0
         return AIGenerationResult(
             image_bytes=image_bytes,
