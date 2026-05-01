@@ -36,6 +36,9 @@ export function AliasRow({ alias, characterId, isOwner }: AliasRowProps) {
   const deleteError = deleteMutation.error ? AgentError.from(deleteMutation.error).message : null
 
   const motions = motionsQuery.data?.items ?? []
+  const motionsError = motionsQuery.isError
+    ? AgentError.from(motionsQuery.error).message || '載入失敗'
+    : null
   const src = alias.image_url ?? alias.thumbnail_url
 
   const startRename = () => {
@@ -122,6 +125,7 @@ export function AliasRow({ alias, characterId, isOwner }: AliasRowProps) {
             motions={motions}
             isOwner={isOwner}
             isLoading={motionsQuery.isPending}
+            errorMessage={motionsError}
           />
         </div>
       </div>

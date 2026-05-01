@@ -20,6 +20,13 @@ export interface MotionRowProps {
   isOwner: boolean
   /** Loading skeleton while the motions list is fetching. */
   isLoading?: boolean
+  /**
+   * Surface a fetch failure on the row so we don't silently coerce a
+   * load error into "0 motions generated" — the slots themselves still
+   * render (they're click-to-generate affordances) but the user sees
+   * the error band so they know the displayed counts are unreliable.
+   */
+  errorMessage?: string | null
 }
 
 /**
@@ -30,7 +37,14 @@ export interface MotionRowProps {
  * with custom motions and a disabled "+ 自訂動作" button (T-039 wires
  * the Modal M-02 affordance).
  */
-export function MotionRow({ parentType, parentId, motions, isOwner, isLoading }: MotionRowProps) {
+export function MotionRow({
+  parentType,
+  parentId,
+  motions,
+  isOwner,
+  isLoading,
+  errorMessage,
+}: MotionRowProps) {
   const [lightboxMotion, setLightboxMotion] = useState<Motion | null>(null)
   const presetByType = useMemo(() => {
     const map = new Map<PresetMotionType, Motion>()
@@ -48,9 +62,19 @@ export function MotionRow({ parentType, parentId, motions, isOwner, isLoading }:
 
   return (
     <div data-testid={`motion-row-${parentType}-${parentId}`} className="flex flex-col gap-3">
-      <p className="text-xs text-muted-foreground">
-        Motions ({presetGenerated}/5 預設 + {customCount} 自訂)
-      </p>
+      {errorMessage ? (
+        <p
+          role="alert"
+          data-testid={`motion-row-error-${parentType}-${parentId}`}
+          className="rounded border border-destructive/40 bg-destructive/5 px-2 py-1 text-xs text-destructive"
+        >
+          無法載入動作：{errorMessage}
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Motions ({presetGenerated}/5 預設 + {customCount} 自訂)
+        </p>
+      )}
       <ul className="flex flex-wrap gap-2" aria-label="預設動作">
         {PRESET_MOTION_TYPES.map((type) => {
           const existing = presetByType.get(type)

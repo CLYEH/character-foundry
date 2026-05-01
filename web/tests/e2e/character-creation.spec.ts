@@ -90,6 +90,11 @@ test.describe('character creation E2E (template)', () => {
     await expect(page.getByTestId('character-detail-name')).toHaveText(characterName)
     await expect(page.getByTestId('base-card')).toBeVisible()
     await expect(page.getByTestId('alias-empty-state')).toBeVisible()
-    await expect(page.getByTestId('motion-empty-strip')).toBeVisible()
+    // T-037 replaced the legacy `motion-empty-strip` placeholder with a
+    // real `MotionRow` keyed by base id — match the testid prefix
+    // instead of pinning the dynamic suffix.
+    await expect(
+      page.locator('[data-testid^="motion-row-base-"]').first(),
+    ).toBeVisible()
   })
 })

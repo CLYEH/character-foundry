@@ -437,6 +437,20 @@ describe('CharacterDetailPage', () => {
     expect(screen.queryByTestId('alias-create-cta')).not.toBeInTheDocument()
   })
 
+  it('surfaces a motion-row error band when the motions fetch fails', async () => {
+    getCharacterMock.mockResolvedValue(makeResponse())
+    listAliasesMock.mockResolvedValue({ items: [] } satisfies AliasListResponse)
+    listBaseMotionsMock.mockRejectedValue(
+      new ApiError(500, 'INTERNAL_UNEXPECTED_ERROR', '伺服器忙碌', {
+        error: { code: 'INTERNAL_UNEXPECTED_ERROR', message: '伺服器忙碌' },
+      }),
+    )
+    renderPage()
+    expect(await screen.findByTestId(`motion-row-error-base-${BASE_ID}`)).toHaveTextContent(
+      '伺服器忙碌',
+    )
+  })
+
   it('plays a completed motion in the lightbox', async () => {
     getCharacterMock.mockResolvedValue(makeResponse())
     listAliasesMock.mockResolvedValue({ items: [makeAlias()] } satisfies AliasListResponse)

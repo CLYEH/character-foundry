@@ -131,6 +131,9 @@ function CharacterDetailBody({
 function BaseMotions({ baseId, isOwner }: { baseId: string; isOwner: boolean }) {
   const motionsQuery = useBaseMotions(baseId)
   const motions = motionsQuery.data?.items ?? []
+  const errorMessage = motionsQuery.isError
+    ? AgentError.from(motionsQuery.error).message || '載入失敗'
+    : null
   return (
     <MotionRow
       parentType="base"
@@ -138,6 +141,7 @@ function BaseMotions({ baseId, isOwner }: { baseId: string; isOwner: boolean }) 
       motions={motions}
       isOwner={isOwner}
       isLoading={motionsQuery.isPending}
+      errorMessage={errorMessage}
     />
   )
 }
