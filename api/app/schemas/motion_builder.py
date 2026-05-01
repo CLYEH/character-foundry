@@ -16,8 +16,14 @@ from __future__ import annotations
 
 import logging
 
+from app.models.generation_log import GenerationLog
 from app.models.motion import Motion
-from app.schemas.motion import MotionDTO, MotionParentRef
+from app.schemas.motion import (
+    MotionDetailDTO,
+    MotionDTO,
+    MotionGenerationDTO,
+    MotionParentRef,
+)
 from app.schemas.prompt import MotionType
 from app.storage.backend import StorageBackend
 
@@ -95,6 +101,36 @@ def build_motion_dto(motion: Motion, storage: StorageBackend) -> MotionDTO:
         thumbnail_url=thumb_url,
         duration_ms=motion.duration_ms,
         created_at=motion.created_at,
+    )
+
+
+def build_motion_detail_dto(
+    motion: Motion,
+    storage: StorageBackend,
+    *,
+    generation_log: GenerationLog | None,
+) -> MotionDetailDTO:
+    """Assemble a MotionDetailDTO with the same fields as MotionDTO plus
+    the `generation` subset.
+
+    `generation_log` is None when the motion's `generation_log_id` is
+    null (e.g. a row that predates generation logging) or when the
+    caller decides to skip the lookup. The wire field stays None in
+    that case rather than synthesising a placeholder.
+    """
+    base_dto = build_motion_dto(motion, storage)
+    if generation_log is None:
+        generation_dto: MotionGenerationDTO | None = None
+    else:
+        generation_dto = MotionGenerationDTO(
+            model_name=generation_log.model_name,
+            model_version=generation_log.model_version,
+            duration_ms=generation_log.duration_ms,
+            completed_at=generation_log.completed_at,
+        )
+    return MotionDetailDTO(
+        **base_dto.model_dump(),
+        generation=generation_dto,
     )
 
 

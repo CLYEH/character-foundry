@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-05-01 — T-032 lands alias list / detail / rename / soft-delete (Wave C, half done). Cascade soft-deletes motions per F-12; CharacterDetail.aliases now excludes deleted rows. T-049 introduces an explicit E2E coverage gate in CONTRIBUTING + PR template (process / governance, no feature work). Previous sprint head: T-033 (backend motion generation endpoint + worker) lands the Veo i2v pipeline end-to-end on top of T-031 (alias generation); Wave B unblocked T-032/T-034.
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-033 / T-035 / T-036 / T-040 done）**
+> **Last updated:** 2026-05-01 — T-034 lands backend motion CRUD (list / detail / rename / soft-delete). List ordering pins preset rows ahead of customs, then `created_at ASC`; detail surface adds the `generation` subset (model name / duration / completed_at) on top of MotionDTO. Preset motions are name-locked at the service layer (422 `VALIDATION_PRESET_RENAME_FORBIDDEN`). Closes Wave C structural work for the motion resource. Previous sprint head: T-032 (alias CRUD) — same auth split (team-wide reads, owner-only writes) and soft-delete convention.
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-032 / T-033 / T-034 / T-035 / T-036 / T-040 done）**
 
 ---
 
@@ -70,7 +70,7 @@
 | T-031 | Backend Alias generation endpoint + worker | DONE |
 | T-032 | Backend Alias list / detail / rename / delete | DONE |
 | T-033 | Backend Motion generation endpoint + worker | DONE |
-| T-034 | Backend Motion list / detail / rename / delete | TODO |
+| T-034 | Backend Motion list / detail / rename / delete | DONE |
 | T-035 | Backend Prompt preview extension（alias / motion mode + MaskInput schema）| DONE |
 | T-036 | Frontend Alias edit page (P-06) + InpaintCanvas | DONE |
 | T-037 | Frontend Character Detail aliases + motions sections | TODO |
