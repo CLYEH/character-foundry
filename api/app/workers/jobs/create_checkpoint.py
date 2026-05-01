@@ -481,6 +481,10 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                     seed_int = int(seed_value)
                 except (TypeError, ValueError):
                     seed_int = None
+            # Aspect ratio comes from the caller (T-047). Default mirrors
+            # the schema default so legacy task rows queued before T-047
+            # still produce a sensible portrait output.
+            aspect_ratio = str(payload.get("aspect_ratio") or "2:3")
 
             ai_result: AIGenerationResult
             input_image_bytes: bytes | None = None
@@ -556,10 +560,17 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                         status_code=500,
                     ) from exc
                 ai_result = await ai_client.generate_image_image2image(
-                    final_prompt, input_image_bytes, seed=seed_int
+                    final_prompt,
+                    input_image_bytes,
+                    aspect_ratio=aspect_ratio,
+                    seed=seed_int,
                 )
             else:
-                ai_result = await ai_client.generate_image_text2image(final_prompt, seed=seed_int)
+                ai_result = await ai_client.generate_image_text2image(
+                    final_prompt,
+                    aspect_ratio=aspect_ratio,
+                    seed=seed_int,
+                )
 
             if await _is_cancel_requested(session_factory, task_uuid):
                 await _commit_cancelled(session_factory, task_uuid, redis)
@@ -669,6 +680,7 @@ async def run_create_checkpoint(ctx: dict[str, Any], task_id: str) -> dict[str, 
                         parameters={
                             "image_mode": image_mode,
                             "seed": seed_int,
+                            "aspect_ratio": aspect_ratio,
                         },
                         cost_units=ai_result.cost_units,
                         duration_ms=ai_result.duration_ms,

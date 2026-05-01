@@ -1,7 +1,16 @@
 import { Loader2 } from 'lucide-react'
 
+import type { AspectRatio } from '@/api/endpoints/checkpoints'
+import { ASPECT_RATIO_OPTIONS } from '@/components/creation/aspectRatio'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { FREEFORM_MAX_LENGTH } from '@/constants/menu_options'
 import { MAX_REFERENCE_IMAGES, type ReferenceImageItem } from '@/hooks/useReferenceUpload'
@@ -11,6 +20,7 @@ import { ReferenceImagePreview } from './ReferenceImagePreview'
 export interface ReferenceInputPanelProps {
   items: ReferenceImageItem[]
   freeformNote: string
+  aspectRatio: AspectRatio
   remixSequence: number | null
   hasAnyCheckpoint: boolean
   isSubmitting: boolean
@@ -20,6 +30,7 @@ export interface ReferenceInputPanelProps {
   onRemoveImage: (localId: string) => void
   onRetryImage: (localId: string) => void
   onFreeformChange: (value: string) => void
+  onAspectRatioChange: (value: AspectRatio) => void
   onGenerate: () => void
   onRetry: () => void
   onReset: () => void
@@ -38,6 +49,7 @@ export function ReferenceInputPanel(props: ReferenceInputPanelProps) {
   const {
     items,
     freeformNote,
+    aspectRatio,
     remixSequence,
     hasAnyCheckpoint,
     isSubmitting,
@@ -47,6 +59,7 @@ export function ReferenceInputPanel(props: ReferenceInputPanelProps) {
     onRemoveImage,
     onRetryImage,
     onFreeformChange,
+    onAspectRatioChange,
     onGenerate,
     onRetry,
     onReset,
@@ -93,6 +106,25 @@ export function ReferenceInputPanel(props: ReferenceInputPanelProps) {
             ))}
           </div>
         )}
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <Label htmlFor="aspect-ratio">畫面比例</Label>
+        <Select
+          value={aspectRatio}
+          onValueChange={(value) => onAspectRatioChange(value as AspectRatio)}
+        >
+          <SelectTrigger id="aspect-ratio" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ASPECT_RATIO_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label_zh}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="flex flex-col gap-1">

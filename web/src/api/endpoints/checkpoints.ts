@@ -20,12 +20,19 @@ export interface CreationSessionDetail {
 
 export type CheckpointMode = 'retry_same' | 'remix' | 'fresh'
 
+// Aspect-ratio dropdown values; map onto OpenAI gpt-image legal sizes
+// server-side via app.ai.gpt_image_2._SIZE_MAP. Default 2:3 portrait
+// for character generation (T-047).
+export type AspectRatio = 'auto' | '1:1' | '2:3' | '3:2'
+export const DEFAULT_ASPECT_RATIO: AspectRatio = '2:3'
+
 export interface CreateCheckpointRequest {
   mode: CheckpointMode
   base_checkpoint_id: string | null
   menu_selections: MenuSelections | null
   freeform_note: string | null
   reference_image_ids: string[] | null
+  aspect_ratio: AspectRatio
 }
 
 export interface CreateCheckpointResponse {

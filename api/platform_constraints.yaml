@@ -1,17 +1,21 @@
 # Platform-level fixed image / video constraints (backend/prompt-reconciler.md §3).
 #
 # Version bump rules:
-#   - change any constraint → minor (v1 → v1.1)
-#   - add a new constraint → major (v1 → v2)
+#   - additive change (new entry, tightening wording) → minor (v1 → v1.1)
+#   - removed / behaviorally-incompatible change → major (v1 → v2)
 # GenerationLog records the version active at call time for traceability.
-version: v1
-updated_at: 2026-04-23
+# (Bumping rule rephrased in T-047 — additive entries are forward-compatible
+# for downstream callers and don't warrant a major version flip.)
+version: v1.1
+updated_at: 2026-05-01
 
 base_creation:
   - transparent background
   - character centered in frame
   - character facing camera directly (正面)
   - full body shot unless specified otherwise
+  - head and feet fully visible within frame, no cropping at edges
+  - generous head room above the character
   - consistent neutral lighting
   - no watermarks or signatures
 

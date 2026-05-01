@@ -6,10 +6,12 @@ import { useQueryClient } from '@tanstack/react-query'
 import { creationSessionQueryKey, useCreationSession } from '@/api/queries/useCreationSession'
 import { useCreateCheckpoint } from '@/api/mutations/useCreateCheckpoint'
 import { useCancelTask } from '@/api/mutations/useCancelTask'
-import type {
-  Checkpoint,
-  CreateCheckpointRequest,
-  CreationSessionDetail,
+import {
+  DEFAULT_ASPECT_RATIO,
+  type AspectRatio,
+  type Checkpoint,
+  type CreateCheckpointRequest,
+  type CreationSessionDetail,
 } from '@/api/endpoints/checkpoints'
 import type { TaskEvent } from '@/api/endpoints/tasks'
 import {
@@ -62,6 +64,7 @@ export default function CreationSessionPage() {
 
   const [menuSelections, setMenuSelections] = useState<MenuSelections>(EMPTY_SELECTIONS)
   const [freeformNote, setFreeformNote] = useState<string>('')
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(DEFAULT_ASPECT_RATIO)
   const [remixContext, setRemixContext] = useState<RemixContext>(null)
   const [placeholders, setPlaceholders] = useState<Map<string, PlaceholderState>>(() => new Map())
   const [lightboxCheckpointId, setLightboxCheckpointId] = useState<string | null>(null)
@@ -207,9 +210,10 @@ export default function CreationSessionPage() {
         menu_selections: !isReference && hasAnyMenuValue(menuSelections) ? menuSelections : null,
         freeform_note: trimmedNote.length > 0 ? trimmedNote : null,
         reference_image_ids: isReference && referenceImageIds.length > 0 ? referenceImageIds : null,
+        aspect_ratio: aspectRatio,
       }
     },
-    [freeformNote, inputMode, menuSelections, referenceImageIds],
+    [aspectRatio, freeformNote, inputMode, menuSelections, referenceImageIds],
   )
 
   const handleGenerate = useCallback(() => {
@@ -236,6 +240,7 @@ export default function CreationSessionPage() {
   const handleReset = useCallback(() => {
     setMenuSelections(EMPTY_SELECTIONS)
     setFreeformNote('')
+    setAspectRatio(DEFAULT_ASPECT_RATIO)
     setRemixContext(null)
     resetReferences()
   }, [resetReferences])
@@ -277,6 +282,7 @@ export default function CreationSessionPage() {
           (placeholder.request.menu_selections as MenuSelections | null) ?? EMPTY_SELECTIONS,
         )
         setFreeformNote(placeholder.request.freeform_note ?? '')
+        setAspectRatio(placeholder.request.aspect_ratio ?? DEFAULT_ASPECT_RATIO)
       }
       // Server-loaded checkpoints don't carry their original inputs in the
       // DTO (api-shape §6.7). We still flip into remix mode but leave the
@@ -472,6 +478,7 @@ export default function CreationSessionPage() {
           <ReferenceInputPanel
             items={referenceUpload.items}
             freeformNote={freeformNote}
+            aspectRatio={aspectRatio}
             remixSequence={remixContext?.baseSequence ?? null}
             hasAnyCheckpoint={hasCompletedCheckpoint}
             isSubmitting={isSubmitting}
@@ -483,6 +490,7 @@ export default function CreationSessionPage() {
             onRemoveImage={referenceUpload.remove}
             onRetryImage={referenceUpload.retry}
             onFreeformChange={handleFreeformChange}
+            onAspectRatioChange={setAspectRatio}
             onGenerate={handleGenerate}
             onRetry={handleRetrySamePrompt}
             onReset={handleReset}
@@ -492,11 +500,13 @@ export default function CreationSessionPage() {
           <TemplateInputPanel
             menuSelections={menuSelections}
             freeformNote={freeformNote}
+            aspectRatio={aspectRatio}
             remixSequence={remixContext?.baseSequence ?? null}
             hasAnyCheckpoint={hasCompletedCheckpoint}
             isSubmitting={isSubmitting}
             onMenuChange={handleMenuChange}
             onFreeformChange={handleFreeformChange}
+            onAspectRatioChange={setAspectRatio}
             onGenerate={handleGenerate}
             onRetry={handleRetrySamePrompt}
             onReset={handleReset}

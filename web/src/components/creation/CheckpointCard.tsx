@@ -50,7 +50,7 @@ export function CheckpointCard({
         <span data-testid="checkpoint-status">{statusLabel(model)}</span>
       </header>
 
-      <div className="relative aspect-square w-full overflow-hidden rounded bg-muted">
+      <div className="relative aspect-[2/3] w-full overflow-hidden rounded bg-muted">
         {model.status === 'completed' ? (
           // Always render a click target so the lightbox is reachable even if
           // the thumbnail URL is null (Checkpoint DTO allows it). Fall back to
@@ -66,7 +66,7 @@ export function CheckpointCard({
               <img
                 src={completedImageSrc(model) as string}
                 alt={`Checkpoint ${sequenceLabel}`}
-                className="size-full object-cover"
+                className="size-full object-contain"
                 loading="lazy"
               />
             ) : (

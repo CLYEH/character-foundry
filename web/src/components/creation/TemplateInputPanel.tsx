@@ -1,5 +1,7 @@
 import { Loader2 } from 'lucide-react'
 
+import type { AspectRatio } from '@/api/endpoints/checkpoints'
+import { ASPECT_RATIO_OPTIONS } from '@/components/creation/aspectRatio'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import {
@@ -20,11 +22,13 @@ import {
 export interface TemplateInputPanelProps {
   menuSelections: MenuSelections
   freeformNote: string
+  aspectRatio: AspectRatio
   remixSequence: number | null
   hasAnyCheckpoint: boolean
   isSubmitting: boolean
   onMenuChange: (key: MenuKey, value: string) => void
   onFreeformChange: (value: string) => void
+  onAspectRatioChange: (value: AspectRatio) => void
   onGenerate: () => void
   onRetry: () => void
   onReset: () => void
@@ -42,11 +46,13 @@ export function TemplateInputPanel(props: TemplateInputPanelProps) {
   const {
     menuSelections,
     freeformNote,
+    aspectRatio,
     remixSequence,
     hasAnyCheckpoint,
     isSubmitting,
     onMenuChange,
     onFreeformChange,
+    onAspectRatioChange,
     onGenerate,
     onRetry,
     onReset,
@@ -92,6 +98,25 @@ export function TemplateInputPanel(props: TemplateInputPanelProps) {
             </Select>
           </div>
         ))}
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <Label htmlFor="aspect-ratio">畫面比例</Label>
+        <Select
+          value={aspectRatio}
+          onValueChange={(value) => onAspectRatioChange(value as AspectRatio)}
+        >
+          <SelectTrigger id="aspect-ratio" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ASPECT_RATIO_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label_zh}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="flex flex-col gap-1">
