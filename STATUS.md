@@ -1,6 +1,6 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-04-30 — T-033 (backend motion generation endpoint + worker) lands the Veo i2v pipeline end-to-end on top of T-031 (alias generation); Wave B unblocked T-032/T-034.
+> **Last updated:** 2026-05-01 — T-049 introduces an explicit E2E coverage gate in CONTRIBUTING + PR template (process / governance, no feature work). Previous sprint head: T-033 (backend motion generation endpoint + worker) lands the Veo i2v pipeline end-to-end on top of T-031 (alias generation); Wave B unblocked T-032/T-034.
 > **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-033 / T-035 / T-036 / T-040 done）**
 
 ---
@@ -85,6 +85,7 @@
 | T-046 | Shared `/storage` volume + nginx `/storage/` proxy（image preview broken bug）| DONE |
 | T-047 | Aspect-ratio dropdown + framing guidance（head cropping fix）| DONE |
 | T-048 | Sync planning docs（T-042 / T-045 / T-046 / T-047）+ yaml bind-mount in dev override | DONE |
+| T-049 | Require e2e happy path for routing / new-page / critical-action PRs（process gate）| DONE |
 
 **Dependency / parallelization plan：** 見 `tickets/PARALLEL_WORKFLOW.md`。Wave A（T-029 / T-030 / T-035 / T-036 / T-040）可立即平行開工。
 

@@ -146,6 +146,41 @@ PR merge 時**squash** 成一個乾淨的 commit，subject 套用上述格式。
 - CI 還沒過但要同步 WIP 狀態
 - 需要 reviewer 幫拉個意見但還沒完稿
 
+### 3.5 E2E coverage 必填條件（T-049）
+
+下列改動的 PR **必須**附帶對應的 Playwright e2e happy path（`web/tests/e2e/*.spec.ts`），不能只勾「manual QA」：
+
+- **新增或改動 React Router route**（新頁面、route guard 邏輯改變、redirect 行為改變）
+- **新增或改動 critical user action** —— 原則是「使用者完成主流程必經的一步」。當下範例：login、建立 Character、Select Base、Alias 編輯（含 Inpaint）、Motion 生成、刪除 Character、Download ZIP 等。Sprint 4/5 之後出現的新主流程沿此原則外推。
+- **改動 happy path 流程**（例如 Creation Session 的 step transitions、Prompt preview 的 confirm/cancel 路徑）
+
+**N/A**（不需要附 e2e）：
+- backend-only PR
+- 純文件 / planning / ticket
+- 純 refactor（行為不變、現有 e2e 仍綠）
+- CSS / 視覺微調（不改 DOM 結構或互動）
+- 試驗性 spike / WIP draft
+
+#### Defer 路徑
+
+若有合理理由不在本 PR 寫（時間壓力、需要新 fixture、e2e infra 暫時壞），三個 anchor 缺一不可：
+
+1. **PR description** 寫一行 `E2E deferred to T-XXX`
+2. **目標 ticket 已存在**（不是「之後再開」），且在 STATUS.md backlog 或當前 sprint 表中
+3. **Reviewer / Codex** 看到 defer 時 cross-check 目標 ticket 真的存在且未被無限期延後
+
+T-041（alias/motion e2e catch-up）是現存示範案例。
+
+#### Anti-patterns
+
+- 連續兩張 PR 都對同一塊功能 defer e2e —— process smell，需要在 STATUS.md 留 note 說明為什麼還沒做
+- 把 e2e ticket 開了但永遠停在 backlog 末端 —— 等於沒 defer
+- N/A 自我認證但 diff 明顯動了 routing —— Codex review 會 flag，作者要嘛補 spec 要嘛改成 defer
+
+#### 為什麼不靠自動 enforcement
+
+Path-based 自動偵測（diff 觸 routing 檔 → 強制要求 spec 改動）偽陽 / 偽陰率高。現階段靠 PR template checkbox + Codex review 雙重把關已足夠；觀察到被無視再升級成 GitHub Actions check。
+
 ---
 
 ## 4. Code Review 規則
