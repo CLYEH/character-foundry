@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { patchAlias, type AliasResponse, type PatchAliasRequest } from '@/api/endpoints/aliases'
 import { aliasListQueryKey } from '@/api/queries/useAliases'
 import { characterDetailQueryKey } from '@/hooks/useCharacterDetail'
+import { useAuthStore } from '@/stores/authStore'
 
 /**
  * Rename an alias. Invalidates the per-character alias list (so cards
@@ -12,10 +13,11 @@ import { characterDetailQueryKey } from '@/hooks/useCharacterDetail'
  */
 export function useRenameAlias(characterId: string) {
   const qc = useQueryClient()
+  const userId = useAuthStore((s) => s.user?.id)
   return useMutation<AliasResponse, Error, { aliasId: string; body: PatchAliasRequest }>({
     mutationFn: ({ aliasId, body }) => patchAlias(aliasId, body),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: aliasListQueryKey(characterId) })
+      void qc.invalidateQueries({ queryKey: aliasListQueryKey(userId, characterId) })
       void qc.invalidateQueries({ queryKey: characterDetailQueryKey(characterId) })
     },
   })
