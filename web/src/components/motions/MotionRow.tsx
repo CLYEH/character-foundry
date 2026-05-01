@@ -236,41 +236,50 @@ export function MotionRow({
           toast.agentError(AgentError.from(err))
         },
         onSuccess: ({ cancel_outcome }) => {
+          // Cancel responses can land after the user has already
+          // retried into a new task — gate every mutation on taskId
+          // match so a late `too_late_failed` from the abandoned task
+          // doesn't clobber the new retry's pending state.
+          const slotStillOurs = (
+            mutator: (prev: Record<string, PresetPending>) => Record<string, PresetPending>,
+          ) =>
+            updatePending((prev) => {
+              const current = prev[presetType]
+              if (!current || current.taskId !== entry.taskId) return prev
+              return mutator(prev)
+            })
+          const dropSlot = () =>
+            slotStillOurs((prev) => {
+              const next = { ...prev }
+              delete next[presetType]
+              return next
+            })
           switch (cancel_outcome) {
             case 'cancelled_immediately':
               unsubscribe(entry.taskId)
-              updatePending((prev) => {
-                const next = { ...prev }
-                delete next[presetType]
-                return next
-              })
+              dropSlot()
               toast.success('已取消生成')
               break
             case 'cancel_pending':
-              updatePending((prev) => {
-                const current = prev[presetType]
-                if (!current) return prev
-                return { ...prev, [presetType]: { ...current, cancelling: true } }
-              })
+              slotStillOurs((prev) => ({
+                ...prev,
+                [presetType]: { ...prev[presetType], cancelling: true },
+              }))
               toast.info('取消中…')
               break
             case 'too_late_completed':
+              // The motion was actually created — let the refetched
+              // list drive the pending → completed handoff (same path
+              // as the SSE `completed` branch), otherwise the slot
+              // briefly flips to empty and lets the user fire a second
+              // generate click before the list lands.
               unsubscribe(entry.taskId)
               void queryClient.invalidateQueries({ queryKey: motionsQueryKey })
-              updatePending((prev) => {
-                const next = { ...prev }
-                delete next[presetType]
-                return next
-              })
               toast.warning('來不及取消，Motion 已建立')
               break
             case 'too_late_failed':
               unsubscribe(entry.taskId)
-              updatePending((prev) => {
-                const next = { ...prev }
-                delete next[presetType]
-                return next
-              })
+              dropSlot()
               toast.warning('來不及取消，Motion 生成失敗')
               break
           }

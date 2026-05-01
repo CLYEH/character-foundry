@@ -390,6 +390,103 @@ describe('MotionRow', () => {
     expect(sonnerCalls.find((c) => c.kind === 'success')?.message).toBe('已取消生成')
   })
 
+  it('keeps the slot occupied on too_late_completed until the refetched list arrives', async () => {
+    createMotionMock.mockResolvedValue({
+      task_id: 'task-tlc',
+      motion_id: 'motion-tlc',
+    } satisfies CreateMotionResponse)
+    cancelTaskMock.mockResolvedValue({
+      task: {} as never,
+      cancel_outcome: 'too_late_completed',
+    } satisfies CancelTaskResponse)
+    // The post-cancel refetch should land the new motion in the list.
+    listBaseMotionsMock.mockResolvedValue({
+      items: [
+        makeMotion({
+          id: 'motion-tlc',
+          motion_type: 'preset_wave',
+          name: '招手歡迎',
+        }),
+      ],
+    } satisfies MotionListResponse)
+
+    renderRow({ parentType: 'base' })
+    fireEvent.click(screen.getByTestId('motion-cell-empty-preset_wave'))
+    await waitFor(() => expect(createMotionMock).toHaveBeenCalledTimes(1))
+    pushSse('task-tlc', { status: 'running', progress: 0.6 })
+    await screen.findByTestId('motion-cell-running-preset_wave')
+
+    fireEvent.click(screen.getByTestId('motion-cell-cancel-preset_wave'))
+
+    // Slot must NOT briefly flip to empty between the cancel response
+    // and the refetched list landing — otherwise an accidental click
+    // would fire a duplicate POST.
+    await waitFor(() =>
+      expect(sonnerCalls.find((c) => c.kind === 'warning')?.message).toBe(
+        '來不及取消，Motion 已建立',
+      ),
+    )
+    expect(screen.queryByTestId('motion-cell-empty-preset_wave')).not.toBeInTheDocument()
+
+    // Once the refetched list arrives the post-list useEffect drops
+    // the pending entry and the completed cell takes over.
+    await waitFor(() => {
+      expect(screen.getByTestId('motion-cell-completed-motion-tlc')).toBeInTheDocument()
+    })
+  })
+
+  it('ignores a stale cancel response that lands after retry replaced the task', async () => {
+    createMotionMock
+      .mockResolvedValueOnce({
+        task_id: 'task-old',
+        motion_id: 'motion-old',
+      } satisfies CreateMotionResponse)
+      .mockResolvedValueOnce({
+        task_id: 'task-new',
+        motion_id: 'motion-new',
+      } satisfies CreateMotionResponse)
+    // Hold the cancel response so the task can fail + the user can
+    // retry before the cancel mutation resolves.
+    let resolveCancel: (value: CancelTaskResponse) => void = () => {}
+    cancelTaskMock.mockImplementation(
+      () => new Promise<CancelTaskResponse>((r) => (resolveCancel = r)),
+    )
+
+    renderRow({ parentType: 'base' })
+    fireEvent.click(screen.getByTestId('motion-cell-empty-preset_wave'))
+    await waitFor(() => expect(createMotionMock).toHaveBeenCalledTimes(1))
+    pushSse('task-old', { status: 'running', progress: 0.2 })
+    await screen.findByTestId('motion-cell-running-preset_wave')
+
+    fireEvent.click(screen.getByTestId('motion-cell-cancel-preset_wave'))
+    await waitFor(() => expect(cancelTaskMock).toHaveBeenCalledWith('task-old'))
+
+    // Old task fails before cancel resolves → cell flips to failed.
+    pushSse('task-old', {
+      status: 'failed',
+      error: { code: 'MODEL_RATE_LIMITED', message: '失敗', retryable: true },
+    })
+    await screen.findByTestId('motion-cell-failed-preset_wave')
+
+    // User retries → new task in flight.
+    fireEvent.click(screen.getByTestId('motion-cell-retry-preset_wave'))
+    await waitFor(() => expect(createMotionMock).toHaveBeenCalledTimes(2))
+    pushSse('task-new', { status: 'running', progress: 0.1 })
+    await screen.findByTestId('motion-cell-running-preset_wave')
+
+    // Now the OLD cancel call resolves with a `too_late_failed`. Without
+    // the taskId guard this would clobber the new retry's pending entry
+    // and silently drop the running cell.
+    resolveCancel({ task: {} as never, cancel_outcome: 'too_late_failed' })
+
+    // Give the mutation's onSuccess a chance to run; assert the cell
+    // is still running (new task survived).
+    await waitFor(() =>
+      expect(screen.getByTestId('motion-cell-running-preset_wave')).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId('motion-cell-empty-preset_wave')).not.toBeInTheDocument()
+  })
+
   it('dedups two clicks on the same empty preset cell into one POST', async () => {
     let resolve: (value: CreateMotionResponse) => void = () => {}
     createMotionMock.mockImplementationOnce(
