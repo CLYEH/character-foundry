@@ -341,9 +341,7 @@ describe('MotionRow', () => {
       task_id: 'task-cancel-fail',
       motion_id: 'motion-cancel-fail',
     } satisfies CreateMotionResponse)
-    cancelTaskMock.mockRejectedValue(
-      new Error('Network error'),
-    )
+    cancelTaskMock.mockRejectedValue(new Error('Network error'))
 
     renderRow({ parentType: 'base' })
     fireEvent.click(screen.getByTestId('motion-cell-empty-preset_wave'))
@@ -381,9 +379,7 @@ describe('MotionRow', () => {
     await screen.findByTestId('motion-cell-running-preset_wave')
     fireEvent.click(screen.getByTestId('motion-cell-cancel-preset_wave'))
 
-    await waitFor(() =>
-      expect(sonnerCalls.find((c) => c.kind === 'info')?.message).toBe('取消中…'),
-    )
+    await waitFor(() => expect(sonnerCalls.find((c) => c.kind === 'info')?.message).toBe('取消中…'))
     await screen.findByTestId('motion-cell-cancelling-preset_wave')
 
     pushSse('task-cancel-pending', { status: 'cancelled' })
