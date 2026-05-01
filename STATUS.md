@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-05-01 — T-034 lands backend motion CRUD (list / detail / rename / soft-delete). List ordering pins preset rows ahead of customs, then `created_at ASC`; detail surface adds the `generation` subset (model name / duration / completed_at) on top of MotionDTO. Preset motions are name-locked at the service layer (422 `VALIDATION_PRESET_RENAME_FORBIDDEN`). Closes Wave C structural work for the motion resource. Previous sprint head: T-032 (alias CRUD) — same auth split (team-wide reads, owner-only writes) and soft-delete convention.
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-032 / T-033 / T-034 / T-035 / T-036 / T-040 done）**
+> **Last updated:** 2026-05-01 — T-037 lights up the frontend Aliases + Motions sections on `CharacterDetailPage`. Aliases are fetched via `GET /v1/characters/{id}/aliases` and rendered as `AliasRow` cards with inline rename (`PATCH`), confirm-dialog delete (`DELETE`), and an enabled `[+ 新增 Alias]` CTA wired to T-036's edit route. Motions use the new `MotionRow` (5 fixed preset slots + custom strip + lightbox) with empty + completed states only — preset/custom generation stays disabled until T-038 / T-039 land. Owner detection via `useMe`: non-owners see disabled action buttons with a `僅 owner 可操作` tooltip. Wave D done; unblocks Wave E (T-038). Previous sprint head: T-034 (backend motion CRUD).
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-032 / T-033 / T-034 / T-035 / T-036 / T-037 / T-040 done）**
 
 ---
 
@@ -73,7 +73,7 @@
 | T-034 | Backend Motion list / detail / rename / delete | DONE |
 | T-035 | Backend Prompt preview extension（alias / motion mode + MaskInput schema）| DONE |
 | T-036 | Frontend Alias edit page (P-06) + InpaintCanvas | DONE |
-| T-037 | Frontend Character Detail aliases + motions sections | TODO |
+| T-037 | Frontend Character Detail aliases + motions sections | DONE |
 | T-038 | Frontend Motion preset generation（click-to-generate + SSE）| TODO |
 | T-039 | Frontend Custom motion modal (M-02) | TODO |
 | T-040 | Frontend Prompt preview modal extension（alias / motion mode）| DONE |

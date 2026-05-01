@@ -10,6 +10,32 @@ import type { ReferenceImageUploadResponse } from '@/api/endpoints/reference-ima
  */
 export type AliasInputMode = 'text' | 'image' | 'inpaint' | 'mixed'
 
+/**
+ * Backend AliasDTO (api-shape §6.4). `input_mode` here is the *resolved*
+ * mode that the worker committed to (text2image / image2image / inpaint /
+ * mixed) — narrower than the create-time `AliasInputMode` discriminant.
+ */
+export type AliasResolvedMode = 'image2image' | 'inpaint' | 'text2image' | 'mixed'
+
+export interface Alias {
+  id: string
+  character_id: string
+  name: string
+  input_mode: AliasResolvedMode
+  image_url: string | null
+  thumbnail_url: string | null
+  motion_count: number
+  created_at: string
+}
+
+export interface AliasListResponse {
+  items: Alias[]
+}
+
+export interface AliasResponse {
+  alias: Alias
+}
+
 export interface CreateAliasRequest {
   name: string
   input_mode: AliasInputMode
@@ -74,4 +100,23 @@ export function uploadMask(characterId: string, blob: Blob): Promise<UploadMaskR
     method: 'POST',
     body: form,
   })
+}
+
+export function listAliases(characterId: string): Promise<AliasListResponse> {
+  return apiFetch<AliasListResponse>(`/v1/characters/${characterId}/aliases`)
+}
+
+export interface PatchAliasRequest {
+  name: string
+}
+
+export function patchAlias(aliasId: string, body: PatchAliasRequest): Promise<AliasResponse> {
+  return apiFetch<AliasResponse>(`/v1/aliases/${aliasId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteAlias(aliasId: string): Promise<void> {
+  return apiFetch<void>(`/v1/aliases/${aliasId}`, { method: 'DELETE' })
 }
