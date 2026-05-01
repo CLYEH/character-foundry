@@ -1,16 +1,29 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
 
 import {
-  PRESET_LABELS,
+  createMotion,
   PRESET_MOTION_TYPES,
   type Motion,
+  type MotionParentRef,
   type MotionParentType,
   type PresetMotionType,
 } from '@/api/endpoints/motions'
+import type { TaskEvent } from '@/api/endpoints/tasks'
+import { useCancelTask } from '@/api/mutations/useCancelTask'
+import { useDeleteMotion } from '@/api/mutations/useDeleteMotion'
+import { aliasMotionsQueryKey } from '@/api/queries/useAliasMotions'
+import { baseMotionsQueryKey } from '@/api/queries/useBaseMotions'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useTaskStream } from '@/hooks/useTaskStream'
+import { AgentError } from '@/lib/agentError'
+import { useAuthStore } from '@/stores/authStore'
+import { toast } from '@/stores/toastStore'
+import { PRESET_LABELS, PRESET_NAMES } from '@/constants/preset_motions'
 import { MotionCell } from './MotionCell'
+import { MotionDeleteConfirm } from './MotionDeleteConfirm'
 import { MotionLightbox } from './MotionLightbox'
 
 export interface MotionRowProps {
@@ -29,13 +42,26 @@ export interface MotionRowProps {
   errorMessage?: string | null
 }
 
+interface PresetPending {
+  taskId: string
+  motionId: string
+  /** Sticky `failed` flag so the cell shows the failed state until the user retries / dismisses. */
+  failed?: { error: AgentError }
+  /** Sticky `cancelling` flag while the worker is finishing the abort. */
+  cancelling?: boolean
+}
+
 /**
  * P-05 motion strip rendered under each Base / Alias card.
  *
- * Layout: 5 fixed preset slots (filled by the matching motion if it
- * exists, otherwise an empty `+`) followed by a "自訂 motions" strip
- * with custom motions and a disabled "+ 自訂動作" button (T-039 wires
- * the Modal M-02 affordance).
+ * Owns the per-cell generation lifecycle (POST + SSE) for preset
+ * motions: empty → queued/running → completed (motion list refetched)
+ * or failed (sticky cell with retry / dismiss). The component stays
+ * mounted while the row's parent card is visible so multiple cells can
+ * stream in parallel without losing each other's progress.
+ *
+ * Custom motion creation (T-039) reuses the same mutation + SSE plumbing
+ * but lives behind a Modal M-02 trigger that's still disabled here.
  */
 export function MotionRow({
   parentType,
@@ -45,7 +71,213 @@ export function MotionRow({
   isLoading,
   errorMessage,
 }: MotionRowProps) {
+  const parent = useMemo<MotionParentRef>(
+    () => ({ type: parentType, id: parentId }),
+    [parentType, parentId],
+  )
+  const queryClient = useQueryClient()
+  const userId = useAuthStore((s) => s.user?.id)
+  const deleteMutation = useDeleteMotion(parent)
+  const cancelMutation = useCancelTask()
+
   const [lightboxMotion, setLightboxMotion] = useState<Motion | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Motion | null>(null)
+  const [pendingPresets, setPendingPresets] = useState<Record<string, PresetPending>>({})
+  // Synchronous mirror of `pendingPresets` so SSE handlers (which fire
+  // outside React's commit cycle via the `useTaskStream` map) can read
+  // the latest map without racing render. Without this, fast preset
+  // clicks can reduce stale closures back into pendingPresets and stomp
+  // entries that just landed.
+  const pendingRef = useRef<Record<string, PresetPending>>({})
+  const updatePending = useCallback(
+    (updater: (prev: Record<string, PresetPending>) => Record<string, PresetPending>) => {
+      const next = updater(pendingRef.current)
+      pendingRef.current = next
+      setPendingPresets(next)
+    },
+    [],
+  )
+
+  const motionsQueryKey =
+    parentType === 'alias'
+      ? aliasMotionsQueryKey(userId, parentId)
+      : baseMotionsQueryKey(userId, parentId)
+
+  const handleTerminal = useCallback(
+    (taskId: string, event: TaskEvent) => {
+      const entry = Object.entries(pendingRef.current).find(([, v]) => v.taskId === taskId)
+      if (!entry) return
+      const [presetKey] = entry
+
+      switch (event.status) {
+        case 'completed':
+          // Refetch the motion list so the new motion's video / thumbnail
+          // appears, then drop the pending entry. Awaiting the
+          // invalidation avoids a frame where the slot has neither a
+          // pending entry nor an existing motion (otherwise the cell
+          // would briefly flip back to empty between SSE completed and
+          // the refetch landing).
+          void queryClient.invalidateQueries({ queryKey: motionsQueryKey }).then(() => {
+            updatePending((prev) => {
+              const next = { ...prev }
+              delete next[presetKey]
+              return next
+            })
+          })
+          break
+        case 'failed': {
+          const agent = event.error
+            ? new AgentError(event.error)
+            : new AgentError({ code: 'INTERNAL_UNEXPECTED_ERROR', message: '生成失敗' })
+          updatePending((prev) => {
+            const current = prev[presetKey]
+            if (!current || current.taskId !== taskId) return prev
+            return {
+              ...prev,
+              [presetKey]: { ...current, failed: { error: agent }, cancelling: false },
+            }
+          })
+          toast.agentError(agent)
+          break
+        }
+        case 'cancelled':
+          updatePending((prev) => {
+            const next = { ...prev }
+            delete next[presetKey]
+            return next
+          })
+          toast.success('已取消生成')
+          break
+        default:
+          break
+      }
+    },
+    [motionsQueryKey, queryClient, updatePending],
+  )
+
+  const { events, subscribe, unsubscribe } = useTaskStream({ onTerminal: handleTerminal })
+
+  const startPresetGeneration = useCallback(
+    (presetType: PresetMotionType) => {
+      if (!isOwner) return
+      // Bail if the slot is already mid-flight or already filled — the
+      // cells gate clicks anyway, but a defensive guard here keeps the
+      // mutation idempotent if a programmatic caller races us.
+      const existing = pendingRef.current[presetType]
+      if (existing && !existing.failed) return
+
+      // Reserve the slot synchronously with a placeholder entry so a
+      // second click in the same tick (before the POST resolves) hits
+      // the guard above instead of firing a duplicate POST.
+      updatePending((prev) => ({
+        ...prev,
+        [presetType]: { taskId: '', motionId: '' },
+      }))
+
+      // Call createMotion directly instead of going through `useMutation`
+      // — TanStack Query v5's hook only tracks the latest invocation and
+      // discards per-call onSuccess/onError for older parallel calls. The
+      // 5 preset slots can fire concurrently, so we need each call to
+      // settle independently with its own callbacks.
+      createMotion(parent, { motion_type: presetType, name: PRESET_NAMES[presetType] })
+        .then((response) => {
+          updatePending((prev) => ({
+            ...prev,
+            [presetType]: { taskId: response.task_id, motionId: response.motion_id },
+          }))
+          subscribe(response.task_id)
+        })
+        .catch((err) => {
+          // POST itself failed (no task spawned). Drop the placeholder
+          // so the user can retry the empty cell, and surface the
+          // error as a toast.
+          updatePending((prev) => {
+            const next = { ...prev }
+            delete next[presetType]
+            return next
+          })
+          toast.agentError(AgentError.from(err))
+        })
+    },
+    [isOwner, parent, subscribe, updatePending],
+  )
+
+  const handleCancel = useCallback(
+    (presetType: PresetMotionType) => {
+      const entry = pendingRef.current[presetType]
+      if (!entry || entry.failed) return
+      cancelMutation.mutate(entry.taskId, {
+        onSuccess: ({ cancel_outcome }) => {
+          switch (cancel_outcome) {
+            case 'cancelled_immediately':
+              unsubscribe(entry.taskId)
+              updatePending((prev) => {
+                const next = { ...prev }
+                delete next[presetType]
+                return next
+              })
+              toast.success('已取消生成')
+              break
+            case 'cancel_pending':
+              updatePending((prev) => {
+                const current = prev[presetType]
+                if (!current) return prev
+                return { ...prev, [presetType]: { ...current, cancelling: true } }
+              })
+              toast.info('取消中…')
+              break
+            case 'too_late_completed':
+              unsubscribe(entry.taskId)
+              void queryClient.invalidateQueries({ queryKey: motionsQueryKey })
+              updatePending((prev) => {
+                const next = { ...prev }
+                delete next[presetType]
+                return next
+              })
+              toast.warning('來不及取消，Motion 已建立')
+              break
+            case 'too_late_failed':
+              unsubscribe(entry.taskId)
+              updatePending((prev) => {
+                const next = { ...prev }
+                delete next[presetType]
+                return next
+              })
+              toast.warning('來不及取消，Motion 生成失敗')
+              break
+          }
+        },
+      })
+    },
+    [cancelMutation, motionsQueryKey, queryClient, unsubscribe, updatePending],
+  )
+
+  const handleRetry = useCallback(
+    (presetType: PresetMotionType) => {
+      // Drop the failed sticky entry so the cell flips back to empty
+      // before the new POST lands; if the POST fails synchronously the
+      // user is back to an empty cell rather than two stacked errors.
+      updatePending((prev) => {
+        const next = { ...prev }
+        delete next[presetType]
+        return next
+      })
+      startPresetGeneration(presetType)
+    },
+    [startPresetGeneration, updatePending],
+  )
+
+  const handleDismissFailed = useCallback(
+    (presetType: PresetMotionType) => {
+      updatePending((prev) => {
+        const next = { ...prev }
+        delete next[presetType]
+        return next
+      })
+    },
+    [updatePending],
+  )
+
   const presetByType = useMemo(() => {
     const map = new Map<PresetMotionType, Motion>()
     for (const motion of motions) {
@@ -59,6 +291,22 @@ export function MotionRow({
 
   const presetGenerated = presetByType.size
   const customCount = customMotions.length
+
+  const handleDelete = useCallback(
+    (motion: Motion) => {
+      deleteMutation.mutate(
+        { motionId: motion.id },
+        {
+          onSuccess: () => {
+            setDeleteTarget(null)
+          },
+        },
+      )
+    },
+    [deleteMutation],
+  )
+
+  const deleteError = deleteMutation.error ? AgentError.from(deleteMutation.error).message : null
 
   return (
     <div data-testid={`motion-row-${parentType}-${parentId}`} className="flex flex-col gap-3">
@@ -78,23 +326,34 @@ export function MotionRow({
       <ul className="flex flex-wrap gap-2" aria-label="預設動作">
         {PRESET_MOTION_TYPES.map((type) => {
           const existing = presetByType.get(type)
-          return (
-            <li key={type}>
-              {existing ? (
+          if (existing) {
+            return (
+              <li key={type}>
                 <MotionCell
                   variant="completed"
                   motion={existing}
                   isOwner={isOwner}
                   onPlay={setLightboxMotion}
+                  onDelete={isOwner ? setDeleteTarget : undefined}
                 />
-              ) : (
-                <MotionCell
-                  variant="empty"
-                  slotId={type}
-                  label={PRESET_LABELS[type]}
-                  isOwner={isOwner}
-                />
-              )}
+              </li>
+            )
+          }
+          const pending = pendingPresets[type]
+          const event = pending ? events.get(pending.taskId) : undefined
+          return (
+            <li key={type}>
+              {renderPresetCell({
+                slotId: type,
+                label: PRESET_LABELS[type],
+                isOwner,
+                pending,
+                event,
+                onTrigger: () => startPresetGeneration(type),
+                onCancel: () => handleCancel(type),
+                onRetry: () => handleRetry(type),
+                onDismiss: () => handleDismissFailed(type),
+              })}
             </li>
           )
         })}
@@ -110,6 +369,7 @@ export function MotionRow({
                 motion={motion}
                 isOwner={isOwner}
                 onPlay={setLightboxMotion}
+                onDelete={isOwner ? setDeleteTarget : undefined}
               />
             </li>
           ))}
@@ -130,7 +390,7 @@ export function MotionRow({
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                {isOwner ? 'Sprint 3 接續工作會啟用' : '僅 owner 可操作'}
+                {isOwner ? 'T-039 會啟用自訂 motion' : '僅 owner 可操作'}
               </TooltipContent>
             </Tooltip>
           </li>
@@ -144,6 +404,103 @@ export function MotionRow({
       ) : null}
 
       <MotionLightbox motion={lightboxMotion} onClose={() => setLightboxMotion(null)} />
+      <MotionDeleteConfirm
+        isOpen={deleteTarget !== null}
+        motionName={deleteTarget?.name ?? ''}
+        isPending={deleteMutation.isPending}
+        errorMessage={deleteError}
+        onClose={() => {
+          if (!deleteMutation.isPending) {
+            setDeleteTarget(null)
+            deleteMutation.reset()
+          }
+        }}
+        onConfirm={() => {
+          if (deleteTarget) handleDelete(deleteTarget)
+        }}
+      />
     </div>
+  )
+}
+
+interface RenderPresetCellArgs {
+  slotId: PresetMotionType
+  label: string
+  isOwner: boolean
+  pending: PresetPending | undefined
+  event: TaskEvent | undefined
+  onTrigger: () => void
+  onCancel: () => void
+  onRetry: () => void
+  onDismiss: () => void
+}
+
+function renderPresetCell({
+  slotId,
+  label,
+  isOwner,
+  pending,
+  event,
+  onTrigger,
+  onCancel,
+  onRetry,
+  onDismiss,
+}: RenderPresetCellArgs) {
+  if (!pending) {
+    return (
+      <MotionCell
+        variant="empty"
+        slotId={slotId}
+        label={label}
+        isOwner={isOwner}
+        onTrigger={onTrigger}
+      />
+    )
+  }
+  if (pending.failed) {
+    return (
+      <MotionCell
+        variant="failed"
+        slotId={slotId}
+        label={label}
+        isOwner={isOwner}
+        errorMessage={pending.failed.error.message || '生成失敗'}
+        onRetry={isOwner ? onRetry : undefined}
+        onDismiss={isOwner ? onDismiss : undefined}
+      />
+    )
+  }
+  if (pending.cancelling) {
+    return <MotionCell variant="cancelling" slotId={slotId} label={label} />
+  }
+  // Cancel is only meaningful once the POST has minted a task id — the
+  // placeholder reservation between the click and the response can't
+  // be cancelled server-side, so we hide the affordance until the SSE
+  // can route progress events.
+  const cancelHandler = isOwner && pending.taskId ? onCancel : undefined
+  const status = event?.status
+  if (status === 'running') {
+    return (
+      <MotionCell
+        variant="running"
+        slotId={slotId}
+        label={label}
+        isOwner={isOwner}
+        progress={event?.progress ?? null}
+        onCancel={cancelHandler}
+      />
+    )
+  }
+  // Default to queued — covers the gap between POST returning and the
+  // first SSE frame arriving, plus explicit `queued` events.
+  return (
+    <MotionCell
+      variant="queued"
+      slotId={slotId}
+      label={label}
+      isOwner={isOwner}
+      queuePosition={event?.queue_position ?? null}
+      onCancel={cancelHandler}
+    />
   )
 }

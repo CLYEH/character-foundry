@@ -27,14 +27,6 @@ export const PRESET_MOTION_TYPES = [
 
 export type PresetMotionType = (typeof PRESET_MOTION_TYPES)[number]
 
-export const PRESET_LABELS: Record<PresetMotionType, string> = {
-  preset_wave: '招手',
-  preset_nod: '點頭',
-  preset_gesture: '手勢',
-  preset_happy: '開心',
-  preset_idle: '待機',
-}
-
 export interface MotionParentRef {
   type: MotionParentType
   id: string
@@ -62,4 +54,48 @@ export function listAliasMotions(aliasId: string): Promise<MotionListResponse> {
 
 export function listBaseMotions(baseId: string): Promise<MotionListResponse> {
   return apiFetch<MotionListResponse>(`/v1/bases/${baseId}/motions`)
+}
+
+export interface CreateMotionRequest {
+  motion_type: MotionType
+  name: string
+  description?: string | null
+}
+
+export interface CreateMotionResponse {
+  task_id: string
+  motion_id: string
+}
+
+export function createMotionForBase(
+  baseId: string,
+  body: CreateMotionRequest,
+): Promise<CreateMotionResponse> {
+  return apiFetch<CreateMotionResponse>(`/v1/bases/${baseId}/motions`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function createMotionForAlias(
+  aliasId: string,
+  body: CreateMotionRequest,
+): Promise<CreateMotionResponse> {
+  return apiFetch<CreateMotionResponse>(`/v1/aliases/${aliasId}/motions`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function createMotion(
+  parent: MotionParentRef,
+  body: CreateMotionRequest,
+): Promise<CreateMotionResponse> {
+  return parent.type === 'base'
+    ? createMotionForBase(parent.id, body)
+    : createMotionForAlias(parent.id, body)
+}
+
+export function deleteMotion(motionId: string): Promise<void> {
+  return apiFetch<void>(`/v1/motions/${motionId}`, { method: 'DELETE' })
 }
