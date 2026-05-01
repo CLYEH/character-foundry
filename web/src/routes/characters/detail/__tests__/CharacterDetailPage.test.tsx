@@ -18,7 +18,6 @@ import {
   type CharacterDetail,
   type CharacterDetailResponse,
 } from '@/api/endpoints/characters'
-import { getMe, type MeResponse } from '@/api/endpoints/auth'
 import {
   listAliasMotions,
   listBaseMotions,
@@ -53,19 +52,12 @@ vi.mock('@/api/endpoints/motions', async () => {
     listBaseMotions: vi.fn(),
   }
 })
-vi.mock('@/api/endpoints/auth', async () => {
-  const actual =
-    await vi.importActual<typeof import('@/api/endpoints/auth')>('@/api/endpoints/auth')
-  return { ...actual, getMe: vi.fn() }
-})
-
 const getCharacterMock = vi.mocked(getCharacter)
 const listAliasesMock = vi.mocked(listAliases)
 const patchAliasMock = vi.mocked(patchAlias)
 const deleteAliasMock = vi.mocked(deleteAlias)
 const listAliasMotionsMock = vi.mocked(listAliasMotions)
 const listBaseMotionsMock = vi.mocked(listBaseMotions)
-const getMeMock = vi.mocked(getMe)
 
 const ME_ID = '11111111-1111-1111-1111-111111111111'
 const OTHER_USER_ID = '99999999-9999-9999-9999-999999999999'
@@ -131,18 +123,6 @@ function makeMotion(overrides: Partial<Motion> = {}): Motion {
   }
 }
 
-function meResponse(userId: string = ME_ID): MeResponse {
-  return {
-    user: {
-      id: userId,
-      name: userId === ME_ID ? 'Leo' : 'Other',
-      email: 'leo@example.com',
-      team_id: '22222222-2222-2222-2222-222222222222',
-      created_at: '2026-04-28T00:00:00Z',
-    },
-  }
-}
-
 function renderPage() {
   const client = new QueryClient({
     defaultOptions: {
@@ -198,13 +178,11 @@ describe('CharacterDetailPage', () => {
     deleteAliasMock.mockReset()
     listAliasMotionsMock.mockReset()
     listBaseMotionsMock.mockReset()
-    getMeMock.mockReset()
 
     // Sensible defaults; individual tests override as needed.
     listAliasesMock.mockResolvedValue({ items: [] } satisfies AliasListResponse)
     listAliasMotionsMock.mockResolvedValue({ items: [] } satisfies MotionListResponse)
     listBaseMotionsMock.mockResolvedValue({ items: [] } satisfies MotionListResponse)
-    getMeMock.mockResolvedValue(meResponse(ME_ID))
   })
 
   afterEach(() => {
@@ -428,7 +406,6 @@ describe('CharacterDetailPage', () => {
       makeResponse({ owner: { id: OTHER_USER_ID, name: 'Other' } }),
     )
     listAliasesMock.mockResolvedValue({ items: [makeAlias()] } satisfies AliasListResponse)
-    getMeMock.mockResolvedValue(meResponse(ME_ID))
 
     renderPage()
     await screen.findByTestId(`alias-row-${ALIAS_RED_ID}`)

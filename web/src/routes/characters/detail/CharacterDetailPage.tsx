@@ -6,7 +6,6 @@ import { ApiError } from '@/api/client'
 import type { CharacterDetail } from '@/api/endpoints/characters'
 import { useAliases } from '@/api/queries/useAliases'
 import { useBaseMotions } from '@/api/queries/useBaseMotions'
-import { useMe } from '@/api/queries/useMe'
 import { AliasRow } from '@/components/aliases'
 import {
   AliasEmptyState,
@@ -21,6 +20,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useCharacterDetail } from '@/hooks/useCharacterDetail'
 import { AgentError } from '@/lib/agentError'
+import { useAuthStore } from '@/stores/authStore'
 
 /**
  * P-05 Character Detail.
@@ -83,10 +83,13 @@ function CharacterDetailBody({
   onOpenPrompt,
   onClosePrompt,
 }: CharacterDetailBodyProps) {
-  const meQuery = useMe()
-  // Default to viewer permissions until /me resolves so we never show
-  // owner-only controls to a not-yet-identified user.
-  const isOwner = meQuery.data?.user.id === character.owner.id
+  // Source the active user from the auth store rather than re-deriving
+  // it via `useMe()`. The store value is set at login and persisted, so
+  // a transient `/me` 5xx (which `useMe` would otherwise propagate as
+  // `data === undefined`) doesn't downgrade an owner to a viewer
+  // mid-session. Codex P2 on PR #62.
+  const myUserId = useAuthStore((s) => s.user?.id)
+  const isOwner = myUserId === character.owner.id
 
   return (
     <section className="flex flex-col gap-6">
