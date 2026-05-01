@@ -32,7 +32,11 @@ Ticket: `T-XXX`
 <!-- 怎麼驗證這個 PR 是對的。有 unit / E2E / manual QA 分開說 -->
 
 - [ ] Unit tests pass (`pytest api/tests/...` / `pnpm test`)
-- [ ] E2E tests pass（若適用，`pnpm e2e`）
+- [ ] E2E tests pass (`pnpm e2e`)
+- **E2E coverage gate**（CONTRIBUTING §3.5）—— 三選一：
+  - [ ] 本 PR 已新增 / 更新對應 Playwright spec（routing / 新頁面 / critical user action 改動）
+  - [ ] Deferred to `T-XXX`（目標 ticket 必須已存在於 tickets/ 或 STATUS.md backlog；下方 description 同步說明）
+  - [ ] N/A —— 勾選一個 N/A 理由：backend-only / docs / pure refactor / CSS-only / spike
 - [ ] Manual QA 描述：
   -
 
