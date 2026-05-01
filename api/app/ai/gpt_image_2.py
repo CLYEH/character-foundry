@@ -46,16 +46,16 @@ _logger = logging.getLogger(__name__)
 # evidence).
 _FilesArg = dict[str, tuple[str, bytes, str]] | list[tuple[str, tuple[str, bytes, str]]]
 
-# Aspect ratio → OpenAI `size` string. The provider only accepts a fixed
-# enum, so we map our internal ratios down to the closest supported size.
-# Phase 1 needs portrait (2:3) and square (1:1); add more here as new
-# motion / alias inputs arrive.
+# Aspect ratio → OpenAI `size` string. The provider's `gpt-image-*` family
+# only accepts a fixed enum {auto, 1024x1024, 1024x1536, 1536x1024}; the
+# `1024x1792` / `1792x1024` slots are dall-e-3 legacy and 400 against
+# gpt-image. `auto` lets the provider pick based on the prompt — used as
+# a "no opinion" knob for the new aspect-ratio UI dropdown (T-047).
 _SIZE_MAP: dict[str, str] = {
+    "auto": "auto",
     "1:1": "1024x1024",
     "2:3": "1024x1536",
     "3:2": "1536x1024",
-    "9:16": "1024x1792",
-    "16:9": "1792x1024",
 }
 
 

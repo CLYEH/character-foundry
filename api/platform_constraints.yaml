@@ -4,14 +4,16 @@
 #   - change any constraint → minor (v1 → v1.1)
 #   - add a new constraint → major (v1 → v2)
 # GenerationLog records the version active at call time for traceability.
-version: v1
-updated_at: 2026-04-23
+version: v1.1
+updated_at: 2026-05-01
 
 base_creation:
   - transparent background
   - character centered in frame
   - character facing camera directly (正面)
   - full body shot unless specified otherwise
+  - head and feet fully visible within frame, no cropping at edges
+  - generous head room above the character
   - consistent neutral lighting
   - no watermarks or signatures
 

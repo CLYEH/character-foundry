@@ -96,6 +96,7 @@ async def enqueue_checkpoint(
         menu_selections=body.menu_selections,
         freeform_note=body.freeform_note,
         reference_image_ids=body.reference_image_ids,
+        aspect_ratio=body.aspect_ratio,
     )
     return CreateCheckpointResponse(
         task_id=enqueued.task_id,

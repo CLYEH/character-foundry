@@ -256,6 +256,7 @@ async def enqueue_checkpoint(
     menu_selections: dict[str, object] | None,
     freeform_note: str | None,
     reference_image_ids: list[uuid.UUID] | None,
+    aspect_ratio: str = "2:3",
 ) -> EnqueuedCheckpoint:
     """Validate, reserve a sequence + checkpoint UUID, enqueue the
     worker.
@@ -337,6 +338,7 @@ async def enqueue_checkpoint(
         "freeform_note": final_freeform,
         "reference_image_ids": [str(r.id) for r in refs],
         "reference_image_keys": [r.storage_key for r in refs],
+        "aspect_ratio": aspect_ratio,
     }
     if mode == "retry_same" and base_checkpoint is not None:
         # Carry the reference keys forward so the retry has identical

@@ -18,6 +18,15 @@ from app.schemas.creation_session import CreationSessionDTO
 
 CheckpointMode = Literal["retry_same", "remix", "fresh"]
 
+# Aspect-ratio enum exposed to the UI (T-047). Values map onto the
+# OpenAI gpt-image legal `size` set via `app.ai.gpt_image_2._SIZE_MAP`:
+#   - auto → provider chooses
+#   - 1:1  → 1024×1024 (square)
+#   - 2:3  → 1024×1536 (portrait — default for character generation)
+#   - 3:2  → 1536×1024 (landscape)
+CheckpointAspectRatio = Literal["auto", "1:1", "2:3", "3:2"]
+DEFAULT_ASPECT_RATIO: CheckpointAspectRatio = "2:3"
+
 
 class CheckpointDTO(BaseModel):
     """List-card / detail shape (api-shape §6.7)."""
@@ -74,6 +83,11 @@ class CreateCheckpointRequest(BaseModel):
     menu_selections: dict[str, Any] | None = None
     freeform_note: str | None = None
     reference_image_ids: list[uuid.UUID] | None = None
+    # Caller-supplied aspect ratio for the generated image. Accepted on
+    # `fresh` mode; for `retry_same` / `remix` the worker re-derives from
+    # the source checkpoint's generation_log so iterations stay consistent
+    # with the user's original framing intent (T-047).
+    aspect_ratio: CheckpointAspectRatio = DEFAULT_ASPECT_RATIO
 
 
 class CreateCheckpointResponse(BaseModel):
