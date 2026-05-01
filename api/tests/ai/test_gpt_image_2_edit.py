@@ -91,8 +91,10 @@ def _success_response(_request: httpx.Request) -> httpx.Response:
 async def test_edit_image2image_with_three_references_sends_each_image_field(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
-    """The base + each reference must reach the provider; repeated
-    `image` field name is the gpt-image-1 multi-image edits contract."""
+    """Multi-image edits use the `image[]` array syntax. Repeating the
+    bare `image` field name (the original gpt-image-1 assumption) returns
+    400 on gpt-image-1.5+; the provider's own error message instructs us
+    to use `image[]`. Verified empirically against real provider on T-042."""
     captured: dict[str, str] = {}
 
     def _handler(request: httpx.Request) -> httpx.Response:
@@ -119,9 +121,11 @@ async def test_edit_image2image_with_three_references_sends_each_image_field(
     assert "BASE-bytes-marker" in body
     for ref in refs:
         assert ref.decode("latin-1") in body, f"reference {ref!r} missing from multipart body"
-    # Multipart must use a repeated `image` field name (not image_1 / image_2)
-    # so the provider sees N images under the same key.
-    assert body.count('name="image"') == 1 + len(refs)
+    # Base + each reference must all carry the `image[]` array field name
+    # so the provider parses them as a single multi-image edit. The bare
+    # `image` field MUST NOT appear (would re-introduce the 400 bug).
+    assert body.count('name="image[]"') == 1 + len(refs)
+    assert 'name="image"' not in body
     assert "add a red scarf" in body
 
 

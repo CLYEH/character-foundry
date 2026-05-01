@@ -187,17 +187,23 @@ class GptImage2Client:
         `generate_image_image2image` path (which has the same hard-coded
         label) and is part of the T-031 alias-worker scope.
         """
-        # Repeated `image` field name for the base + each reference
-        # matches OpenAI's gpt-image-1 multi-image edits contract; httpx
-        # supports the list-of-tuples form for `files` to express that.
-        # gpt-image-2 is assumed to inherit the same multi-image shape;
-        # verify against the live provider before T-031 production cutover.
-        multipart_files: list[tuple[str, tuple[str, bytes, str]]] = [
-            ("image", ("base.png", base_image_bytes, "image/png")),
-        ]
+        # Multi-image edits use the `image[]` array syntax. Repeating the
+        # bare `image` field name (the gpt-image-1 shape T-030 assumed
+        # inherits) returns 400 on gpt-image-1.5: "Duplicate parameter:
+        # 'image'. ... use the array syntax instead e.g. 'image[]=<value>'".
+        # Single-image edits keep the bare `image` name (verified 200).
+        # Empirical probe 2026-05-01 against real provider. (T-042)
+        multipart_files: list[tuple[str, tuple[str, bytes, str]]]
         if reference_image_bytes:
+            multipart_files = [
+                ("image[]", ("base.png", base_image_bytes, "image/png")),
+            ]
             for idx, ref in enumerate(reference_image_bytes):
-                multipart_files.append(("image", (f"reference_{idx}.png", ref, "image/png")))
+                multipart_files.append(("image[]", (f"reference_{idx}.png", ref, "image/png")))
+        else:
+            multipart_files = [
+                ("image", ("base.png", base_image_bytes, "image/png")),
+            ]
         data: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
