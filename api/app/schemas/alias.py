@@ -66,6 +66,23 @@ class AliasResponse(BaseModel):
     alias: AliasDTO
 
 
+class AliasListResponse(BaseModel):
+    """`GET /v1/characters/{id}/aliases` envelope (api-shape §5.3).
+
+    No `next_cursor` — the list is unpaginated in Phase 1 (per T-032
+    §Scope: a character is not expected to accumulate hundreds of
+    aliases).
+    """
+
+    items: list[AliasDTO]
+
+
+class PatchAliasRequest(BaseModel):
+    """Body for `PATCH /v1/aliases/{id}` — rename only."""
+
+    name: NameStr
+
+
 class MaskUploadResponse(BaseModel):
     """201 envelope for `POST /v1/characters/{id}/aliases/masks`.
 

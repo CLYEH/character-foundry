@@ -293,6 +293,29 @@ def not_found_checkpoint() -> AgentErrorException:
     )
 
 
+def not_found_alias() -> AgentErrorException:
+    """Returned by `GET / PATCH / DELETE /v1/aliases/{id}` (T-032) when
+    the row is unknown to the caller — id never existed, the worker
+    hasn't committed it yet, the alias is soft-deleted, or its parent
+    character belongs to another team. We collapse all four cases so
+    the response can't be used to probe other team's data.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_ALIAS",
+            message="找不到此造型",
+            problem="No alias with the given id is visible to the caller.",
+            cause="Either the id is wrong, the alias is soft-deleted, the "
+            "worker has not yet committed the row, or the parent character "
+            "belongs to another team.",
+            fix="Re-fetch via GET /v1/characters/{id}/aliases to find a "
+            "current id, or subscribe to the create_alias task via SSE.",
+            retryable=False,
+        ),
+        status_code=404,
+    )
+
+
 def not_found_reference_image() -> AgentErrorException:
     """One or more `reference_image_ids` on a checkpoint create request
     don't exist or don't belong to the session. We collapse both shapes

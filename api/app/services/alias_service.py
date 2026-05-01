@@ -27,15 +27,22 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from arq.connections import ArqRedis
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import (
+    AgentErrorException,
     conflict_duplicate_alias_name,
+    not_found_alias,
     not_found_character,
     validation_alias_empty_input,
     validation_name_invalid,
 )
-from app.core.permissions import assert_can_modify_character
+from app.core.permissions import (
+    assert_can_modify_character,
+    assert_can_read_character,
+)
+from app.models.alias import Alias
 from app.models.user import User
 from app.prompt.errors import (
     conflict_base_not_set,
@@ -48,6 +55,7 @@ from app.repositories import (
     character_repo,
     checkpoint_repo,
     mask_repo,
+    motion_repo,
     reference_image_repo,
 )
 from app.schemas.alias import CreateAliasRequest
@@ -239,3 +247,169 @@ async def enqueue_alias(
         input_payload=payload,
     )
     return EnqueuedAlias(task_id=created.task.id, alias_id=alias_id)
+
+
+# ---------------------------------------------------------------------------
+# T-032: read / rename / soft-delete
+#
+# Auth split, by analogy with the character routes:
+#   - GET  list / detail → team-wide (`assert_can_read_character`); a
+#     teammate already sees `aliases: [...]` embedded in the character
+#     detail response, so per-id reads matching that visibility avoids a
+#     UX gotcha where the embedded view works but the standalone read
+#     403s. The ticket text "全部 endpoint owner-only" is interpreted as
+#     "writes only" — same convention character routes follow.
+#   - PATCH / DELETE → owner only (`assert_can_modify_character`).
+#
+# In all cases cross-team callers see NOT_FOUND_* (no team-existence
+# probe). NOT_FOUND_CHARACTER raised by the perm helper is translated to
+# NOT_FOUND_ALIAS on the per-id surface so the response code stays
+# anchored on the resource the caller asked about; the 403 (same-team-
+# non-owner) is real authorization signal and passes through untouched.
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_alias_with_perm(
+    db: AsyncSession,
+    *,
+    user: User,
+    alias_id: uuid.UUID,
+    require_owner: bool,
+) -> Alias:
+    """Fetch an active alias and run the appropriate permission check
+    against its parent character.
+
+    `require_owner=True` for writes (PATCH/DELETE), `False` for reads
+    (GET detail). The character `get_active` returning None is
+    practically unreachable — the FK is `ON DELETE CASCADE`, so a
+    hard-deleted character takes its aliases with it; the only way to
+    hit the branch is a soft-deleted parent, which we collapse to
+    NOT_FOUND_ALIAS so the response doesn't leak parent state.
+    """
+    alias = await alias_repo.get_active(db, alias_id)
+    if alias is None:
+        raise not_found_alias()
+    character = await character_repo.get_active(db, alias.character_id)
+    if character is None:
+        raise not_found_alias()
+    try:
+        if require_owner:
+            assert_can_modify_character(character, user)
+        else:
+            assert_can_read_character(character, user)
+    except AgentErrorException as exc:
+        if exc.error.code == "NOT_FOUND_CHARACTER":
+            raise not_found_alias() from exc
+        raise
+    return alias
+
+
+async def list_aliases_for_character(
+    db: AsyncSession,
+    *,
+    user: User,
+    character_id: uuid.UUID,
+) -> Sequence[Alias]:
+    """Team-wide list of active aliases sorted `created_at ASC`.
+
+    Cross-team → NOT_FOUND_CHARACTER (404). Empty result is valid (200
+    with `items: []`). Mirrors `GET /v1/characters/{id}` reachability:
+    if the caller can see the character, they can see its aliases.
+    """
+    character = await character_repo.get_active(db, character_id)
+    if character is None:
+        raise not_found_character()
+    assert_can_read_character(character, user)
+    return await alias_repo.list_active_for_character(db, character_id=character.id)
+
+
+@dataclass(frozen=True)
+class AliasDetail:
+    """Service-layer carrier for `GET /v1/aliases/{id}`.
+
+    Bundles the alias row with its motion count so the route can build
+    the DTO without re-querying. Kept as a dataclass (not a Pydantic
+    model) so the service stays free of wire-shape concerns — the route
+    layer owns the response envelope.
+    """
+
+    alias: Alias
+    motion_count: int
+
+
+async def get_alias_detail(
+    db: AsyncSession,
+    *,
+    user: User,
+    alias_id: uuid.UUID,
+) -> AliasDetail:
+    """Team-wide detail read. Returns the alias + active motion count."""
+    alias = await _resolve_alias_with_perm(db, user=user, alias_id=alias_id, require_owner=False)
+    motion_count = await motion_repo.count_active_for_alias(db, alias_id=alias.id)
+    return AliasDetail(alias=alias, motion_count=motion_count)
+
+
+async def update_alias_name(
+    db: AsyncSession,
+    *,
+    user: User,
+    alias_id: uuid.UUID,
+    new_name: str,
+) -> Alias:
+    """Rename an alias. Same-character duplicate → 409, invalid chars →
+    400. No-op rename short-circuits (mirrors `update_character_name`).
+    """
+    if not name_pattern_ok(new_name):
+        raise validation_name_invalid()
+
+    alias = await _resolve_alias_with_perm(db, user=user, alias_id=alias_id, require_owner=True)
+
+    if alias.name == new_name:
+        return alias
+
+    if await alias_repo.name_exists_for_character(
+        db, character_id=alias.character_id, name=new_name, exclude_id=alias.id
+    ):
+        raise conflict_duplicate_alias_name()
+
+    alias.name = new_name
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # The partial UNIQUE index `uq_aliases_character_name` is the
+        # durable guard against a race between the probe and the commit.
+        # Translate to the same friendly 409 either way.
+        await db.rollback()
+        if "uq_aliases_character_name" in (str(exc.orig) if exc.orig is not None else str(exc)):
+            raise conflict_duplicate_alias_name() from exc
+        raise
+    await db.refresh(alias)
+    return alias
+
+
+async def soft_delete_alias(
+    db: AsyncSession,
+    *,
+    user: User,
+    alias_id: uuid.UUID,
+) -> None:
+    """Soft-delete an alias and cascade-soft-delete its motions in the
+    same transaction (per T-032 §Scope, F-12).
+
+    Both mutations land before a single `await db.commit()`, so observers
+    see them atomically — never "alias gone, motions still live", which
+    would let the per-id motion CRUD paths hit a row whose parent has
+    vanished. The cascade runs first only because it's a bulk UPDATE we
+    want flushed before the alias mutation joins the dirty set; the
+    transaction boundary is what actually guarantees atomicity.
+
+    Race window left for the Sprint 5 cleanup job: a concurrent
+    `create_motion` task that started before this delete could commit a
+    new active motion under the soft-deleted alias id. Phase 1 accepts
+    that — closing it would need either `SELECT ... FOR UPDATE` on the
+    alias here or a post-commit re-sweep.
+    """
+    alias = await _resolve_alias_with_perm(db, user=user, alias_id=alias_id, require_owner=True)
+    await motion_repo.soft_delete_for_alias(db, alias_id=alias.id)
+    await alias_repo.soft_delete(db, alias)
+    await db.commit()
