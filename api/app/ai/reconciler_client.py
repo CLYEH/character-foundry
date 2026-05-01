@@ -104,14 +104,32 @@ class Gpt5MiniClient:
         return f"real:{self.model}"
 
     async def call(self, *, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        # OpenAI's reasoning-style models (gpt-5* / o1 / o3 family) drift
+        # from the legacy chat-completions contract in two places that bit
+        # us with gpt-5-mini (T-045 empirical, 2026-05-01):
+        #
+        #   1. `max_tokens` → `max_completion_tokens`. Provider 400:
+        #      "Unsupported parameter: 'max_tokens' is not supported with
+        #      this model. Use 'max_completion_tokens' instead."
+        #   2. `temperature` only accepts the default (1). Sending 0 (the
+        #      old "deterministic JSON-mode" trick) returns 400:
+        #      "Unsupported value: 'temperature' does not support 0 with
+        #      this model. Only the default (1) value is supported."
+        #      — so we omit the field and let the provider default. JSON-
+        #      mode is enforced via `response_format` below; reasoning
+        #      models are deterministic enough on structured output that
+        #      losing temperature=0 is not a quality regression here.
+        #
+        # The Python attribute / config / env var (RECONCILER_MAX_TOKENS)
+        # keep the original `max_tokens` name because operators have it set;
+        # only the wire-level key is renamed.
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0,
-            "max_tokens": self.max_tokens,
+            "max_completion_tokens": self.max_tokens,
             "response_format": {"type": "json_object"},
         }
         return await self._call_with_resilience("/chat/completions", body)
