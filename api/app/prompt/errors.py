@@ -290,6 +290,52 @@ def conflict_motion_duplicate_name() -> AgentErrorException:
     )
 
 
+def validation_preset_rename_forbidden() -> AgentErrorException:
+    """A preset motion's `name` cannot be renamed (api-shape §5.4).
+
+    Preset motions occupy fixed slots per parent (F-20) and the name is
+    a localized label of the slot itself, not user-authored. Allowing
+    rename would let a caller swap labels mid-flight and break the
+    frontend's "5 fixed positions" rendering. Custom motions stay
+    renameable as before.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="VALIDATION_PRESET_RENAME_FORBIDDEN",
+            message="預設動作不可改名",
+            problem="Preset motions occupy fixed slots and cannot be renamed.",
+            cause="Phase 1 fixes 5 preset motion slots per parent (F-20); "
+            "their names label the slot, not the row.",
+            fix="Only custom motions are renameable. To change a preset's "
+            "label, edit its localized template in the codebase.",
+            retryable=False,
+        ),
+        status_code=422,
+    )
+
+
+def not_found_motion() -> AgentErrorException:
+    """The supplied motion id doesn't resolve to a motion the caller can see.
+
+    Mirrors `NOT_FOUND_ALIAS`: visibility is gated on team ownership,
+    so a wrong id, a soft-deleted row, and a sibling-team motion all
+    collapse to the same 404.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="NOT_FOUND_MOTION",
+            message="找不到此動作",
+            problem="No motion with the given id is visible to the caller.",
+            cause="Either the id is wrong, the motion was soft-deleted, "
+            "or the motion belongs to another team's character.",
+            fix="Re-fetch the motion list via "
+            "GET /v1/bases/{id}/motions or /v1/aliases/{id}/motions.",
+            retryable=False,
+        ),
+        status_code=404,
+    )
+
+
 def conflict_motion_preset_already_exists() -> AgentErrorException:
     """The same preset_* slot has already been generated under this parent.
 

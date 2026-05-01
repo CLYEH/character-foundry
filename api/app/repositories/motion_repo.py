@@ -13,9 +13,10 @@ reads + insert that T-033's enqueue + worker need.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, func, literal_column, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.motion import Motion
@@ -122,6 +123,76 @@ async def find_active_preset_for_parent(
         raise ValueError(f"unknown parent_type: {parent_type!r}")
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def find_active_by_parent_and_name_excluding(
+    db: AsyncSession,
+    *,
+    parent_type: str,
+    parent_id: uuid.UUID,
+    name: str,
+    exclude_id: uuid.UUID,
+) -> Motion | None:
+    """Like `find_active_by_parent_and_name` but skips a row by id.
+
+    Used by the rename path so a no-op-ish rename (case differs but row
+    is the same row) doesn't false-positive on its own existence. The
+    DB-side partial UNIQUE indexes (`uq_motions_*_name`) are still the
+    durable race guard.
+    """
+    stmt = select(Motion).where(
+        Motion.name == name,
+        Motion.deleted_at.is_(None),
+        Motion.id != exclude_id,
+    )
+    if parent_type == "base":
+        stmt = stmt.where(Motion.base_id == parent_id)
+    elif parent_type == "alias":
+        stmt = stmt.where(Motion.alias_id == parent_id)
+    else:  # pragma: no cover — caller responsibility
+        raise ValueError(f"unknown parent_type: {parent_type!r}")
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def list_active_for_parent(
+    db: AsyncSession,
+    *,
+    parent_type: str,
+    parent_id: uuid.UUID,
+) -> Sequence[Motion]:
+    """Active motions under a parent (Base | Alias), preset rows first.
+
+    Sort order per T-034 §Scope: preset motions are pinned ahead of
+    customs (the frontend renders 5 fixed preset slots, then customs
+    after); within each group order is `created_at ASC` for
+    reproducibility. The preset-first split is encoded as a
+    `motion_type LIKE 'preset_%'` boolean — DESC puts True (preset)
+    ahead of False (custom). The id tiebreaker keeps multi-row tests
+    deterministic when wall-clock collisions happen.
+    """
+    preset_first: ColumnElement[bool] = literal_column("motion_type LIKE 'preset_%'")
+    stmt = select(Motion).where(Motion.deleted_at.is_(None))
+    if parent_type == "base":
+        stmt = stmt.where(Motion.base_id == parent_id)
+    elif parent_type == "alias":
+        stmt = stmt.where(Motion.alias_id == parent_id)
+    else:  # pragma: no cover — caller responsibility
+        raise ValueError(f"unknown parent_type: {parent_type!r}")
+    stmt = stmt.order_by(preset_first.desc(), Motion.created_at.asc(), Motion.id.asc())
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+async def soft_delete(db: AsyncSession, motion: Motion) -> None:
+    """Stamp `deleted_at` on a motion row in-place. Caller commits.
+
+    Mirrors `alias_repo.soft_delete` — keep the mutation local so the
+    service layer can compose it inside a larger transaction (e.g. a
+    future cascade from a base deletion) without each repo committing
+    independently.
+    """
+    motion.deleted_at = datetime.now(UTC)
 
 
 async def count_active_for_alias(

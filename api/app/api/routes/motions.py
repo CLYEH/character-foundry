@@ -1,13 +1,21 @@
-"""`/v1/bases/{id}/motions` + `/v1/aliases/{id}/motions` (T-033).
+"""`/v1/bases/{id}/motions` + `/v1/aliases/{id}/motions` (T-033 + T-034).
 
-Two POST endpoints, one per parent kind. Both share the same body
+POST endpoints (T-033): one per parent kind. Both share the same body
 shape (`CreateMotionRequest`) and 202 envelope (`CreateMotionResponse`)
 — the only difference is which `parent_type` the service is told the
 id belongs to.
 
-Read endpoints (GET / PATCH / DELETE) belong to T-034; this router
-ships only the create surface so the worker pipeline can be exercised
-end-to-end before T-034 lands.
+Read / mutate-by-id endpoints (T-034):
+
+  - GET    /v1/bases/{id}/motions
+  - GET    /v1/aliases/{id}/motions
+  - GET    /v1/motions/{id}
+  - PATCH  /v1/motions/{id}      (custom only; preset → 422)
+  - DELETE /v1/motions/{id}      (soft delete)
+
+Auth split mirrors `aliases.py`: list / detail are team-wide reads,
+PATCH / DELETE are owner-only. NOT_FOUND_MOTION is the opacity envelope
+for cross-team / soft-deleted / unknown ids.
 """
 
 from __future__ import annotations
@@ -16,14 +24,23 @@ import uuid
 from typing import Annotated
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import db_session, get_current_user
+from app.api.deps import db_session, get_current_user, get_storage
 from app.core.redis_client import get_arq_pool
 from app.models.user import User
-from app.schemas.motion import CreateMotionRequest, CreateMotionResponse
+from app.schemas.motion import (
+    CreateMotionRequest,
+    CreateMotionResponse,
+    MotionDetailResponse,
+    MotionListResponse,
+    MotionResponse,
+    PatchMotionRequest,
+)
+from app.schemas.motion_builder import build_motion_detail_dto, build_motion_dto
 from app.services import motion_service
+from app.storage.backend import StorageBackend
 
 router = APIRouter(tags=["motions"])
 
@@ -85,3 +102,96 @@ async def enqueue_alias_motion(
         description=body.description,
     )
     return CreateMotionResponse(task_id=enqueued.task_id, motion_id=enqueued.motion_id)
+
+
+# ---------------------------------------------------------------------------
+# T-034: list / detail / patch / delete
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/v1/bases/{base_id}/motions",
+    response_model=MotionListResponse,
+)
+async def list_base_motions(
+    base_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(db_session)],
+    user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
+) -> MotionListResponse:
+    """List active motions under a Base, preset-first then created_at ASC."""
+    motions = await motion_service.list_motions_for_parent(
+        db, user=user, parent_type="base", parent_id=base_id
+    )
+    return MotionListResponse(items=[build_motion_dto(m, storage) for m in motions])
+
+
+@router.get(
+    "/v1/aliases/{alias_id}/motions",
+    response_model=MotionListResponse,
+)
+async def list_alias_motions(
+    alias_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(db_session)],
+    user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
+) -> MotionListResponse:
+    """List active motions under an Alias, preset-first then created_at ASC."""
+    motions = await motion_service.list_motions_for_parent(
+        db, user=user, parent_type="alias", parent_id=alias_id
+    )
+    return MotionListResponse(items=[build_motion_dto(m, storage) for m in motions])
+
+
+@router.get(
+    "/v1/motions/{motion_id}",
+    response_model=MotionDetailResponse,
+)
+async def get_motion(
+    motion_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(db_session)],
+    user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
+) -> MotionDetailResponse:
+    """Detail surface — same fields as the list card plus a `generation`
+    subset (model name, duration, completed_at). Team-wide read."""
+    detail = await motion_service.get_motion_detail(db, user=user, motion_id=motion_id)
+    return MotionDetailResponse(
+        motion=build_motion_detail_dto(
+            detail.motion,
+            storage,
+            generation_log=detail.generation_log,
+        )
+    )
+
+
+@router.patch(
+    "/v1/motions/{motion_id}",
+    response_model=MotionResponse,
+)
+async def patch_motion(
+    motion_id: uuid.UUID,
+    body: PatchMotionRequest,
+    db: Annotated[AsyncSession, Depends(db_session)],
+    user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
+) -> MotionResponse:
+    """Rename a custom motion. Preset → 422, duplicate → 409."""
+    motion = await motion_service.update_motion_name(
+        db, user=user, motion_id=motion_id, new_name=body.name
+    )
+    return MotionResponse(motion=build_motion_dto(motion, storage))
+
+
+@router.delete(
+    "/v1/motions/{motion_id}",
+    status_code=204,
+)
+async def delete_motion(
+    motion_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(db_session)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> Response:
+    """Soft-delete. Returns 204 with no body (mirrors alias delete)."""
+    await motion_service.soft_delete_motion(db, user=user, motion_id=motion_id)
+    return Response(status_code=204)

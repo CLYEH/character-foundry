@@ -98,3 +98,59 @@ class MotionDTO(BaseModel):
 
 class MotionResponse(BaseModel):
     motion: MotionDTO
+
+
+class MotionGenerationDTO(BaseModel):
+    """Compact GenerationLog projection embedded in `MotionDetailDTO`.
+
+    Not the full audit row — `cost_units`, `parameters`, and other
+    internals stay backend-side. The fields here are what a "view this
+    motion's generation info" affordance needs: which model produced
+    it, how long it took, and when it finished. Mirrors api-shape §6.5
+    "{ ...GenerationLog subset... }" without committing to the full
+    set so future tickets can extend.
+    """
+
+    model_config = ConfigDict(from_attributes=False)
+
+    model_name: str
+    model_version: str | None = None
+    duration_ms: int | None = None
+    completed_at: datetime | None = None
+
+
+class MotionDetailDTO(MotionDTO):
+    """`GET /v1/motions/{id}` shape (api-shape §5.4 → §6.5).
+
+    Adds the `generation` subset on top of the list-card MotionDTO.
+    `generation` is None when the motion's `generation_log_id` is null
+    (e.g. a row inserted by a worker before generation logging was
+    wired up — the soft FK is nullable per `motions.generation_log_id`).
+    """
+
+    generation: MotionGenerationDTO | None = None
+
+
+class MotionDetailResponse(BaseModel):
+    motion: MotionDetailDTO
+
+
+class MotionListResponse(BaseModel):
+    """`GET /v1/(bases|aliases)/{id}/motions` envelope (api-shape §5.4).
+
+    No `next_cursor` — Phase 1 caps motions per parent at single digits
+    (5 preset + ~handful of custom) so unpaginated is fine.
+    """
+
+    items: list[MotionDTO]
+
+
+class PatchMotionRequest(BaseModel):
+    """Body for `PATCH /v1/motions/{id}` — rename only (custom motions).
+
+    Preset motions are name-locked at the service layer and surface as
+    422 `VALIDATION_PRESET_RENAME_FORBIDDEN`; the wire schema stays
+    permissive so OpenAPI clients don't need to multiplex.
+    """
+
+    name: MotionNameStr

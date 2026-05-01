@@ -13,9 +13,24 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.generation_log import GenerationLog
+
+
+async def get_by_id(db: AsyncSession, log_id: uuid.UUID) -> GenerationLog | None:
+    """Fetch a generation log by id alone.
+
+    The table is RANGE-partitioned on `started_at`, so a query without
+    the partition key cannot be partition-pruned — this is fine for the
+    single-row lookups the motion-detail surface (T-034) needs (one row
+    per request, looked up via the soft FK on the motion). Bulk reads
+    should still scope by `started_at` to enable pruning.
+    """
+    stmt = select(GenerationLog).where(GenerationLog.id == log_id)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 async def insert_success(
