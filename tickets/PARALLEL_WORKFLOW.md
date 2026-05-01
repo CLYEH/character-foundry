@@ -61,8 +61,8 @@
 >
 > - Wave A：**done**（2026-04-30 全部 5 張 squash-merged：PR #38 #39 #40 #41 #42）
 > - Wave B：**done**（2026-04-30 全部 2 張 squash-merged：PR #46 T-031, PR #47 T-033）
-> - Wave C：**進行中**（T-032 done; T-034 待開工）
-> - Wave D：blocked by Wave C
+> - Wave C：**done**（T-032 + T-034 squash-merged）
+> - Wave D：**進行中**（T-037 PR pending Codex review）
 > - Wave E：blocked by Wave D
 > - Wave F：blocked by Wave E
 > - Wave G：M3 gate
