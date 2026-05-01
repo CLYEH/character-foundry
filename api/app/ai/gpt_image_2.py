@@ -39,8 +39,11 @@ from app.core.errors import AgentErrorException
 _logger = logging.getLogger(__name__)
 
 # httpx accepts either a mapping or a sequence-of-tuples for `files`; we
-# need the list form to send repeated `image` field names for multi-image
-# edits (gpt-image-1 / gpt-image-2 multi-reference contract).
+# need the list form to send the `image[]` array field name multiple
+# times for multi-image edits. The bare `image` field is single-image
+# only — `edit_image2image` for the gpt-image-1.5 / gpt-image-2 multi-
+# reference contract (see body comment in that method for the empirical
+# evidence).
 _FilesArg = dict[str, tuple[str, bytes, str]] | list[tuple[str, tuple[str, bytes, str]]]
 
 # Aspect ratio → OpenAI `size` string. The provider only accepts a fixed
@@ -91,23 +94,34 @@ class GptImage2Client:
 
     # ------------------------------------------------------------------ public
 
+    # OpenAI's `gpt-image-*` series rejects three params the original
+    # client (modelled on the dall-e-3 contract) used to send:
+    #   - `response_format`: dall-e-2/3 only; GPT models always return
+    #     `b64_json` and 400 on the param.
+    #   - `quality="hd"`: dall-e-3 legacy value. GPT accepts only
+    #     `low/medium/high/auto`; we omit the field entirely and let the
+    #     provider default to `auto`.
+    #   - `seed`: not in the gpt-image schema at all. The Python signature
+    #     keeps `seed` so callers / tests don't break, but we never
+    #     forward it. Audit rows still record the requested seed via
+    #     `generation_logs.parameters` (see workers/jobs/create_checkpoint).
+    # Empirical probe 2026-05-01 against real provider confirmed each
+    # of those three params returns 400 in isolation; baseline
+    # `{model, prompt, size, n}` returns 200. (T-042)
+
     async def generate_image_text2image(
         self,
         prompt: str,
         *,
         aspect_ratio: str = "1:1",
-        seed: int | None = None,
+        seed: int | None = None,  # accepted but not forwarded — see header note
     ) -> AIGenerationResult:
         json_body: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
             "size": self._size_for(aspect_ratio),
             "n": 1,
-            "response_format": "b64_json",
-            "quality": "hd",
         }
-        if seed is not None:
-            json_body["seed"] = seed
         return await self._call_with_resilience("/images/generations", json_body=json_body)
 
     async def generate_image_image2image(
@@ -116,7 +130,7 @@ class GptImage2Client:
         image: bytes,
         *,
         aspect_ratio: str = "1:1",
-        seed: int | None = None,
+        seed: int | None = None,  # accepted but not forwarded — see header note
     ) -> AIGenerationResult:
         files: dict[str, tuple[str, bytes, str]] = {
             "image": ("image.png", image, "image/png"),
@@ -126,10 +140,7 @@ class GptImage2Client:
             "prompt": prompt,
             "size": self._size_for(aspect_ratio),
             "n": "1",
-            "response_format": "b64_json",
         }
-        if seed is not None:
-            data["seed"] = str(seed)
         return await self._call_with_resilience("/images/edits", form_data=data, files=files)
 
     async def generate_image_inpaint(
@@ -139,7 +150,7 @@ class GptImage2Client:
         mask: bytes,
         *,
         aspect_ratio: str = "1:1",
-        seed: int | None = None,
+        seed: int | None = None,  # accepted but not forwarded — see header note
     ) -> AIGenerationResult:
         files: dict[str, tuple[str, bytes, str]] = {
             "image": ("image.png", image, "image/png"),
@@ -150,10 +161,7 @@ class GptImage2Client:
             "prompt": prompt,
             "size": self._size_for(aspect_ratio),
             "n": "1",
-            "response_format": "b64_json",
         }
-        if seed is not None:
-            data["seed"] = str(seed)
         return await self._call_with_resilience("/images/edits", form_data=data, files=files)
 
     async def edit_image2image(
@@ -182,22 +190,27 @@ class GptImage2Client:
         `generate_image_image2image` path (which has the same hard-coded
         label) and is part of the T-031 alias-worker scope.
         """
-        # Repeated `image` field name for the base + each reference
-        # matches OpenAI's gpt-image-1 multi-image edits contract; httpx
-        # supports the list-of-tuples form for `files` to express that.
-        # gpt-image-2 is assumed to inherit the same multi-image shape;
-        # verify against the live provider before T-031 production cutover.
-        multipart_files: list[tuple[str, tuple[str, bytes, str]]] = [
-            ("image", ("base.png", base_image_bytes, "image/png")),
-        ]
+        # Multi-image edits use the `image[]` array syntax. Repeating the
+        # bare `image` field name (the gpt-image-1 shape T-030 assumed
+        # inherits) returns 400 on gpt-image-1.5: "Duplicate parameter:
+        # 'image'. ... use the array syntax instead e.g. 'image[]=<value>'".
+        # Single-image edits keep the bare `image` name (verified 200).
+        # Empirical probe 2026-05-01 against real provider. (T-042)
+        multipart_files: list[tuple[str, tuple[str, bytes, str]]]
         if reference_image_bytes:
+            multipart_files = [
+                ("image[]", ("base.png", base_image_bytes, "image/png")),
+            ]
             for idx, ref in enumerate(reference_image_bytes):
-                multipart_files.append(("image", (f"reference_{idx}.png", ref, "image/png")))
+                multipart_files.append(("image[]", (f"reference_{idx}.png", ref, "image/png")))
+        else:
+            multipart_files = [
+                ("image", ("base.png", base_image_bytes, "image/png")),
+            ]
         data: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
             "n": "1",
-            "response_format": "b64_json",
         }
         return await self._call_with_resilience(
             "/images/edits", form_data=data, files=multipart_files
@@ -238,7 +251,6 @@ class GptImage2Client:
             "model": self.model,
             "prompt": prompt,
             "n": "1",
-            "response_format": "b64_json",
         }
         return await self._call_with_resilience(
             "/images/edits", form_data=data, files=multipart_files
@@ -372,7 +384,10 @@ class GptImage2Client:
                 self.model, RuntimeError(f"b64 decode failed: {exc}")
             ) from exc
 
-        # cost_units: hd = 1.0, standard = 0.5 (planning §6).
+        # cost_units: placeholder 1.0 per call. The original hd/standard
+        # split (planning §6) no longer applies — gpt-image-* uses
+        # token-based pricing and doesn't expose `quality=hd`. Revisit
+        # when cost tracking lands as its own ticket.
         cost = 1.0
         return AIGenerationResult(
             image_bytes=image_bytes,

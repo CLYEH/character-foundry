@@ -78,6 +78,7 @@
 | T-039 | Frontend Custom motion modal (M-02) | TODO |
 | T-040 | Frontend Prompt preview modal extension（alias / motion mode）| DONE |
 | T-041 | E2E Alias creation + motion preset smoke（M3 gate）| TODO |
+| T-042 | Fix gpt-image API contract on real provider（drop dall-e-3 params + multi-image `image[]`） | DONE |
 
 **Dependency / parallelization plan：** 見 `tickets/PARALLEL_WORKFLOW.md`。Wave A（T-029 / T-030 / T-035 / T-036 / T-040）可立即平行開工。
 
