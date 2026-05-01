@@ -390,6 +390,53 @@ describe('MotionRow', () => {
     expect(sonnerCalls.find((c) => c.kind === 'success')?.message).toBe('已取消生成')
   })
 
+  it('settles every parallel cancel response (no shared mutation observer drop)', async () => {
+    createMotionMock.mockImplementation(async (_parent, body) => ({
+      task_id: `task-${body.motion_type}`,
+      motion_id: `motion-${body.motion_type}`,
+    }))
+    cancelTaskMock.mockImplementation(async (taskId: string) => ({
+      task: {} as never,
+      // Mark each cancel as immediate so dropping a callback would
+      // leave the slot visibly stuck (no trailing SSE settles it).
+      cancel_outcome: 'cancelled_immediately' as const,
+      _taskId: taskId,
+    }))
+
+    renderRow({ parentType: 'base' })
+    fireEvent.click(screen.getByTestId('motion-cell-empty-preset_wave'))
+    fireEvent.click(screen.getByTestId('motion-cell-empty-preset_nod'))
+    await waitFor(() => expect(createMotionMock).toHaveBeenCalledTimes(2))
+    await waitFor(
+      () => {
+        const open = Array.from(sseHandlers.keys())
+        for (const id of ['task-preset_wave', 'task-preset_nod']) {
+          if (!open.some((u) => u.includes(`/tasks/${id}/stream`))) {
+            throw new Error('not yet subscribed')
+          }
+        }
+      },
+      { timeout: 3000 },
+    )
+    pushSse('task-preset_wave', { status: 'running', progress: 0.2 })
+    pushSse('task-preset_nod', { status: 'running', progress: 0.3 })
+    await screen.findByTestId('motion-cell-running-preset_wave')
+    await screen.findByTestId('motion-cell-running-preset_nod')
+
+    // Fire both cancels in the same tick. With useMutation's shared
+    // observer the first cancel's onSuccess could be dropped, leaving
+    // preset_wave stuck in `running`. The direct-cancelTask path must
+    // process both responses.
+    fireEvent.click(screen.getByTestId('motion-cell-cancel-preset_wave'))
+    fireEvent.click(screen.getByTestId('motion-cell-cancel-preset_nod'))
+    await waitFor(() => expect(cancelTaskMock).toHaveBeenCalledTimes(2))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('motion-cell-empty-preset_wave')).toBeInTheDocument()
+      expect(screen.getByTestId('motion-cell-empty-preset_nod')).toBeInTheDocument()
+    })
+  })
+
   it('keeps the slot occupied on too_late_completed until the refetched list arrives', async () => {
     createMotionMock.mockResolvedValue({
       task_id: 'task-tlc',

@@ -10,8 +10,7 @@ import {
   type MotionParentType,
   type PresetMotionType,
 } from '@/api/endpoints/motions'
-import type { TaskEvent } from '@/api/endpoints/tasks'
-import { useCancelTask } from '@/api/mutations/useCancelTask'
+import { cancelTask, type TaskEvent } from '@/api/endpoints/tasks'
 import { useDeleteMotion } from '@/api/mutations/useDeleteMotion'
 import { aliasMotionsQueryKey } from '@/api/queries/useAliasMotions'
 import { baseMotionsQueryKey } from '@/api/queries/useBaseMotions'
@@ -78,7 +77,6 @@ export function MotionRow({
   const queryClient = useQueryClient()
   const userId = useAuthStore((s) => s.user?.id)
   const deleteMutation = useDeleteMotion(parent)
-  const cancelMutation = useCancelTask()
 
   const [lightboxMotion, setLightboxMotion] = useState<Motion | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Motion | null>(null)
@@ -227,33 +225,33 @@ export function MotionRow({
     (presetType: PresetMotionType) => {
       const entry = pendingRef.current[presetType]
       if (!entry || entry.failed) return
-      cancelMutation.mutate(entry.taskId, {
-        onError: (err) => {
-          // Without an explicit handler the mutation's rejection would
-          // be swallowed: the cell would stay running, the cancel button
-          // would keep firing the same broken POST, and the user would
-          // get no signal that anything went wrong.
-          toast.agentError(AgentError.from(err))
-        },
-        onSuccess: ({ cancel_outcome }) => {
-          // Cancel responses can land after the user has already
-          // retried into a new task — gate every mutation on taskId
-          // match so a late `too_late_failed` from the abandoned task
-          // doesn't clobber the new retry's pending state.
-          const slotStillOurs = (
-            mutator: (prev: Record<string, PresetPending>) => Record<string, PresetPending>,
-          ) =>
-            updatePending((prev) => {
-              const current = prev[presetType]
-              if (!current || current.taskId !== entry.taskId) return prev
-              return mutator(prev)
-            })
-          const dropSlot = () =>
-            slotStillOurs((prev) => {
-              const next = { ...prev }
-              delete next[presetType]
-              return next
-            })
+
+      // Call cancelTask directly instead of going through `useMutation`.
+      // Same reasoning as `createMotion` above: when the user cancels
+      // multiple running slots in quick succession, every cancel
+      // response must run its own callbacks. A shared
+      // `useMutation` observer can drop the older call's per-call
+      // `onSuccess` (Codex P1 #64). Especially load-bearing for
+      // `cancelled_immediately`, which is already terminal server-
+      // side and may not emit a trailing SSE — if its callback gets
+      // dropped, the slot would stay stuck in `running` forever.
+      const slotStillOurs = (
+        mutator: (prev: Record<string, PresetPending>) => Record<string, PresetPending>,
+      ) =>
+        updatePending((prev) => {
+          const current = prev[presetType]
+          if (!current || current.taskId !== entry.taskId) return prev
+          return mutator(prev)
+        })
+      const dropSlot = () =>
+        slotStillOurs((prev) => {
+          const next = { ...prev }
+          delete next[presetType]
+          return next
+        })
+
+      cancelTask(entry.taskId)
+        .then(({ cancel_outcome }) => {
           switch (cancel_outcome) {
             case 'cancelled_immediately':
               unsubscribe(entry.taskId)
@@ -283,10 +281,15 @@ export function MotionRow({
               toast.warning('來不及取消，Motion 生成失敗')
               break
           }
-        },
-      })
+        })
+        .catch((err) => {
+          // Without an explicit handler the rejection would be
+          // swallowed: cell stays in `running`, cancel button keeps
+          // refiring the same broken POST, no signal to the user.
+          toast.agentError(AgentError.from(err))
+        })
     },
-    [cancelMutation, motionsQueryKey, queryClient, unsubscribe, updatePending],
+    [motionsQueryKey, queryClient, unsubscribe, updatePending],
   )
 
   const handleRetry = useCallback(
