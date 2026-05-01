@@ -153,19 +153,26 @@ def test_list_aliases_empty_for_no_aliases(
     assert resp.json() == {"items": []}
 
 
-def test_list_aliases_non_owner_403(
+def test_list_aliases_team_member_can_read(
     client: TestClient,
+    access_token: str,
     second_access_token: str,
     second_user: dict[str, Any],
     seeded_character_with_base: dict[str, Any],
+    database_url: str,
 ) -> None:
-    """Same team but not the owner: 403 (T-032 §Scope owner-only)."""
+    """Team-wide read parity with `GET /v1/characters/{id}` — a teammate
+    who can see the character can also see its alias list (the embedded
+    `aliases` field on `CharacterDetail` already exposes them, so the
+    standalone read should not 403)."""
+    character_id = seeded_character_with_base["id"]
+    asyncio.run(_insert_alias(database_url, character_id=character_id, name="Visible"))
     resp = client.get(
-        f"/v1/characters/{seeded_character_with_base['id']}/aliases",
+        f"/v1/characters/{character_id}/aliases",
         headers=auth_headers(second_access_token),
     )
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "AUTH_INSUFFICIENT_PERMISSION"
+    assert resp.status_code == 200, resp.text
+    assert [a["name"] for a in resp.json()["items"]] == ["Visible"]
 
 
 def test_list_aliases_unknown_character_404(
@@ -252,13 +259,15 @@ def test_get_alias_soft_deleted_404(
     assert resp.json()["error"]["code"] == "NOT_FOUND_ALIAS"
 
 
-def test_get_alias_non_owner_403(
+def test_get_alias_team_member_can_read(
     client: TestClient,
     second_access_token: str,
     second_user: dict[str, Any],
     seeded_character_with_base: dict[str, Any],
     database_url: str,
 ) -> None:
+    """Team-wide read: a teammate can fetch alias detail. Owner-only is
+    enforced on PATCH/DELETE (covered separately)."""
     alias_id = asyncio.run(
         _insert_alias(
             database_url,
@@ -267,8 +276,8 @@ def test_get_alias_non_owner_403(
         )
     )
     resp = client.get(f"/v1/aliases/{alias_id}", headers=auth_headers(second_access_token))
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "AUTH_INSUFFICIENT_PERMISSION"
+    assert resp.status_code == 200
+    assert resp.json()["alias"]["name"] == "OwnedByAlice"
 
 
 # ---------------------------------------------------------------------------

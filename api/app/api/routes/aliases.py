@@ -245,12 +245,11 @@ async def get_alias(
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
 ) -> AliasResponse:
-    """Owner-gated detail. Carries motion_count via the AliasDTO.
+    """Team-wide detail read (parity with `GET /v1/characters/{id}`).
 
-    The `generation` subset hinted at in api-shape §6.4 is intentionally
-    omitted — Sprint 2 / 3 BaseDTO and CheckpointDTO follow the same
-    deferral (see `app/schemas/base.py` module docstring). T-04x can
-    backfill once a generation_log_repo helper exists.
+    Carries `motion_count` via the AliasDTO; api-shape §6.4 doesn't
+    list a separate `generation` subset for aliases (BaseDTO does carry
+    one in §6.3 but Sprint 2 deferred it — see `schemas/base.py`).
     """
     detail = await alias_service.get_alias_detail(db, user=user, alias_id=alias_id)
     return AliasResponse(

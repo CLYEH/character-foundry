@@ -31,13 +31,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import (
+    AgentErrorException,
     conflict_duplicate_alias_name,
     not_found_alias,
     not_found_character,
     validation_alias_empty_input,
     validation_name_invalid,
 )
-from app.core.permissions import assert_can_modify_character
+from app.core.permissions import (
+    assert_can_modify_character,
+    assert_can_read_character,
+)
 from app.models.alias import Alias
 from app.models.user import User
 from app.prompt.errors import (
@@ -248,37 +252,40 @@ async def enqueue_alias(
 # ---------------------------------------------------------------------------
 # T-032: read / rename / soft-delete
 #
-# All four endpoints are owner-gated per T-032 §Scope ("全部 endpoint owner-only").
-# Reads collapse cross-team to 404 and same-team-non-owner to 403, mirroring
-# the character write paths via `assert_can_modify_character`.
+# Auth split, by analogy with the character routes:
+#   - GET  list / detail → team-wide (`assert_can_read_character`); a
+#     teammate already sees `aliases: [...]` embedded in the character
+#     detail response, so per-id reads matching that visibility avoids a
+#     UX gotcha where the embedded view works but the standalone read
+#     403s. The ticket text "全部 endpoint owner-only" is interpreted as
+#     "writes only" — same convention character routes follow.
+#   - PATCH / DELETE → owner only (`assert_can_modify_character`).
+#
+# In all cases cross-team callers see NOT_FOUND_* (no team-existence
+# probe). NOT_FOUND_CHARACTER raised by the perm helper is translated to
+# NOT_FOUND_ALIAS on the per-id surface so the response code stays
+# anchored on the resource the caller asked about; the 403 (same-team-
+# non-owner) is real authorization signal and passes through untouched.
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_owned_alias(
+async def _resolve_alias_with_perm(
     db: AsyncSession,
     *,
     user: User,
     alias_id: uuid.UUID,
+    require_owner: bool,
 ) -> Alias:
-    """Fetch an active alias and assert the caller owns the parent
-    character. Returns the alias on success.
+    """Fetch an active alias and run the appropriate permission check
+    against its parent character.
 
-    Order matters: load the alias first, then the parent character, so a
-    stale id collapses to NOT_FOUND_ALIAS without a redundant character
-    lookup. The character must still be active — a soft-deleted character
-    leaves its aliases technically reachable by id, but the owner can't
-    interact with them, so we treat that case as NOT_FOUND_ALIAS too
-    (avoids leaking that the parent was soft-deleted).
-
-    `assert_can_modify_character` raises NOT_FOUND_CHARACTER for cross-
-    team callers; we translate that to NOT_FOUND_ALIAS so the response
-    code stays anchored on the resource the caller actually asked about
-    (and so a probe can't distinguish "alias missing" from "wrong team").
-    The 403 case (same team, not owner) is left untranslated — that's
-    real authorization signal the caller needs.
+    `require_owner=True` for writes (PATCH/DELETE), `False` for reads
+    (GET detail). The character `get_active` returning None is
+    practically unreachable — the FK is `ON DELETE CASCADE`, so a
+    hard-deleted character takes its aliases with it; the only way to
+    hit the branch is a soft-deleted parent, which we collapse to
+    NOT_FOUND_ALIAS so the response doesn't leak parent state.
     """
-    from app.core.errors import AgentErrorException
-
     alias = await alias_repo.get_active(db, alias_id)
     if alias is None:
         raise not_found_alias()
@@ -286,7 +293,10 @@ async def _resolve_owned_alias(
     if character is None:
         raise not_found_alias()
     try:
-        assert_can_modify_character(character, user)
+        if require_owner:
+            assert_can_modify_character(character, user)
+        else:
+            assert_can_read_character(character, user)
     except AgentErrorException as exc:
         if exc.error.code == "NOT_FOUND_CHARACTER":
             raise not_found_alias() from exc
@@ -300,17 +310,16 @@ async def list_aliases_for_character(
     user: User,
     character_id: uuid.UUID,
 ) -> Sequence[Alias]:
-    """Owner-gated list. Returns active aliases sorted `created_at ASC`.
+    """Team-wide list of active aliases sorted `created_at ASC`.
 
-    Cross-team → NOT_FOUND_CHARACTER (404), same-team-non-owner → 403,
-    unknown id → 404. Empty result is a valid response (200 with
-    `items: []`); no Base requirement here — listing predates alias
-    creation by design.
+    Cross-team → NOT_FOUND_CHARACTER (404). Empty result is valid (200
+    with `items: []`). Mirrors `GET /v1/characters/{id}` reachability:
+    if the caller can see the character, they can see its aliases.
     """
     character = await character_repo.get_active(db, character_id)
     if character is None:
         raise not_found_character()
-    assert_can_modify_character(character, user)
+    assert_can_read_character(character, user)
     return await alias_repo.list_active_for_character(db, character_id=character.id)
 
 
@@ -334,8 +343,8 @@ async def get_alias_detail(
     user: User,
     alias_id: uuid.UUID,
 ) -> AliasDetail:
-    """Owner-gated detail read. Returns the alias + active motion count."""
-    alias = await _resolve_owned_alias(db, user=user, alias_id=alias_id)
+    """Team-wide detail read. Returns the alias + active motion count."""
+    alias = await _resolve_alias_with_perm(db, user=user, alias_id=alias_id, require_owner=False)
     motion_count = await motion_repo.count_active_for_alias(db, alias_id=alias.id)
     return AliasDetail(alias=alias, motion_count=motion_count)
 
@@ -353,13 +362,13 @@ async def update_alias_name(
     if not name_pattern_ok(new_name):
         raise validation_name_invalid()
 
-    alias = await _resolve_owned_alias(db, user=user, alias_id=alias_id)
+    alias = await _resolve_alias_with_perm(db, user=user, alias_id=alias_id, require_owner=True)
 
     if alias.name == new_name:
         return alias
 
     if await alias_repo.name_exists_for_character(
-        db, character_id=alias.character_id, name=new_name
+        db, character_id=alias.character_id, name=new_name, exclude_id=alias.id
     ):
         raise conflict_duplicate_alias_name()
 
@@ -387,13 +396,20 @@ async def soft_delete_alias(
     """Soft-delete an alias and cascade-soft-delete its motions in the
     same transaction (per T-032 §Scope, F-12).
 
-    The cascade runs against `motions` BEFORE the alias is stamped — if
-    the bulk UPDATE fails, the alias's `deleted_at` mutation is also
-    rolled back so observers never see "alias gone, motions still live"
-    (which would let the per-id motion CRUD paths hit a row whose
-    parent has vanished).
+    Both mutations land before a single `await db.commit()`, so observers
+    see them atomically — never "alias gone, motions still live", which
+    would let the per-id motion CRUD paths hit a row whose parent has
+    vanished. The cascade runs first only because it's a bulk UPDATE we
+    want flushed before the alias mutation joins the dirty set; the
+    transaction boundary is what actually guarantees atomicity.
+
+    Race window left for the Sprint 5 cleanup job: a concurrent
+    `create_motion` task that started before this delete could commit a
+    new active motion under the soft-deleted alias id. Phase 1 accepts
+    that — closing it would need either `SELECT ... FOR UPDATE` on the
+    alias here or a post-commit re-sweep.
     """
-    alias = await _resolve_owned_alias(db, user=user, alias_id=alias_id)
+    alias = await _resolve_alias_with_perm(db, user=user, alias_id=alias_id, require_owner=True)
     await motion_repo.soft_delete_for_alias(db, alias_id=alias.id)
     await alias_repo.soft_delete(db, alias)
     await db.commit()

@@ -40,24 +40,29 @@ async def name_exists_for_character(
     *,
     character_id: uuid.UUID,
     name: str,
+    exclude_id: uuid.UUID | None = None,
 ) -> bool:
     """Soft-delete-aware name uniqueness probe within a character.
 
     Mirrors `character_repo.name_exists_for_owner`: the partial UNIQUE
     index `uq_aliases_character_name` ignores soft-deleted rows, so the
-    Python-side probe must too. The DB constraint still backs us up
-    against races (insert path catches IntegrityError); this read just
-    surfaces the friendly 409 before paying for the task enqueue.
+    Python-side probe must too. `exclude_id` lets PATCH skip the row
+    being renamed when checking for conflicts (defensive symmetry with
+    `name_exists_for_owner`; the no-op short-circuit catches the common
+    same-name PATCH but `exclude_id` covers any edge where a
+    Pydantic-stripped value lands back at the row's own current name).
+    The DB constraint still backs us up against races (insert path
+    catches IntegrityError); this read just surfaces the friendly 409
+    before paying for the task enqueue.
     """
-    stmt = (
-        select(Alias.id)
-        .where(
-            Alias.character_id == character_id,
-            Alias.name == name,
-            Alias.deleted_at.is_(None),
-        )
-        .limit(1)
+    stmt = select(Alias.id).where(
+        Alias.character_id == character_id,
+        Alias.name == name,
+        Alias.deleted_at.is_(None),
     )
+    if exclude_id is not None:
+        stmt = stmt.where(Alias.id != exclude_id)
+    stmt = stmt.limit(1)
     result = await db.execute(stmt)
     return result.scalar_one_or_none() is not None
 
