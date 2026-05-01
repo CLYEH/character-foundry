@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
 
@@ -98,10 +98,13 @@ export function MotionRow({
     [],
   )
 
-  const motionsQueryKey =
-    parentType === 'alias'
-      ? aliasMotionsQueryKey(userId, parentId)
-      : baseMotionsQueryKey(userId, parentId)
+  const motionsQueryKey = useMemo(
+    () =>
+      parentType === 'alias'
+        ? aliasMotionsQueryKey(userId, parentId)
+        : baseMotionsQueryKey(userId, parentId),
+    [parentType, parentId, userId],
+  )
 
   const handleTerminal = useCallback(
     (taskId: string, event: TaskEvent) => {
@@ -111,19 +114,12 @@ export function MotionRow({
 
       switch (event.status) {
         case 'completed':
-          // Refetch the motion list so the new motion's video / thumbnail
-          // appears, then drop the pending entry. Awaiting the
-          // invalidation avoids a frame where the slot has neither a
-          // pending entry nor an existing motion (otherwise the cell
-          // would briefly flip back to empty between SSE completed and
-          // the refetch landing).
-          void queryClient.invalidateQueries({ queryKey: motionsQueryKey }).then(() => {
-            updatePending((prev) => {
-              const next = { ...prev }
-              delete next[presetKey]
-              return next
-            })
-          })
+          // Kick the refetch; the actual pending → completed handoff is
+          // driven by the `motions` prop landing the new row (see the
+          // post-list effect below). Removing the pending entry here
+          // would briefly flip the slot back to empty if the refetched
+          // list took an extra tick to arrive.
+          void queryClient.invalidateQueries({ queryKey: motionsQueryKey })
           break
         case 'failed': {
           const agent = event.error
@@ -157,12 +153,35 @@ export function MotionRow({
 
   const { events, subscribe, unsubscribe } = useTaskStream({ onTerminal: handleTerminal })
 
+  // Drop pending entries whose motion has actually landed in the
+  // refetched list — this is what flips a `completed` slot from
+  // queued/running to the completed cell without a flicker. Doing the
+  // delete here (driven by the prop) instead of inside the SSE
+  // terminal handler closes the race between the SSE arriving and
+  // the parent passing the new motion list down.
+  useEffect(() => {
+    let mutated = false
+    const next = { ...pendingRef.current }
+    for (const [key, pending] of Object.entries(pendingRef.current)) {
+      if (pending.motionId && motions.some((m) => m.id === pending.motionId)) {
+        delete next[key]
+        mutated = true
+      }
+    }
+    if (mutated) {
+      pendingRef.current = next
+      setPendingPresets(next)
+    }
+  }, [motions])
+
   const startPresetGeneration = useCallback(
     (presetType: PresetMotionType) => {
       if (!isOwner) return
-      // Bail if the slot is already mid-flight or already filled — the
-      // cells gate clicks anyway, but a defensive guard here keeps the
-      // mutation idempotent if a programmatic caller races us.
+      // Bail if the slot is already in flight (queued / running /
+      // cancelling). `failed` is treated as claimable here because the
+      // sticky failed cell exposes its own retry path that must replace
+      // the stale entry — without that escape hatch a one-off failure
+      // would lock the slot until unmount.
       const existing = pendingRef.current[presetType]
       if (existing && !existing.failed) return
 
@@ -174,11 +193,13 @@ export function MotionRow({
         [presetType]: { taskId: '', motionId: '' },
       }))
 
-      // Call createMotion directly instead of going through `useMutation`
-      // — TanStack Query v5's hook only tracks the latest invocation and
-      // discards per-call onSuccess/onError for older parallel calls. The
-      // 5 preset slots can fire concurrently, so we need each call to
-      // settle independently with its own callbacks.
+      // Call createMotion directly instead of going through
+      // `useMutation`. The 5 preset slots can fire concurrently and we
+      // don't want any aggregate "is anything pending" UI state — each
+      // slot tracks its own lifecycle inside `pendingPresets`. Per-slot
+      // `useMutation` instances would also work but add a hook per slot
+      // and obscure the fact that the request is fire-and-forget; the
+      // direct promise keeps the call site honest about that.
       createMotion(parent, { motion_type: presetType, name: PRESET_NAMES[presetType] })
         .then((response) => {
           updatePending((prev) => ({
@@ -207,6 +228,13 @@ export function MotionRow({
       const entry = pendingRef.current[presetType]
       if (!entry || entry.failed) return
       cancelMutation.mutate(entry.taskId, {
+        onError: (err) => {
+          // Without an explicit handler the mutation's rejection would
+          // be swallowed: the cell would stay running, the cancel button
+          // would keep firing the same broken POST, and the user would
+          // get no signal that anything went wrong.
+          toast.agentError(AgentError.from(err))
+        },
         onSuccess: ({ cancel_outcome }) => {
           switch (cancel_outcome) {
             case 'cancelled_immediately':

@@ -336,6 +336,88 @@ describe('MotionRow', () => {
     await waitFor(() => expect(createMotionMock).toHaveBeenCalledTimes(2))
   })
 
+  it('toasts the AgentError when the cancel POST itself fails', async () => {
+    createMotionMock.mockResolvedValue({
+      task_id: 'task-cancel-fail',
+      motion_id: 'motion-cancel-fail',
+    } satisfies CreateMotionResponse)
+    cancelTaskMock.mockRejectedValue(
+      new Error('Network error'),
+    )
+
+    renderRow({ parentType: 'base' })
+    fireEvent.click(screen.getByTestId('motion-cell-empty-preset_wave'))
+    await waitFor(() => expect(createMotionMock).toHaveBeenCalledTimes(1))
+    pushSse('task-cancel-fail', { status: 'running', progress: 0.2 })
+    await screen.findByTestId('motion-cell-running-preset_wave')
+
+    fireEvent.click(screen.getByTestId('motion-cell-cancel-preset_wave'))
+
+    await waitFor(() => expect(cancelTaskMock).toHaveBeenCalledWith('task-cancel-fail'))
+    // The mutation rejection without an onError handler would silently
+    // strand the cell in `running`. Assert the failure surfaces.
+    await waitFor(() =>
+      expect(sonnerCalls.find((c) => c.kind === 'error')?.message).toBe('Network error'),
+    )
+    // Cell stays running (not empty) so the user can decide whether to
+    // retry the cancel or abandon the page.
+    expect(screen.getByTestId('motion-cell-running-preset_wave')).toBeInTheDocument()
+  })
+
+  it('settles a cancel_pending cell on the trailing SSE cancelled event', async () => {
+    createMotionMock.mockResolvedValue({
+      task_id: 'task-cancel-pending',
+      motion_id: 'motion-cancel-pending',
+    } satisfies CreateMotionResponse)
+    cancelTaskMock.mockResolvedValue({
+      task: {} as never,
+      cancel_outcome: 'cancel_pending',
+    } satisfies CancelTaskResponse)
+
+    renderRow({ parentType: 'base' })
+    fireEvent.click(screen.getByTestId('motion-cell-empty-preset_wave'))
+    await waitFor(() => expect(createMotionMock).toHaveBeenCalledTimes(1))
+    pushSse('task-cancel-pending', { status: 'running', progress: 0.4 })
+    await screen.findByTestId('motion-cell-running-preset_wave')
+    fireEvent.click(screen.getByTestId('motion-cell-cancel-preset_wave'))
+
+    await waitFor(() =>
+      expect(sonnerCalls.find((c) => c.kind === 'info')?.message).toBe('取消中…'),
+    )
+    await screen.findByTestId('motion-cell-cancelling-preset_wave')
+
+    pushSse('task-cancel-pending', { status: 'cancelled' })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('motion-cell-empty-preset_wave')).toBeInTheDocument()
+    })
+    expect(sonnerCalls.find((c) => c.kind === 'success')?.message).toBe('已取消生成')
+  })
+
+  it('dedups two clicks on the same empty preset cell into one POST', async () => {
+    let resolve: (value: CreateMotionResponse) => void = () => {}
+    createMotionMock.mockImplementationOnce(
+      () => new Promise<CreateMotionResponse>((r) => (resolve = r)),
+    )
+
+    renderRow({ parentType: 'base' })
+    const cell = screen.getByTestId('motion-cell-empty-preset_wave')
+    fireEvent.click(cell)
+    // Second click in the same tick lands while the POST is still in
+    // flight — the synchronous placeholder reservation should make
+    // this a no-op.
+    fireEvent.click(cell)
+
+    expect(createMotionMock).toHaveBeenCalledTimes(1)
+    resolve({ task_id: 'task-dedup', motion_id: 'motion-dedup' })
+    await waitFor(() =>
+      expect(
+        Array.from(sseHandlers.keys()).some((u) => u.includes('/tasks/task-dedup/stream')),
+      ).toBe(true),
+    )
+    expect(createMotionMock).toHaveBeenCalledTimes(1)
+  })
+
   it('cancels a running task immediately and re-enables the empty cell', async () => {
     createMotionMock.mockResolvedValue({
       task_id: 'task-cancel-now',
