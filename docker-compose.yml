@@ -31,6 +31,12 @@ services:
       context: ./api
     env_file:
       - .env
+    # Shared filesystem with `worker` — the worker writes generated images
+    # here (LocalFilesystemBackend.put), and the api streams them out via
+    # `GET /storage/{key}` (T-046). Without this they had separate
+    # ephemeral filesystems and api 404'd on worker-written files.
+    volumes:
+      - storage_data:/storage
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,6 +52,8 @@ services:
     command: ["arq", "app.workers.arq_worker.WorkerSettings"]
     env_file:
       - .env
+    volumes:
+      - storage_data:/storage
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,3 +82,4 @@ services:
 volumes:
   pg_data:
   redis_data:
+  storage_data:
