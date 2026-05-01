@@ -39,8 +39,11 @@ from app.core.errors import AgentErrorException
 _logger = logging.getLogger(__name__)
 
 # httpx accepts either a mapping or a sequence-of-tuples for `files`; we
-# need the list form to send repeated `image` field names for multi-image
-# edits (gpt-image-1 / gpt-image-2 multi-reference contract).
+# need the list form to send the `image[]` array field name multiple
+# times for multi-image edits. The bare `image` field is single-image
+# only — `edit_image2image` for the gpt-image-1.5 / gpt-image-2 multi-
+# reference contract (see body comment in that method for the empirical
+# evidence).
 _FilesArg = dict[str, tuple[str, bytes, str]] | list[tuple[str, tuple[str, bytes, str]]]
 
 # Aspect ratio → OpenAI `size` string. The provider only accepts a fixed
