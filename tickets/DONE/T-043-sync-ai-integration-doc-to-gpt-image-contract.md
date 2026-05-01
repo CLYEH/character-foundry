@@ -1,10 +1,12 @@
 # T-043: sync planning/backend/ai-integration.md to real gpt-image API contract
 
-**Status:** TODO
+**Status:** SUPERSEDED by T-048
 **Sprint:** 3
 **Est:** XS
 **Depends on:** T-042（修了 code，但 planning 還沒同步）
-**Related:** T-044（contract test）
+**Related:** T-044（contract test）、T-048（吸收本張 scope）
+
+> **2026-05-01 supersede 註：** 本張 ticket 的 scope（同步 `ai-integration.md` §3 範例 body）已被 T-048 完全吸收——T-048 一次同步 T-042 / T-045 / T-046 / T-047 全部今日 contract drift。本張不單獨實作，留檔做 audit trail。
 
 ---
 

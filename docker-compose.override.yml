@@ -10,6 +10,10 @@ services:
       - ./api/alembic:/app/alembic
       - ./api/alembic.ini:/app/alembic.ini
       - ./api/tests:/app/tests
+      # Without this mount the YAML is build-time copied into the image
+      # and host edits don't reach the container until rebuild — bit us
+      # in T-047/T-048 (CI saw a v1.1 bump that local pytest missed).
+      - ./api/platform_constraints.yaml:/app/platform_constraints.yaml
     ports:
       - "8000:8000"
     # Expose postgres to the host for pytest / alembic runs outside the container
@@ -25,6 +29,7 @@ services:
       - ./api/app:/app/app
       - ./api/alembic:/app/alembic
       - ./api/alembic.ini:/app/alembic.ini
+      - ./api/platform_constraints.yaml:/app/platform_constraints.yaml
 
   postgres:
     ports:

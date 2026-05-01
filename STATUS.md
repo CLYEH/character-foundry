@@ -79,11 +79,12 @@
 | T-040 | Frontend Prompt preview modal extension（alias / motion mode）| DONE |
 | T-041 | E2E Alias creation + motion preset smoke（M3 gate）| TODO |
 | T-042 | Fix gpt-image API contract on real provider（drop dall-e-3 params + multi-image `image[]`） | DONE |
-| T-043 | Sync `planning/backend/ai-integration.md` to real gpt-image contract（T-042 follow-up） | TODO |
+| T-043 | Sync `planning/backend/ai-integration.md` to real gpt-image contract（T-042 follow-up） | SUPERSEDED by T-048 |
 | T-044 | Outgoing-body contract test for gpt-image client（T-042 follow-up） | TODO |
 | T-045 | Fix reconciler client for gpt-5-mini contract drift（max_completion_tokens + drop temperature=0）| DONE |
 | T-046 | Shared `/storage` volume + nginx `/storage/` proxy（image preview broken bug）| DONE |
 | T-047 | Aspect-ratio dropdown + framing guidance（head cropping fix）| DONE |
+| T-048 | Sync planning docs（T-042 / T-045 / T-046 / T-047）+ yaml bind-mount in dev override | DONE |
 
 **Dependency / parallelization plan：** 見 `tickets/PARALLEL_WORKFLOW.md`。Wave A（T-029 / T-030 / T-035 / T-036 / T-040）可立即平行開工。
 

@@ -229,7 +229,12 @@ POST   /v1/creation-sessions/{session_id}/checkpoints
            base_checkpoint_id: UUID | null,  # 若 mode = remix
            menu_selections: { ... } | null,
            freeform_note: string | null,
-           reference_image_ids: [UUID] | null   # 已上傳的參考圖
+           reference_image_ids: [UUID] | null,  # 已上傳的參考圖
+           aspect_ratio: 'auto' | '1:1' | '2:3' | '3:2'  # T-047, default '2:3' (直立);
+             # 對應 OpenAI gpt-image legal size enum (auto / 1024x1024 /
+             # 1024x1536 / 1536x1024)。retry_same / remix 不繼承來源，
+             # 吃 request 值；前端 retry_same 按鈕重發 mutation 時會帶
+             # 當下 dropdown 值。audit 寫入 generation_logs.parameters
          }
   202:   { task_id, checkpoint_id }
          (非同步，走 task system)

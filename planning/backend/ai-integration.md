@@ -28,7 +28,7 @@ class ImageGenerationInput:
     reference_images: list[bytes] | None  # PNG bytes
     mask: bytes | None  # PNG bytes (inpaint)
     seed: int | None
-    aspect_ratio: str  # e.g. "1:1", "2:3"
+    aspect_ratio: str  # 'auto' | '1:1' | '2:3' | '3:2' (T-047 enum)
     mode: str  # "text2image" / "image2image" / "inpaint"
 
 @dataclass
@@ -109,13 +109,19 @@ class GptImage2Client(ImageProvider):
             raise ValueError(f"unknown mode: {input.mode}")
 
     async def _call_text2image(self, input):
+        # gpt-image-* contract (T-042 empirical 2026-05-01):
+        #   - GPT 系列不收 `response_format`、`seed`、`quality="hd"`
+        #     （`response_format` / `quality=hd` 是 dall-e-2/3 only;
+        #      `seed` 不在 schema)
+        #   - GPT 永遠回 base64，不需要 response_format 主張
+        #   - 合法 size 只有 auto / 1024x1024 / 1024x1536 / 1536x1024
+        # `seed` Python 簽章保留供 caller 傳入但不夾帶到 wire body;
+        # audit 透過 `generation_logs.parameters.seed` 仍記錄。
         payload = {
             "model": self.model,
             "prompt": input.prompt,
             "size": self._aspect_to_size(input.aspect_ratio),
-            "seed": input.seed,
             "n": 1,
-            "quality": "hd",
         }
         return await self.call_with_resilience(
             self._http_post,
@@ -124,7 +130,11 @@ class GptImage2Client(ImageProvider):
         )
 
     async def _call_image2image(self, input):
-        # OpenAI's variations / edits endpoint
+        # OpenAI's variations / edits endpoint.
+        # 多參考圖（base + N refs）：multipart field name 用 `image[]`
+        # array syntax，**不可**重複 bare `image`（會 400
+        # "Duplicate parameter: 'image'..."）。單一 image 走 bare
+        # `image` 是合法的。T-042 empirical 2026-05-01。
         payload = {
             "model": self.model,
             "prompt": input.prompt,
@@ -321,10 +331,17 @@ class OpenAIReconcilerClient(AIClient):
         system = self._load_system_prompt()
         user_message = self._render_user_message(input)
 
+        # gpt-5-mini contract (T-045 empirical 2026-05-01):
+        #   - `max_tokens` → `max_completion_tokens`（reasoning model
+        #     family 的 wire 名）
+        #   - `temperature` 只接受 default 1，不可送 0；JSON-mode 由
+        #     `response_format` 強制，所以乾脆省略 temperature 欄位
+        # Python attribute / config / env var (`RECONCILER_MAX_TOKENS`)
+        # 仍叫 max_tokens，operator 不變；只 wire 層改名。
         response = await self.call_with_resilience(
             self._client.chat.completions.create,
             model=self.model,
-            max_tokens=800,
+            max_completion_tokens=800,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_message},
@@ -360,7 +377,10 @@ await db.insert_generation_log(
     model_name="gpt-image-2",
     model_version="v1.0",
     final_prompt=reconciled.final_prompt,
-    parameters={"seed": seed, "aspect_ratio": "1:1"},
+    # parameters JSONB 記錄 audit info — `seed` 是 caller 給的值
+    # (gpt-image 不接受所以沒送 wire，但 audit / 日後做 retry inheritance
+    # 用)；`aspect_ratio` 預設 "2:3" portrait（T-047）。
+    parameters={"seed": seed, "aspect_ratio": "2:3", "image_mode": "text2image"},
     cost_units=result.cost_units,
     status="success",
     started_at=task.started_at,
