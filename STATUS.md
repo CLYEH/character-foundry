@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-05-01 — T-037 lights up the frontend Aliases + Motions sections on `CharacterDetailPage`. Aliases are fetched via `GET /v1/characters/{id}/aliases` and rendered as `AliasRow` cards with inline rename (`PATCH`), confirm-dialog delete (`DELETE`), and an enabled `[+ 新增 Alias]` CTA wired to T-036's edit route. Motions use the new `MotionRow` (5 fixed preset slots + custom strip + lightbox) with empty + completed states only — preset/custom generation stays disabled until T-038 / T-039 land. Owner detection via `useMe`: non-owners see disabled action buttons with a `僅 owner 可操作` tooltip. Wave D done; unblocks Wave E (T-038). Previous sprint head: T-034 (backend motion CRUD).
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-032 / T-033 / T-034 / T-035 / T-036 / T-037 / T-040 done）**
+> **Last updated:** 2026-05-02 — T-038 wires preset motion click-to-generate into `MotionRow`. Empty preset slots fire `POST /v1/{bases|aliases}/{id}/motions`, subscribe to the SSE stream, and walk through queued / running / completed / failed states; completed cells expose a `[⋯]` menu with [重新播放] / [刪除] (confirm dialog → `DELETE /v1/motions/{id}` → motion list invalidation). Cancel is wired through `POST /tasks/{id}/cancel` with the four cancel-outcome branches. Non-owners still see the cells but every trigger is disabled with the owner tooltip. Five concurrent generations remain independent (per-task SSE map keyed by `task_id`). Custom-motion modal stays disabled (T-039). E2E deferred to T-041 (smoke covers preset generation under the M3 gate). Previous sprint head: T-037 (frontend alias + motion sections).
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-032 / T-033 / T-034 / T-035 / T-036 / T-037 / T-038 / T-040 done）**
 
 ---
 
@@ -74,7 +74,7 @@
 | T-035 | Backend Prompt preview extension（alias / motion mode + MaskInput schema）| DONE |
 | T-036 | Frontend Alias edit page (P-06) + InpaintCanvas | DONE |
 | T-037 | Frontend Character Detail aliases + motions sections | DONE |
-| T-038 | Frontend Motion preset generation（click-to-generate + SSE）| TODO |
+| T-038 | Frontend Motion preset generation（click-to-generate + SSE）| DONE |
 | T-039 | Frontend Custom motion modal (M-02) | TODO |
 | T-040 | Frontend Prompt preview modal extension（alias / motion mode）| DONE |
 | T-041 | E2E Alias creation + motion preset smoke（M3 gate）| TODO |

@@ -205,10 +205,10 @@ describe('CharacterDetailPage', () => {
     expect(screen.getByTestId('character-detail-owner')).toHaveTextContent('by Leo')
     expect(screen.getByTestId('base-card')).toBeInTheDocument()
     expect(screen.getByTestId('base-card-image')).toHaveAttribute('src', 'https://img/base.png')
-    // Motion strip on the Base shows the 5 preset slots disabled with the
-    // Sprint-3 tooltip — generation lands in T-038.
+    // Motion strip on the Base shows the 5 preset slots; T-038 enabled
+    // click-to-generate for the owner so the empty cell is interactive.
     expect(screen.getByTestId(`motion-row-base-${BASE_ID}`)).toBeInTheDocument()
-    expect(screen.getByTestId('motion-cell-empty-preset_wave')).toBeDisabled()
+    expect(screen.getByTestId('motion-cell-empty-preset_wave')).not.toBeDisabled()
     // Aliases section is empty → AliasEmptyState with enabled CTA link.
     await waitFor(() => {
       expect(screen.getByTestId('alias-empty-state')).toBeInTheDocument()
