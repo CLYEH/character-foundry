@@ -20,7 +20,8 @@ from app.api.deps import db_session, get_current_user, get_storage
 from app.core.redis_client import get_redis
 from app.models.character import Character
 from app.models.user import User
-from app.repositories import base_repo
+from app.repositories import alias_repo, base_repo, motion_repo
+from app.schemas.alias_builder import build_alias_dto
 from app.schemas.character import (
     CharacterDetailCreationSessionRef,
     CharacterDetailDTO,
@@ -230,14 +231,25 @@ async def _character_to_detail_dto(
                 id=session.id,
                 status=session.status,  # type: ignore[arg-type]
             )
+    # Aliases (T-032): only active rows, sorted `created_at ASC` to
+    # match `GET /v1/characters/{id}/aliases`. Motion counts are
+    # per-alias scalar queries — Phase 1 alias counts are tiny so the
+    # cost is negligible. If aliases ever fan out to dozens, swap for
+    # a single grouped query.
+    alias_payloads: list[dict[str, object]] = []
+    if storage is not None:
+        active_aliases = await alias_repo.list_active_for_character(db, character_id=character.id)
+        for alias in active_aliases:
+            motion_count = await motion_repo.count_active_for_alias(db, alias_id=alias.id)
+            alias_dto = build_alias_dto(alias, storage, motion_count=motion_count)
+            alias_payloads.append(alias_dto.model_dump(mode="json"))
     return CharacterDetailDTO(
         id=character.id,
         name=character.name,
         slug=character.slug,
         owner=OwnerSummary(id=owner.id, name=owner.name),
         base=base_payload,
-        # Aliases + motions still placeholders until T-019 / T-020.
-        aliases=[],
+        aliases=alias_payloads,
         creation_session=session_ref,
         copied_from=copied_from,
         created_at=character.created_at,

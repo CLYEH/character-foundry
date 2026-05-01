@@ -13,8 +13,9 @@ reads + insert that T-033's enqueue + worker need.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.motion import Motion
@@ -121,6 +122,51 @@ async def find_active_preset_for_parent(
         raise ValueError(f"unknown parent_type: {parent_type!r}")
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def count_active_for_alias(
+    db: AsyncSession,
+    *,
+    alias_id: uuid.UUID,
+) -> int:
+    """Number of non-deleted motions under an alias.
+
+    Used by the alias detail surface (T-032) so the API matches the
+    `motion_count` field on `AliasDTO`. A scalar count keeps the read
+    cheap — the alias detail already pays for one row fetch + an
+    ownership check; an extra `SELECT COUNT(*)` is the cheapest way to
+    keep the contract honest without loading rows we don't render.
+    """
+    stmt = select(func.count(Motion.id)).where(
+        Motion.alias_id == alias_id,
+        Motion.deleted_at.is_(None),
+    )
+    result = await db.execute(stmt)
+    return int(result.scalar_one())
+
+
+async def soft_delete_for_alias(
+    db: AsyncSession,
+    *,
+    alias_id: uuid.UUID,
+) -> None:
+    """Cascade soft-delete: stamp `deleted_at` on every active motion
+    bound to the given alias.
+
+    Why bulk UPDATE instead of FK ON DELETE CASCADE: the FK cascade
+    (defined on `motions.alias_id`) hard-deletes rows, which would
+    discard the audit trail this codebase preserves via the
+    `deleted_at` convention (lifecycle.md §soft delete). The service
+    layer pairs this with `alias_repo.soft_delete` inside the same
+    transaction so observers see both the alias and its motions
+    disappear atomically.
+    """
+    stmt = (
+        update(Motion)
+        .where(Motion.alias_id == alias_id, Motion.deleted_at.is_(None))
+        .values(deleted_at=datetime.now(UTC))
+    )
+    await db.execute(stmt)
 
 
 async def insert(

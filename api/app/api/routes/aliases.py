@@ -23,7 +23,7 @@ import uuid
 from typing import Annotated
 
 from arq.connections import ArqRedis
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Response, UploadFile
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,18 +43,27 @@ from app.core.permissions import assert_can_modify_character
 from app.core.redis_client import get_arq_pool
 from app.db.session import async_session_factory
 from app.models.user import User
-from app.repositories import character_repo, mask_repo
+from app.repositories import character_repo, mask_repo, motion_repo
 from app.schemas.alias import (
+    AliasListResponse,
+    AliasResponse,
     CreateAliasRequest,
     CreateAliasResponse,
     MaskUploadResponse,
+    PatchAliasRequest,
 )
+from app.schemas.alias_builder import build_alias_dto
 from app.services import alias_service
 from app.services.alias_service import EnqueuedAlias
 from app.storage.backend import StorageBackend
 from app.storage.errors import StorageError
 
 router = APIRouter(prefix="/v1/characters", tags=["aliases"])
+# Singular `/v1/aliases/{id}` surface — separate router because the
+# write-side `/v1/characters/{id}/aliases` flow has a different prefix
+# than the read-/mutate-by-id flow. Mirrors `motions.py` which sits at
+# the bare prefix and uses fully-qualified paths.
+singular_router = APIRouter(tags=["aliases"])
 _logger = logging.getLogger(__name__)
 
 # Mask uploads share the reference-image limits — same wire pattern, same
@@ -191,3 +200,101 @@ async def create_alias(
         body=body,
     )
     return CreateAliasResponse(task_id=enqueued.task_id, alias_id=enqueued.alias_id)
+
+
+# ---------------------------------------------------------------------------
+# T-032: list / detail / patch / delete
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{character_id}/aliases",
+    response_model=AliasListResponse,
+)
+async def list_aliases(
+    character_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(db_session)],
+    user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
+) -> AliasListResponse:
+    """List active aliases for a character (sorted `created_at ASC`).
+
+    Owner-gated per T-032 §Scope. Soft-deleted rows are excluded by
+    `alias_repo.list_active_for_character`. Motion counts are computed
+    per row — Phase 1 alias counts are tiny (single digits) so the
+    per-row count query is cheap; if alias counts grow we'd switch to a
+    single grouped query.
+    """
+    aliases = await alias_service.list_aliases_for_character(
+        db, user=user, character_id=character_id
+    )
+    items = []
+    for alias in aliases:
+        motion_count = await motion_repo.count_active_for_alias(db, alias_id=alias.id)
+        items.append(build_alias_dto(alias, storage, motion_count=motion_count))
+    return AliasListResponse(items=items)
+
+
+@singular_router.get(
+    "/v1/aliases/{alias_id}",
+    response_model=AliasResponse,
+)
+async def get_alias(
+    alias_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(db_session)],
+    user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
+) -> AliasResponse:
+    """Owner-gated detail. Carries motion_count via the AliasDTO.
+
+    The `generation` subset hinted at in api-shape §6.4 is intentionally
+    omitted — Sprint 2 / 3 BaseDTO and CheckpointDTO follow the same
+    deferral (see `app/schemas/base.py` module docstring). T-04x can
+    backfill once a generation_log_repo helper exists.
+    """
+    detail = await alias_service.get_alias_detail(db, user=user, alias_id=alias_id)
+    return AliasResponse(
+        alias=build_alias_dto(detail.alias, storage, motion_count=detail.motion_count),
+    )
+
+
+@singular_router.patch(
+    "/v1/aliases/{alias_id}",
+    response_model=AliasResponse,
+)
+async def patch_alias(
+    alias_id: uuid.UUID,
+    body: PatchAliasRequest,
+    db: Annotated[AsyncSession, Depends(db_session)],
+    user: Annotated[User, Depends(get_current_user)],
+    storage: Annotated[StorageBackend, Depends(get_storage)],
+) -> AliasResponse:
+    """Rename. Same-character duplicate → 409, invalid chars → 400."""
+    alias = await alias_service.update_alias_name(
+        db, user=user, alias_id=alias_id, new_name=body.name
+    )
+    # Rename doesn't touch motions, but we re-count so the response
+    # DTO matches the `GET /v1/aliases/{id}` shape exactly. Cheap (one
+    # scalar query) and keeps the contract honest.
+    motion_count = await motion_repo.count_active_for_alias(db, alias_id=alias.id)
+    return AliasResponse(alias=build_alias_dto(alias, storage, motion_count=motion_count))
+
+
+@singular_router.delete(
+    "/v1/aliases/{alias_id}",
+    status_code=204,
+)
+async def delete_alias(
+    alias_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(db_session)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> Response:
+    """Soft-delete + cascade-soft-delete motions (per F-12).
+
+    Returns 204 with no body so FastAPI doesn't serialize None into a
+    JSON `null` (mirrors `delete_character`). Storage cleanup of the
+    alias's image and motion videos is deferred to the Sprint 5 cleanup
+    job (T-032 §Notes).
+    """
+    await alias_service.soft_delete_alias(db, user=user, alias_id=alias_id)
+    return Response(status_code=204)

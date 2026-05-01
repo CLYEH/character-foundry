@@ -2,12 +2,15 @@
 
 T-035 introduced the read-by-id helper; T-031 extends it with the
 insert + name-uniqueness probe + mask-upload row (via `mask_repo`)
-that the alias-create flow needs. T-032 will add list / soft-delete.
+that the alias-create flow needs. T-032 adds list / rename /
+soft-delete.
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -57,6 +60,40 @@ async def name_exists_for_character(
     )
     result = await db.execute(stmt)
     return result.scalar_one_or_none() is not None
+
+
+async def list_active_for_character(
+    db: AsyncSession,
+    *,
+    character_id: uuid.UUID,
+) -> Sequence[Alias]:
+    """Active aliases for a character, sorted `created_at ASC`.
+
+    No pagination: Phase 1 expects single-digit aliases per character
+    (per T-032 §Scope). Soft-deleted rows are filtered out so the list,
+    the embedded `CharacterDetail.aliases`, and the per-id reads all
+    agree on visibility.
+    """
+    stmt = (
+        select(Alias)
+        .where(
+            Alias.character_id == character_id,
+            Alias.deleted_at.is_(None),
+        )
+        .order_by(Alias.created_at.asc(), Alias.id.asc())
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+async def soft_delete(db: AsyncSession, alias: Alias) -> None:
+    """Stamp `deleted_at` in-place. Caller commits.
+
+    Mirrors `character_service.soft_delete_character`'s pattern: the
+    repo just mutates the model so the service layer can stage the
+    cascade-delete of motions in the same transaction before committing.
+    """
+    alias.deleted_at = datetime.now(UTC)
 
 
 async def insert(
