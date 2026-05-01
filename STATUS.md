@@ -79,6 +79,8 @@
 | T-040 | Frontend Prompt preview modal extension（alias / motion mode）| DONE |
 | T-041 | E2E Alias creation + motion preset smoke（M3 gate）| TODO |
 | T-042 | Fix gpt-image API contract on real provider（drop dall-e-3 params + multi-image `image[]`） | DONE |
+| T-043 | Sync `planning/backend/ai-integration.md` to real gpt-image contract（T-042 follow-up） | TODO |
+| T-044 | Outgoing-body contract test for gpt-image client（T-042 follow-up） | TODO |
 
 **Dependency / parallelization plan：** 見 `tickets/PARALLEL_WORKFLOW.md`。Wave A（T-029 / T-030 / T-035 / T-036 / T-040）可立即平行開工。
 
