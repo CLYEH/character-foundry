@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-05-02 — T-038 wires preset motion click-to-generate into `MotionRow`. Empty preset slots fire `POST /v1/{bases|aliases}/{id}/motions`, subscribe to the SSE stream, and walk through queued / running / completed / failed states; completed cells expose a `[⋯]` menu with [重新播放] / [刪除] (confirm dialog → `DELETE /v1/motions/{id}` → motion list invalidation). Cancel is wired through `POST /tasks/{id}/cancel` with the four cancel-outcome branches. Non-owners still see the cells but every trigger is disabled with the owner tooltip. Five concurrent generations remain independent (per-task SSE map keyed by `task_id`). Custom-motion modal stays disabled (T-039). E2E deferred to T-041 (smoke covers preset generation under the M3 gate). Previous sprint head: T-037 (frontend alias + motion sections).
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-032 / T-033 / T-034 / T-035 / T-036 / T-037 / T-038 / T-040 done）**
+> **Last updated:** 2026-05-02 — T-039 enables the [+ 自訂動作] button on `MotionRow` and wires it to the new `CustomMotionModal` (M-02). Submit goes through the same `POST /v1/{bases|aliases}/{id}/motions` path as preset generation, with `motion_type='custom'`, name + description payload, and the per-`motion_id` pending entry takes the same SSE / queued / running / cancel / failed lifecycle as preset cells. Inline error covers `CONFLICT_DUPLICATE_NAME` / `VALIDATION_*`; modal stays open on those so the user can fix the input. Other (`MODEL_`, network) errors fall through to the global toast plus an inline mirror. Form resets on reopen. Non-owners still see the disabled trigger with the owner-only tooltip. E2E remains deferred to T-041. Previous sprint head: T-038 (frontend preset motion click-to-generate).
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-032 / T-033 / T-034 / T-035 / T-036 / T-037 / T-038 / T-039 / T-040 done）**
 
 ---
 
@@ -75,7 +75,7 @@
 | T-036 | Frontend Alias edit page (P-06) + InpaintCanvas | DONE |
 | T-037 | Frontend Character Detail aliases + motions sections | DONE |
 | T-038 | Frontend Motion preset generation（click-to-generate + SSE）| DONE |
-| T-039 | Frontend Custom motion modal (M-02) | TODO |
+| T-039 | Frontend Custom motion modal (M-02) | DONE |
 | T-040 | Frontend Prompt preview modal extension（alias / motion mode）| DONE |
 | T-041 | E2E Alias creation + motion preset smoke（M3 gate）| TODO |
 | T-042 | Fix gpt-image API contract on real provider（drop dall-e-3 params + multi-image `image[]`） | DONE |

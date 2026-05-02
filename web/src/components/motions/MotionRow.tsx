@@ -5,6 +5,7 @@ import { Plus } from 'lucide-react'
 import {
   createMotion,
   PRESET_MOTION_TYPES,
+  type CreateMotionResponse,
   type Motion,
   type MotionParentRef,
   type MotionParentType,
@@ -21,6 +22,7 @@ import { AgentError } from '@/lib/agentError'
 import { useAuthStore } from '@/stores/authStore'
 import { toast } from '@/stores/toastStore'
 import { PRESET_LABELS, PRESET_NAMES } from '@/constants/preset_motions'
+import { CustomMotionModal } from './CustomMotionModal'
 import { MotionCell } from './MotionCell'
 import { MotionDeleteConfirm } from './MotionDeleteConfirm'
 import { MotionLightbox } from './MotionLightbox'
@@ -50,6 +52,15 @@ interface PresetPending {
   cancelling?: boolean
 }
 
+interface CustomPending {
+  taskId: string
+  motionId: string
+  /** User-supplied name; rendered as the queued / running cell's label. */
+  name: string
+  failed?: { error: AgentError }
+  cancelling?: boolean
+}
+
 /**
  * P-05 motion strip rendered under each Base / Alias card.
  *
@@ -59,8 +70,10 @@ interface PresetPending {
  * mounted while the row's parent card is visible so multiple cells can
  * stream in parallel without losing each other's progress.
  *
- * Custom motion creation (T-039) reuses the same mutation + SSE plumbing
- * but lives behind a Modal M-02 trigger that's still disabled here.
+ * Custom motions take the same SSE / cancel path through a Modal M-02
+ * trigger; the resulting pending cells are keyed by `motion_id` because
+ * unlike preset slots, the user can spawn multiple custom motions per
+ * parent.
  */
 export function MotionRow({
   parentType,
@@ -80,18 +93,29 @@ export function MotionRow({
 
   const [lightboxMotion, setLightboxMotion] = useState<Motion | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Motion | null>(null)
+  const [isCustomModalOpen, setIsCustomModalOpen] = useState(false)
   const [pendingPresets, setPendingPresets] = useState<Record<string, PresetPending>>({})
-  // Synchronous mirror of `pendingPresets` so SSE handlers (which fire
-  // outside React's commit cycle via the `useTaskStream` map) can read
-  // the latest map without racing render. Without this, fast preset
-  // clicks can reduce stale closures back into pendingPresets and stomp
-  // entries that just landed.
+  const [pendingCustom, setPendingCustom] = useState<Record<string, CustomPending>>({})
+  // Synchronous mirrors of `pendingPresets` / `pendingCustom` so SSE
+  // handlers (which fire outside React's commit cycle via the
+  // `useTaskStream` map) can read the latest map without racing render.
+  // Without these, fast clicks can reduce stale closures back into the
+  // state and stomp entries that just landed.
   const pendingRef = useRef<Record<string, PresetPending>>({})
+  const customRef = useRef<Record<string, CustomPending>>({})
   const updatePending = useCallback(
     (updater: (prev: Record<string, PresetPending>) => Record<string, PresetPending>) => {
       const next = updater(pendingRef.current)
       pendingRef.current = next
       setPendingPresets(next)
+    },
+    [],
+  )
+  const updateCustom = useCallback(
+    (updater: (prev: Record<string, CustomPending>) => Record<string, CustomPending>) => {
+      const next = updater(customRef.current)
+      customRef.current = next
+      setPendingCustom(next)
     },
     [],
   )
@@ -106,16 +130,16 @@ export function MotionRow({
 
   const handleTerminal = useCallback(
     (taskId: string, event: TaskEvent) => {
-      const entry = Object.entries(pendingRef.current).find(([, v]) => v.taskId === taskId)
-      if (!entry) return
-      const [presetKey] = entry
+      const presetEntry = Object.entries(pendingRef.current).find(([, v]) => v.taskId === taskId)
+      const customEntry = Object.entries(customRef.current).find(([, v]) => v.taskId === taskId)
+      if (!presetEntry && !customEntry) return
 
       switch (event.status) {
         case 'completed':
           // Kick the refetch; the actual pending → completed handoff is
           // driven by the `motions` prop landing the new row (see the
           // post-list effect below). Removing the pending entry here
-          // would briefly flip the slot back to empty if the refetched
+          // would briefly flip the cell back to empty if the refetched
           // list took an extra tick to arrive.
           void queryClient.invalidateQueries({ queryKey: motionsQueryKey })
           break
@@ -123,52 +147,90 @@ export function MotionRow({
           const agent = event.error
             ? new AgentError(event.error)
             : new AgentError({ code: 'INTERNAL_UNEXPECTED_ERROR', message: '生成失敗' })
-          updatePending((prev) => {
-            const current = prev[presetKey]
-            if (!current || current.taskId !== taskId) return prev
-            return {
-              ...prev,
-              [presetKey]: { ...current, failed: { error: agent }, cancelling: false },
-            }
-          })
+          if (presetEntry) {
+            const [presetKey] = presetEntry
+            updatePending((prev) => {
+              const current = prev[presetKey]
+              if (!current || current.taskId !== taskId) return prev
+              return {
+                ...prev,
+                [presetKey]: { ...current, failed: { error: agent }, cancelling: false },
+              }
+            })
+          }
+          if (customEntry) {
+            const [customKey] = customEntry
+            updateCustom((prev) => {
+              const current = prev[customKey]
+              if (!current || current.taskId !== taskId) return prev
+              return {
+                ...prev,
+                [customKey]: { ...current, failed: { error: agent }, cancelling: false },
+              }
+            })
+          }
           toast.agentError(agent)
           break
         }
         case 'cancelled':
-          updatePending((prev) => {
-            const next = { ...prev }
-            delete next[presetKey]
-            return next
-          })
+          if (presetEntry) {
+            const [presetKey] = presetEntry
+            updatePending((prev) => {
+              const next = { ...prev }
+              delete next[presetKey]
+              return next
+            })
+          }
+          if (customEntry) {
+            const [customKey] = customEntry
+            updateCustom((prev) => {
+              const next = { ...prev }
+              delete next[customKey]
+              return next
+            })
+          }
           toast.success('已取消生成')
           break
         default:
           break
       }
     },
-    [motionsQueryKey, queryClient, updatePending],
+    [motionsQueryKey, queryClient, updateCustom, updatePending],
   )
 
   const { events, subscribe, unsubscribe } = useTaskStream({ onTerminal: handleTerminal })
 
   // Drop pending entries whose motion has actually landed in the
-  // refetched list — this is what flips a `completed` slot from
+  // refetched list — this is what flips a `completed` cell from
   // queued/running to the completed cell without a flicker. Doing the
   // delete here (driven by the prop) instead of inside the SSE
   // terminal handler closes the race between the SSE arriving and
   // the parent passing the new motion list down.
   useEffect(() => {
-    let mutated = false
-    const next = { ...pendingRef.current }
+    let presetMutated = false
+    const nextPreset = { ...pendingRef.current }
     for (const [key, pending] of Object.entries(pendingRef.current)) {
       if (pending.motionId && motions.some((m) => m.id === pending.motionId)) {
-        delete next[key]
-        mutated = true
+        delete nextPreset[key]
+        presetMutated = true
       }
     }
-    if (mutated) {
-      pendingRef.current = next
-      setPendingPresets(next)
+    if (presetMutated) {
+      pendingRef.current = nextPreset
+      setPendingPresets(nextPreset)
+    }
+
+    let customMutated = false
+    const nextCustom = { ...customRef.current }
+    for (const [key, pending] of Object.entries(customRef.current)) {
+      if (pending.motionId && motions.some((m) => m.id === pending.motionId)) {
+        delete nextCustom[key]
+        customMutated = true
+      }
+    }
+    if (customMutated) {
+      customRef.current = nextCustom
+      setPendingCustom(nextCustom)
     }
   }, [motions])
 
@@ -318,6 +380,87 @@ export function MotionRow({
     [updatePending],
   )
 
+  const handleCustomSuccess = useCallback(
+    (response: CreateMotionResponse, name: string) => {
+      updateCustom((prev) => ({
+        ...prev,
+        [response.motion_id]: {
+          taskId: response.task_id,
+          motionId: response.motion_id,
+          name,
+        },
+      }))
+      subscribe(response.task_id)
+      setIsCustomModalOpen(false)
+    },
+    [subscribe, updateCustom],
+  )
+
+  const handleCustomCancel = useCallback(
+    (motionId: string) => {
+      const entry = customRef.current[motionId]
+      if (!entry || entry.failed) return
+
+      const slotStillOurs = (
+        mutator: (prev: Record<string, CustomPending>) => Record<string, CustomPending>,
+      ) =>
+        updateCustom((prev) => {
+          const current = prev[motionId]
+          if (!current || current.taskId !== entry.taskId) return prev
+          return mutator(prev)
+        })
+      const dropSlot = () =>
+        slotStillOurs((prev) => {
+          const next = { ...prev }
+          delete next[motionId]
+          return next
+        })
+
+      cancelTask(entry.taskId)
+        .then(({ cancel_outcome }) => {
+          switch (cancel_outcome) {
+            case 'cancelled_immediately':
+              unsubscribe(entry.taskId)
+              dropSlot()
+              toast.success('已取消生成')
+              break
+            case 'cancel_pending':
+              slotStillOurs((prev) => ({
+                ...prev,
+                [motionId]: { ...prev[motionId], cancelling: true },
+              }))
+              toast.info('取消中…')
+              break
+            case 'too_late_completed':
+              unsubscribe(entry.taskId)
+              void queryClient.invalidateQueries({ queryKey: motionsQueryKey })
+              toast.warning('來不及取消，Motion 已建立')
+              break
+            case 'too_late_failed':
+              unsubscribe(entry.taskId)
+              dropSlot()
+              toast.warning('來不及取消，Motion 生成失敗')
+              break
+          }
+        })
+        .catch((err) => {
+          toast.agentError(AgentError.from(err))
+        })
+    },
+    [motionsQueryKey, queryClient, unsubscribe, updateCustom],
+  )
+
+  const handleCustomDismiss = useCallback(
+    (motionId: string) => {
+      updateCustom((prev) => {
+        const next = { ...prev }
+        delete next[motionId]
+        return next
+      })
+    },
+    [updateCustom],
+  )
+
   const presetByType = useMemo(() => {
     const map = new Map<PresetMotionType, Motion>()
     for (const motion of motions) {
@@ -413,26 +556,59 @@ export function MotionRow({
               />
             </li>
           ))}
+          {Object.values(pendingCustom)
+            // The post-list useEffect drops pending entries on the next
+            // commit after the motion lands in `motions`; until then both
+            // lists transiently hold the same `motion_id`, which would
+            // collide on React's `key`. Filter pending entries whose
+            // motion is already visible so the completed cell renders
+            // alone during that handoff window.
+            .filter((pending) => !motions.some((m) => m.id === pending.motionId))
+            .map((pending) => {
+              const event = events.get(pending.taskId)
+              return (
+                <li key={pending.motionId}>
+                  {renderCustomCell({
+                    pending,
+                    event,
+                    isOwner,
+                    onCancel: () => handleCustomCancel(pending.motionId),
+                    onDismiss: () => handleCustomDismiss(pending.motionId),
+                  })}
+                </li>
+              )
+            })}
           <li>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="inline-flex">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    disabled
-                    data-testid={`motion-add-custom-${parentType}-${parentId}`}
-                  >
-                    <Plus className="size-3.5" aria-hidden />
-                    自訂動作
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                {isOwner ? 'T-039 會啟用自訂 motion' : '僅 owner 可操作'}
-              </TooltipContent>
-            </Tooltip>
+            {isOwner ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => setIsCustomModalOpen(true)}
+                data-testid={`motion-add-custom-${parentType}-${parentId}`}
+              >
+                <Plus className="size-3.5" aria-hidden />
+                自訂動作
+              </Button>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled
+                      data-testid={`motion-add-custom-${parentType}-${parentId}`}
+                    >
+                      <Plus className="size-3.5" aria-hidden />
+                      自訂動作
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>僅 owner 可操作</TooltipContent>
+              </Tooltip>
+            )}
           </li>
         </ul>
       </div>
@@ -458,6 +634,12 @@ export function MotionRow({
         onConfirm={() => {
           if (deleteTarget) handleDelete(deleteTarget)
         }}
+      />
+      <CustomMotionModal
+        isOpen={isCustomModalOpen}
+        parent={parent}
+        onClose={() => setIsCustomModalOpen(false)}
+        onSuccess={handleCustomSuccess}
       />
     </div>
   )
@@ -533,6 +715,61 @@ function renderPresetCell({
   }
   // Default to queued — covers the gap between POST returning and the
   // first SSE frame arriving, plus explicit `queued` events.
+  return (
+    <MotionCell
+      variant="queued"
+      slotId={slotId}
+      label={label}
+      isOwner={isOwner}
+      queuePosition={event?.queue_position ?? null}
+      onCancel={cancelHandler}
+    />
+  )
+}
+
+interface RenderCustomCellArgs {
+  pending: CustomPending
+  event: TaskEvent | undefined
+  isOwner: boolean
+  onCancel: () => void
+  onDismiss: () => void
+}
+
+function renderCustomCell({ pending, event, isOwner, onCancel, onDismiss }: RenderCustomCellArgs) {
+  // The custom map is keyed by motion_id, which doubles as the cell's
+  // slotId so MotionCell's testids stay unique across preset / custom
+  // sections. Label falls back to the user-supplied name.
+  const slotId = pending.motionId
+  const label = pending.name
+  if (pending.failed) {
+    return (
+      <MotionCell
+        variant="failed"
+        slotId={slotId}
+        label={label}
+        isOwner={isOwner}
+        errorMessage={pending.failed.error.message || '生成失敗'}
+        onDismiss={isOwner ? onDismiss : undefined}
+      />
+    )
+  }
+  if (pending.cancelling) {
+    return <MotionCell variant="cancelling" slotId={slotId} label={label} />
+  }
+  const cancelHandler = isOwner && pending.taskId ? onCancel : undefined
+  const status = event?.status
+  if (status === 'running') {
+    return (
+      <MotionCell
+        variant="running"
+        slotId={slotId}
+        label={label}
+        isOwner={isOwner}
+        progress={event?.progress ?? null}
+        onCancel={cancelHandler}
+      />
+    )
+  }
   return (
     <MotionCell
       variant="queued"

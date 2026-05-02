@@ -297,19 +297,20 @@ function FailedCell({
             !
           </span>
           <span>生成失敗</span>
-          {isOwner ? (
+          {isOwner && (onRetry || onDismiss) ? (
             <div className="absolute inset-x-0 bottom-0 flex justify-between gap-0.5 bg-background/85 px-1 py-0.5">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-4 w-full px-1 text-[9px]"
-                onClick={onRetry}
-                data-testid={`motion-cell-retry-${slotId}`}
-                disabled={!onRetry}
-              >
-                重試
-              </Button>
+              {onRetry ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-4 w-full px-1 text-[9px]"
+                  onClick={onRetry}
+                  data-testid={`motion-cell-retry-${slotId}`}
+                >
+                  重試
+                </Button>
+              ) : null}
               {onDismiss ? (
                 <Button
                   type="button"
