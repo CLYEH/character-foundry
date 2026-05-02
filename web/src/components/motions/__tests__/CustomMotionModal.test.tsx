@@ -97,7 +97,7 @@ function seedAuth() {
 interface RenderModalOptions {
   isOpen?: boolean
   onClose?: () => void
-  onSuccess?: (response: CreateMotionResponse, name: string, description: string) => void
+  onSuccess?: (response: CreateMotionResponse, name: string) => void
 }
 
 function renderModal(opts: RenderModalOptions = {}) {
@@ -202,7 +202,6 @@ describe('CustomMotionModal', () => {
       expect(onSuccess).toHaveBeenCalledWith(
         { task_id: 'task-1', motion_id: 'motion-1' },
         '轉身揮手',
-        '慢慢轉身 180 度，然後揮手',
       ),
     )
     // Modal close belongs to the caller — it isn't fired internally on

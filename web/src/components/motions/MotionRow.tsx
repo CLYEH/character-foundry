@@ -57,8 +57,6 @@ interface CustomPending {
   motionId: string
   /** User-supplied name; rendered as the queued / running cell's label. */
   name: string
-  /** Original description retained so retry can refire the same payload. */
-  description: string
   failed?: { error: AgentError }
   cancelling?: boolean
 }
@@ -383,14 +381,13 @@ export function MotionRow({
   )
 
   const handleCustomSuccess = useCallback(
-    (response: CreateMotionResponse, name: string, description: string) => {
+    (response: CreateMotionResponse, name: string) => {
       updateCustom((prev) => ({
         ...prev,
         [response.motion_id]: {
           taskId: response.task_id,
           motionId: response.motion_id,
           name,
-          description,
         },
       }))
       subscribe(response.task_id)
@@ -559,20 +556,28 @@ export function MotionRow({
               />
             </li>
           ))}
-          {Object.values(pendingCustom).map((pending) => {
-            const event = events.get(pending.taskId)
-            return (
-              <li key={pending.motionId}>
-                {renderCustomCell({
-                  pending,
-                  event,
-                  isOwner,
-                  onCancel: () => handleCustomCancel(pending.motionId),
-                  onDismiss: () => handleCustomDismiss(pending.motionId),
-                })}
-              </li>
-            )
-          })}
+          {Object.values(pendingCustom)
+            // The post-list useEffect drops pending entries on the next
+            // commit after the motion lands in `motions`; until then both
+            // lists transiently hold the same `motion_id`, which would
+            // collide on React's `key`. Filter pending entries whose
+            // motion is already visible so the completed cell renders
+            // alone during that handoff window.
+            .filter((pending) => !motions.some((m) => m.id === pending.motionId))
+            .map((pending) => {
+              const event = events.get(pending.taskId)
+              return (
+                <li key={pending.motionId}>
+                  {renderCustomCell({
+                    pending,
+                    event,
+                    isOwner,
+                    onCancel: () => handleCustomCancel(pending.motionId),
+                    onDismiss: () => handleCustomDismiss(pending.motionId),
+                  })}
+                </li>
+              )
+            })}
           <li>
             {isOwner ? (
               <Button

@@ -33,7 +33,7 @@ export interface CustomMotionModalProps {
    * the new motion into MotionRow's pending custom map and subscribing
    * the SSE stream — this component only owns the form lifecycle.
    */
-  onSuccess: (response: CreateMotionResponse, name: string, description: string) => void
+  onSuccess: (response: CreateMotionResponse, name: string) => void
 }
 
 /**
@@ -85,7 +85,7 @@ export function CustomMotionModal({ isOpen, parent, onClose, onSuccess }: Custom
         name: trimmedName,
         description: trimmedDescription,
       })
-      onSuccess(response, trimmedName, trimmedDescription)
+      onSuccess(response, trimmedName)
     } catch (err) {
       const agent = AgentError.from(err)
       // VALIDATION_ / CONFLICT_ → inline so the user can fix the field
