@@ -1,7 +1,7 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-05-02 — T-039 enables the [+ 自訂動作] button on `MotionRow` and wires it to the new `CustomMotionModal` (M-02). Submit goes through the same `POST /v1/{bases|aliases}/{id}/motions` path as preset generation, with `motion_type='custom'`, name + description payload, and the per-`motion_id` pending entry takes the same SSE / queued / running / cancel / failed lifecycle as preset cells. Inline error covers `CONFLICT_DUPLICATE_NAME` / `VALIDATION_*`; modal stays open on those so the user can fix the input. Other (`MODEL_`, network) errors fall through to the global toast plus an inline mirror. Form resets on reopen. Non-owners still see the disabled trigger with the owner-only tooltip. E2E remains deferred to T-041. Previous sprint head: T-038 (frontend preset motion click-to-generate).
-> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 開單中（T-029 ~ T-041，13 張，T-029 / T-030 / T-031 / T-032 / T-033 / T-034 / T-035 / T-036 / T-037 / T-038 / T-039 / T-040 done）**
+> **Last updated:** 2026-05-03 — T-041 lands the M3 Playwright smoke covering login → create character → checkpoint → select Base → add text-only alias → generate `preset_wave` motion → motion lightbox, all against `AI_STUB_MODE=true`. The smoke surfaced two latent bugs in `AliasEditPage` that unit tests missed and shipped fixes for both: (1) `isUnmountedRef` was never reset on remount, so React StrictMode's dev unmount/remount cycle pinned it `true` and silently no-op'd every alias submit at the pre-POST guard; (2) the SSE `completed` and `too_late_completed` cancel branches only invalidated `characterDetail`, leaving the `useAliases` list query serving its cached `[]` for `staleTime`, so the new alias never appeared after auto-nav back to /characters/:id. Both fixes also cover the `too_late_completed` cancel-race path. M3 milestone now achieved (Aliases + Motions working). Previous sprint head: T-039 (custom motion modal).
+> **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 done（T-029 ~ T-041，13 張全部 done，M3 達成）**
 
 ---
 
@@ -77,7 +77,7 @@
 | T-038 | Frontend Motion preset generation（click-to-generate + SSE）| DONE |
 | T-039 | Frontend Custom motion modal (M-02) | DONE |
 | T-040 | Frontend Prompt preview modal extension（alias / motion mode）| DONE |
-| T-041 | E2E Alias creation + motion preset smoke（M3 gate）| TODO |
+| T-041 | E2E Alias creation + motion preset smoke（M3 gate）| DONE |
 | T-042 | Fix gpt-image API contract on real provider（drop dall-e-3 params + multi-image `image[]`） | DONE |
 | T-043 | Sync `planning/backend/ai-integration.md` to real gpt-image contract（T-042 follow-up） | SUPERSEDED by T-048 |
 | T-044 | Outgoing-body contract test for gpt-image client（T-042 follow-up） | TODO |
@@ -108,7 +108,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 - [ ] **M0** — Dev environment runs（`docker compose up` → `/health` returns ok）【Sprint 0 完成】
 - [x] **M1** — Login works end-to-end【Sprint 1 完成】
 - [x] **M2** — Create Character (template mode) end-to-end【Sprint 2 完成】
-- [ ] **M3** — Aliases + Motions working【Sprint 3 完成】
+- [x] **M3** — Aliases + Motions working【Sprint 3 完成】
 - [ ] **M3.5** — Agent-native baseline：OAuth 2.1 + MCP server，外部 agent 能不看 REST 文件跑全流程【2026-04-30 從 Phase 2 拉回 Phase 1；詳見 `planning/agent-interface/`、`planning/auth/`】
 - [ ] **M4** — Download ZIP works【Sprint 4 完成】
 - [ ] **M5** — First internal user feedback【Sprint 5 完成】
