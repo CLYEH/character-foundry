@@ -82,6 +82,12 @@ _ALLOWED_EDITS_FIELDS: frozenset[str] = frozenset(
         "output_compression",
         "quality",
         "background",
+        # `input_fidelity` and `partial_images` are accepted by gpt-image
+        # edits but not yet sent by the client. Keeping them in the
+        # allow-set means a future legitimate use (e.g. higher-fidelity
+        # alias edits) won't false-positive against the schema mirror.
+        "input_fidelity",
+        "partial_images",
         "stream",
         "user",
     }
@@ -163,7 +169,9 @@ def _parse_multipart(body: bytes, content_type: str) -> dict[str, list[bytes]]:
 
     Field names like `image[]` survive verbatim — Python's email parser
     treats the multipart `name=` parameter as an opaque token and doesn't
-    URL-decode or re-quote the brackets.
+    URL-decode or re-quote the brackets. Verified against httpx 0.28's
+    multipart serializer (the version pinned in api/pyproject.toml dev
+    deps); re-verify if that pin moves.
     """
     prefix = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode()
     msg = BytesParser(policy=default).parsebytes(prefix + body)
@@ -247,6 +255,9 @@ async def test_text2image_body_matches_generations_contract(
 
     _assert_size_value_legal(body.get("size"), where=where)
     _assert_quality_value_legal(body.get("quality"), where=where)
+    # T-042 regression guard: caller-supplied `seed=42` must be silently
+    # dropped before the wire — gpt-image rejects the field outright.
+    assert "seed" not in body, f"{where}: T-042 — caller seed leaked to wire body"
     # 2:3 → portrait 1024x1536; guards against silent enum mapping drift.
     assert body["size"] == "1024x1536"
     assert body["model"] == "gpt-image-2"
@@ -282,6 +293,9 @@ async def test_image2image_body_matches_edits_contract_single_image(
     )
     assert len(fields["image"]) == 1, f"{where}: `image` must appear exactly once"
     assert "mask" not in field_names, f"{where}: image2image must not send `mask`"
+    # T-042 regression guard: caller-supplied `seed=99` must be silently
+    # dropped before the wire — gpt-image rejects the field outright.
+    assert "seed" not in field_names, f"{where}: T-042 — caller seed leaked to wire body"
 
     assert fields["model"][0] == b"gpt-image-2"
     assert fields["prompt"][0] == b"make it red"
