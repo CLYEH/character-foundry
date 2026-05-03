@@ -20,10 +20,12 @@ import { PromptPreviewModal } from '@/components/creation/PromptPreviewModal'
 import type { PromptPreviewAliasRequest } from '@/api/endpoints/prompt'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { aliasListQueryKey } from '@/api/queries/useAliases'
 import { characterDetailQueryKey, useCharacterDetail } from '@/hooks/useCharacterDetail'
 import { useReferenceUpload } from '@/hooks/useReferenceUpload'
 import { useTaskStream } from '@/hooks/useTaskStream'
 import { AgentError } from '@/lib/agentError'
+import { useAuthStore } from '@/stores/authStore'
 import { toast } from '@/stores/toastStore'
 
 interface ActiveTask {
@@ -179,6 +181,11 @@ function AliasEditBody({
   const createAliasMutation = useCreateAlias(characterId)
   const cancelTaskMutation = useCancelTask()
   const queryClient = useQueryClient()
+  // Match the same selector useAliases uses so the invalidation key
+  // we build below matches the one the destination page subscribes
+  // with (T-041 caught a missed alias-list invalidation when this
+  // shortcut was elided).
+  const userId = useAuthStore((s) => s.user?.id)
 
   // ---- submit eligibility ----------------------------------------------
   // We check input *value* presence rather than checkbox state — toggling
@@ -199,13 +206,19 @@ function AliasEditBody({
       if (!current || current.taskId !== taskId) return
       switch (event.status) {
         case 'completed':
-          // Invalidate the character detail query *now* (not at POST
-          // time) so the navigation back to /characters/:id lands on a
-          // fresh fetch with the new alias visible. Invalidating earlier
-          // would have refetched a pre-alias snapshot and served it
-          // stale-fresh for staleTime — Codex P2 round 3.
+          // Invalidate both queries the destination page reads from —
+          // characterDetail (alias_count, owner, etc.) AND the alias
+          // list (the actual rows the AliasesSection renders). Without
+          // the second invalidation the cached `[]` from the first
+          // detail visit serves stale-fresh for `staleTime` (30s) and
+          // the new alias never appears until the user reloads. T-041
+          // caught this — characterDetail invalidation alone passed
+          // the unit test but failed the smoke flow.
           void queryClient.invalidateQueries({
             queryKey: characterDetailQueryKey(characterId),
+          })
+          void queryClient.invalidateQueries({
+            queryKey: aliasListQueryKey(userId, characterId),
           })
           toast.success('Alias 已建立')
           setActiveTask(null)
@@ -234,7 +247,7 @@ function AliasEditBody({
           break
       }
     },
-    [characterId, onCompleted, queryClient, setActiveTask],
+    [characterId, onCompleted, queryClient, setActiveTask, userId],
   )
 
   const { subscribe, unsubscribe } = useTaskStream({ onTerminal: handleTerminal })
@@ -245,6 +258,13 @@ function AliasEditBody({
   // `Promise.resolve(...)` wraps the call so a void-returning mock or a
   // future synchronous shim doesn't make the `.catch` chain blow up.
   useEffect(() => {
+    // Reset on (re)mount: in StrictMode dev React simulates an
+    // unmount/remount cycle, the cleanup below flips this ref to
+    // `true`, and a useRef value survives the simulated cycle — so
+    // without this reset the ref stays stuck `true` after the first
+    // mount and every later submit silently bails at the pre-POST
+    // unmount guard. T-041 caught this when the alias POST never fired.
+    isUnmountedRef.current = false
     return () => {
       isUnmountedRef.current = true
       const task = activeTaskRef.current
@@ -410,8 +430,14 @@ function AliasEditBody({
             // so the navigation back to /characters/:id must land on a
             // fresh fetch. Without this, the cached pre-alias snapshot
             // would serve stale-fresh for staleTime — Codex P2 round 4.
+            // Same alias-list invalidation reason as the SSE `completed`
+            // branch (T-041 fix): characterDetail alone doesn't refresh
+            // the AliasesSection list query.
             void queryClient.invalidateQueries({
               queryKey: characterDetailQueryKey(characterId),
+            })
+            void queryClient.invalidateQueries({
+              queryKey: aliasListQueryKey(userId, characterId),
             })
             toast.warning('來不及取消，Alias 已建立')
             setActiveTask(null)
@@ -425,7 +451,15 @@ function AliasEditBody({
         }
       },
     })
-  }, [cancelTaskMutation, characterId, onCompleted, queryClient, setActiveTask, unsubscribe])
+  }, [
+    cancelTaskMutation,
+    characterId,
+    onCompleted,
+    queryClient,
+    setActiveTask,
+    unsubscribe,
+    userId,
+  ])
 
   // ---- prompt preview --------------------------------------------------
   // T-040 ships the modal with a `create_alias` mode that mirrors the
