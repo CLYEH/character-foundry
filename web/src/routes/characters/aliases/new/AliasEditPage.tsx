@@ -181,10 +181,11 @@ function AliasEditBody({
   const createAliasMutation = useCreateAlias(characterId)
   const cancelTaskMutation = useCancelTask()
   const queryClient = useQueryClient()
-  // Match the same selector useAliases uses so the invalidation key
-  // we build below matches the one the destination page subscribes
-  // with (T-041 caught a missed alias-list invalidation when this
-  // shortcut was elided).
+  // `aliasListQueryKey` scopes by `userId` (see useAliases.ts — guards
+  // against a logout → login-as-another-user inside `staleTime`
+  // returning user A's alias list to user B). We read the same
+  // selector here so the invalidation key on completion matches what
+  // the destination AliasesSection subscribes with.
   const userId = useAuthStore((s) => s.user?.id)
 
   // ---- submit eligibility ----------------------------------------------

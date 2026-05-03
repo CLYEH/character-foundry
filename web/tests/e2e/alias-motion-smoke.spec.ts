@@ -39,16 +39,22 @@ test.describe('alias + motion E2E (M3 smoke)', () => {
     // 1. Login.
     await loginAs(page, SPRINT2_USER)
 
-    // 2. Dashboard → 建立 Character.
+    // 2. Dashboard → 建立 Character. The dashboard query hydrates async,
+    //    so wait for the skeleton to settle into either branch (empty
+    //    or character-grid) before deciding — otherwise an early
+    //    `isVisible()` can race past the empty state on a cold cache
+    //    and silently fall through to the goto fallback.
     await expect(page).toHaveURL('/')
     const empty = page.getByTestId('dashboard-empty')
-    if (await empty.isVisible().catch(() => false)) {
+    const grid = page.getByTestId('character-grid')
+    await expect(empty.or(grid)).toBeVisible()
+    if (await empty.isVisible()) {
       await empty.getByRole('link', { name: '建立 Character' }).click()
     } else {
-      // T-026 cleanup may have left the user with other characters from
-      // a parallel run; the empty-state CTA isn't the only entry into
-      // /characters/new. Falling back to the TopNav-style direct nav
-      // keeps the smoke test stable regardless of dashboard state.
+      // T-026 cleanup may have left the user with other characters
+      // from a parallel run; the empty-state CTA isn't the only entry
+      // into /characters/new. Falling back to direct nav keeps the
+      // smoke test stable regardless of dashboard state.
       await page.goto('/characters/new')
     }
 

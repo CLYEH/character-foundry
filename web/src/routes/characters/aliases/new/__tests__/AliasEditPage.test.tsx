@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { StrictMode } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,7 +13,9 @@ import {
   type CreateAliasResponse,
   type UploadMaskResponse,
 } from '@/api/endpoints/aliases'
+import { aliasListQueryKey } from '@/api/queries/useAliases'
 import { getCharacter, type CharacterDetail } from '@/api/endpoints/characters'
+import { characterDetailQueryKey } from '@/hooks/useCharacterDetail'
 import { cancelTask, type CancelTaskResponse, type TaskEvent } from '@/api/endpoints/tasks'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAuthStore } from '@/stores/authStore'
@@ -234,14 +237,19 @@ function pushSse(taskId: string, event: TaskEvent) {
   throw new Error(`No SSE handler registered for task ${taskId}`)
 }
 
-function renderPage() {
+function renderPage(opts: { strictMode?: boolean } = {}) {
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false, refetchOnWindowFocus: false, gcTime: 0 },
       mutations: { retry: false },
     },
   })
-  return render(
+  // Spy on `invalidateQueries` so tests can assert per-query
+  // invalidation by key without registering a synthetic observer.
+  // T-041 caught a missed alias-list invalidation that the previous
+  // getCharacter-call-count assertion couldn't see.
+  const invalidateSpy = vi.spyOn(client, 'invalidateQueries')
+  const tree = (
     <QueryClientProvider client={client}>
       <TooltipProvider>
         <MemoryRouter initialEntries={[`/characters/${CHARACTER_ID}/aliases/new`]}>
@@ -254,8 +262,12 @@ function renderPage() {
           </Routes>
         </MemoryRouter>
       </TooltipProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
+  return {
+    ...render(opts.strictMode ? <StrictMode>{tree}</StrictMode> : tree),
+    invalidateSpy,
+  }
 }
 
 function seedAuth() {
@@ -354,7 +366,7 @@ describe('AliasEditPage', () => {
       task_id: 'task-1',
       alias_id: 'alias-new',
     } satisfies CreateAliasResponse)
-    renderPage()
+    const { invalidateSpy } = renderPage()
 
     await screen.findByTestId('alias-base-image')
     fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: '紅旗袍' } })
@@ -389,6 +401,36 @@ describe('AliasEditPage', () => {
     // SSE completion invalidated the character detail — the second
     // refetch must have fired so the navigation-back lands on fresh data.
     await waitFor(() => expect(getCharacterMock).toHaveBeenCalledTimes(2))
+    // T-041: BOTH characterDetail AND the alias-list query must be
+    // invalidated — the destination AliasesSection reads from a
+    // separate `useAliases` query and would otherwise serve a cached
+    // empty list for staleTime, hiding the new alias.
+    const invalidateKeys = invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)
+    expect(invalidateKeys).toContainEqual(characterDetailQueryKey(CHARACTER_ID))
+    expect(invalidateKeys).toContainEqual(aliasListQueryKey(ME_ID, CHARACTER_ID))
+  })
+
+  it('StrictMode dev double-mount: submit still fires after the simulated cleanup', async () => {
+    // T-041: useRef survives StrictMode's simulated unmount cycle, so
+    // an `isUnmountedRef` set to `true` in the cleanup stays `true`
+    // on the second mount. Without the explicit reset at the top of
+    // the effect body, every later submit would silently bail at the
+    // pre-POST unmount guard. Rendering inside <StrictMode> exercises
+    // exactly that cycle — if the reset is removed, this test fails
+    // because createAlias is never called.
+    getCharacterMock.mockResolvedValue({ character: makeDetail() })
+    createAliasMock.mockResolvedValue({ task_id: 'task-strict', alias_id: 'alias-strict' })
+    renderPage({ strictMode: true })
+
+    await screen.findByTestId('alias-base-image')
+    fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: 'StrictMode 版' } })
+    fireEvent.change(screen.getByLabelText('Alias 補述內容'), { target: { value: '內容' } })
+
+    const submit = screen.getByTestId('alias-submit')
+    await waitFor(() => expect(submit).toBeEnabled())
+    fireEvent.click(submit)
+
+    await waitFor(() => expect(createAliasMock).toHaveBeenCalledTimes(1))
   })
 
   it('inpaint path uploads the mask and includes mask_id in the alias body', async () => {
@@ -553,7 +595,7 @@ describe('AliasEditPage', () => {
     })
   })
 
-  it('too_late_completed invalidates character detail before navigating', async () => {
+  it('too_late_completed invalidates character detail + alias list before navigating', async () => {
     // Codex P2 round 4: the cancel raced and lost — the alias *was*
     // created server-side, so navigating back must invalidate to avoid
     // serving the cached pre-alias snapshot from staleTime.
@@ -563,7 +605,7 @@ describe('AliasEditPage', () => {
       task: {} as unknown as CancelTaskResponse['task'],
       cancel_outcome: 'too_late_completed',
     })
-    renderPage()
+    const { invalidateSpy } = renderPage()
 
     await screen.findByTestId('alias-base-image')
     fireEvent.change(screen.getByLabelText('Alias 名稱'), { target: { value: '太遲版' } })
@@ -586,6 +628,11 @@ describe('AliasEditPage', () => {
         '來不及取消，Alias 已建立',
       ),
     )
+    // T-041: the alias-list query also needs invalidation here for the
+    // same reason as the SSE `completed` branch.
+    const invalidateKeys = invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)
+    expect(invalidateKeys).toContainEqual(characterDetailQueryKey(CHARACTER_ID))
+    expect(invalidateKeys).toContainEqual(aliasListQueryKey(ME_ID, CHARACTER_ID))
   })
 
   it('aborts before alias POST when user unmounts during mask upload', async () => {
