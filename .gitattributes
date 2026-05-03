@@ -1,0 +1,44 @@
+# Default: treat as text, normalize to LF on commit, check out as LF on
+# every platform. Windows tools (Node, Python, IDEs, modern PowerShell)
+# all handle LF source files correctly; pinning eol=lf eliminates the
+# Windows-checkout CRLF noise that would otherwise leave files
+# perpetually `M` in `git status` (T-041 hit this on aliases/motions
+# components).
+* text=auto eol=lf
+
+# Binary files: never normalize, never diff as text. Lists the formats
+# the repo actually carries (api/app/ai/_fixtures/* + future image /
+# video / font assets).
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.webp     binary
+*.ico      binary
+*.bmp      binary
+*.svg      text eol=lf
+*.mp4      binary
+*.webm     binary
+*.mov      binary
+*.mp3      binary
+*.wav      binary
+*.woff     binary
+*.woff2    binary
+*.ttf      binary
+*.otf      binary
+*.eot      binary
+*.pdf      binary
+*.zip      binary
+*.gz       binary
+*.tar      binary
+*.tgz      binary
+*.7z       binary
+*.db       binary
+*.sqlite   binary
+*.sqlite3  binary
+
+# Lock files: text but never collapse line-by-line in PR diffs (GitHub
+# already does this; the marker also helps `git log -p`).
+pnpm-lock.yaml -diff
+package-lock.json -diff
+poetry.lock -diff
