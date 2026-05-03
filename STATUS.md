@@ -1,6 +1,6 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-05-03 — T-041 lands the M3 Playwright smoke covering login → create character → checkpoint → select Base → add text-only alias → generate `preset_wave` motion → motion lightbox, all against `AI_STUB_MODE=true`. The smoke surfaced two latent bugs in `AliasEditPage` that unit tests missed and shipped fixes for both: (1) `isUnmountedRef` was never reset on remount, so React StrictMode's dev unmount/remount cycle pinned it `true` and silently no-op'd every alias submit at the pre-POST guard; (2) the SSE `completed` and `too_late_completed` cancel branches only invalidated `characterDetail`, leaving the `useAliases` list query serving its cached `[]` for `staleTime`, so the new alias never appeared after auto-nav back to /characters/:id. Both fixes also cover the `too_late_completed` cancel-race path. M3 milestone now achieved (Aliases + Motions working). Previous sprint head: T-039 (custom motion modal).
+> **Last updated:** 2026-05-03 — T-044 closes T-042's last follow-up by adding `tests/ai/test_gpt_image_2_contract.py`: 6 in-memory contract tests (one per gpt-image client method, plus a 2nd path for `edit_image2image` with-refs / no-refs) that pin the wire body against the OpenAI gpt-image schema mirror. Existing tests only matched body substrings; this set asserts the JSON / multipart field set is a subset of the gpt-image-allowed enum and explicitly forbids `response_format` / `seed` / `quality="hd"` (the three params T-042 stripped out). Sprint 3 follow-up backlog from T-042 / T-045 / T-046 / T-047 / T-048 now fully cleared. Previous sprint head: T-041 (M3 e2e smoke).
 > **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 done（T-029 ~ T-041，13 張全部 done，M3 達成）**
 
 ---
@@ -80,7 +80,7 @@
 | T-041 | E2E Alias creation + motion preset smoke（M3 gate）| DONE |
 | T-042 | Fix gpt-image API contract on real provider（drop dall-e-3 params + multi-image `image[]`） | DONE |
 | T-043 | Sync `planning/backend/ai-integration.md` to real gpt-image contract（T-042 follow-up） | SUPERSEDED by T-048 |
-| T-044 | Outgoing-body contract test for gpt-image client（T-042 follow-up） | TODO |
+| T-044 | Outgoing-body contract test for gpt-image client（T-042 follow-up） | DONE |
 | T-045 | Fix reconciler client for gpt-5-mini contract drift（max_completion_tokens + drop temperature=0）| DONE |
 | T-046 | Shared `/storage` volume + nginx `/storage/` proxy（image preview broken bug）| DONE |
 | T-047 | Aspect-ratio dropdown + framing guidance（head cropping fix）| DONE |
