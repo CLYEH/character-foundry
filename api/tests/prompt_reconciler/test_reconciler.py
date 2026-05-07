@@ -587,6 +587,39 @@ async def test_final_prompt_has_no_double_period_when_note_ends_with_one(
     assert not output.final_prompt.endswith("..")
 
 
+async def test_final_prompt_no_double_period_when_note_ends_with_period_then_whitespace(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """T-050 codex round-3 (P2): the reconciled note can end with a
+    period followed by trailing whitespace / newline (e.g.
+    `'"GUIDE".\\n'`). Whitespace must be stripped BEFORE the trailing
+    period — otherwise `rstrip(".")` sees `\\n` and leaves the period
+    intact, regressing the round-2 fix on a realistic LLM output shape.
+    """
+
+    def _note(_s: str, _u: str) -> dict[str, Any]:
+        return {
+            "reconciled_note_en": 'wearing a badge that reads "GUIDE".\n',
+            "removed_segments": [],
+        }
+
+    client = FakeReconcilerClient(_note)
+    rec = PromptReconciler(redis=fake_redis, client=client)
+
+    output = await rec.reconcile(
+        ReconcileInput(
+            mode=ReconcileMode.CREATE_BASE,
+            freeform_note="戴著寫著導覽員的徽章",
+        )
+    )
+
+    assert ".." not in output.final_prompt
+    assert output.final_prompt.endswith(".")
+    assert not output.final_prompt.endswith("..")
+    # The avoid block must still be present and well-attached at the end.
+    assert "no watermarks or signatures" in output.final_prompt
+
+
 async def test_user_prompt_presents_scene_and_avoid_blocks_separately(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:

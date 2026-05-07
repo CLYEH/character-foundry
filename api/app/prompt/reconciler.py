@@ -489,21 +489,30 @@ class PromptReconciler:
         # preserve, what to avoid" last, so it stays salient against the
         # other blocks during attention pooling.
         #
-        # Strip a trailing period from each part before the `". "` join so
-        # parts that already end in a period (typical when the LLM emits
-        # literal-text examples like `the badge reads "GUIDE".` per
-        # SYSTEM_PROMPT principle 4) don't produce a `..` boundary.
-        # Codex P1 (T-050) round-2.
-        raw_parts: list[str] = []
-        if scene:
-            raw_parts.append(", ".join(scene))
-        if menu_fragments:
-            raw_parts.append(", ".join(menu_fragments))
-        if reconciled_note_en:
-            raw_parts.append(reconciled_note_en)
-        if avoid:
-            raw_parts.append(", ".join(avoid))
-        parts = [p.rstrip(".").rstrip() for p in raw_parts if p.rstrip(".").rstrip()]
+        # Strip trailing whitespace AND a trailing period from each part
+        # before the `". "` join so parts that already end in a period
+        # (typical when the LLM emits literal-text examples like
+        # `the badge reads "GUIDE".` per SYSTEM_PROMPT principle 4) don't
+        # produce a `..` boundary. Whitespace must be stripped first
+        # because real LLM responses can wrap with `\n` after the period
+        # (`"GUIDE".\n`); rstrip(".") on that string sees `\n` and leaves
+        # the period intact. Codex P2 (T-050) round-3.
+        def _trim(p: str) -> str:
+            return p.rstrip().rstrip(".").rstrip()
+
+        parts = [
+            trimmed
+            for trimmed in (
+                _trim(p)
+                for p in (
+                    ", ".join(scene) if scene else "",
+                    ", ".join(menu_fragments) if menu_fragments else "",
+                    reconciled_note_en,
+                    ", ".join(avoid) if avoid else "",
+                )
+            )
+            if trimmed
+        ]
         final_prompt = ". ".join(parts) + ("." if parts else "")
         return ReconcileOutput(
             final_prompt=final_prompt,
