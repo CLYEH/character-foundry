@@ -4,6 +4,11 @@ Exposes the `version` string for `/v1/meta` and the full constraint lists
 for the prompt reconciler (T-xxx). Cached because the file is packaged with
 the image and never mutates at runtime — a restart is required to pick up
 changes.
+
+T-050 (v1.2): added `*_avoid` fields. The reconciler composes the final
+prompt as `scene → subject → details → avoid`, mirroring OpenAI's image-gen
+prompting guide. The `_avoid` block holds preserve / avoid clauses that the
+image model should read last.
 """
 
 from __future__ import annotations
@@ -25,8 +30,11 @@ class PlatformConstraints:
     version: str
     updated_at: str
     base_creation: tuple[str, ...]
+    base_creation_avoid: tuple[str, ...]
     alias_creation: tuple[str, ...]
+    alias_creation_avoid: tuple[str, ...]
     motion_creation: tuple[str, ...]
+    motion_creation_avoid: tuple[str, ...]
 
 
 def _parse(data: dict[str, Any]) -> PlatformConstraints:
@@ -34,8 +42,11 @@ def _parse(data: dict[str, Any]) -> PlatformConstraints:
         version=str(data["version"]),
         updated_at=str(data["updated_at"]),
         base_creation=tuple(data.get("base_creation", [])),
+        base_creation_avoid=tuple(data.get("base_creation_avoid", [])),
         alias_creation=tuple(data.get("alias_creation", [])),
+        alias_creation_avoid=tuple(data.get("alias_creation_avoid", [])),
         motion_creation=tuple(data.get("motion_creation", [])),
+        motion_creation_avoid=tuple(data.get("motion_creation_avoid", [])),
     )
 
 

@@ -1,28 +1,49 @@
 # Platform-level fixed image / video constraints (backend/prompt-reconciler.md §3).
 #
 # Version bump rules:
-#   - additive change (new entry, tightening wording) → minor (v1 → v1.1)
+#   - additive change (new entry, new field, tightening wording) → minor (v1 → v1.1)
 #   - removed / behaviorally-incompatible change → major (v1 → v2)
 # GenerationLog records the version active at call time for traceability.
-# (Bumping rule rephrased in T-047 — additive entries are forward-compatible
-# for downstream callers and don't warrant a major version flip.)
-version: v1.1
-updated_at: 2026-05-01
+#
+# T-050 (v1.2): added `*_avoid` fields for gpt-image modes (base + alias) per
+# OpenAI image-gen cookbook recommendation that final prompts follow
+# scene → subject → details → avoid (preserve/avoid). Motion mode (i2v) is
+# intentionally unchanged — to be revisited in a later ticket dedicated to
+# Veo-side prompt tuning.
+version: v1.2
+updated_at: 2026-05-07
 
+# Scene-setting clauses — prepended at the start of the final prompt.
 base_creation:
   - transparent background
   - character centered in frame
   - character facing camera directly (正面)
   - full body shot unless specified otherwise
-  - head and feet fully visible within frame, no cropping at edges
+  - head and feet fully visible within frame
   - generous head room above the character
   - consistent neutral lighting
+
+# Preserve / avoid clauses — appended at the end of the final prompt
+# so the image model reads them last (cookbook: "what to preserve, what to avoid").
+base_creation_avoid:
+  - no cropping at frame edges
   - no watermarks or signatures
 
 alias_creation:
   - inherits base_creation rules
-  - preserves character identity from base image
 
+alias_creation_avoid:
+  - inherits base_creation_avoid rules
+  - preserves character identity, facial geometry, eye color, and skin tone from base image
+  - preserves overall body proportions and build
+  - only change what the user explicitly requests (typically outfit or accessory)
+  - do not alter pose, framing, or lighting unless the user requests it
+
+# Motion (i2v) constraints — unchanged from v1.1. Re-tuning deferred to a
+# future ticket scoped to Veo / i2v prompting; T-050 only touches gpt-image
+# (base + alias) surfaces. Loader returns an empty tuple for the missing
+# `motion_creation_avoid` field, which keeps motion composition identical
+# to the pre-T-050 behaviour (scene → menu → note, no avoid block).
 motion_creation:
   - transparent background (match base)
   - camera remains stationary

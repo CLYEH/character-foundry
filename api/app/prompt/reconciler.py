@@ -1,12 +1,17 @@
 """PromptReconciler — turn user input into a final English image/video prompt.
 
-Pipeline (per planning/backend/prompt-reconciler.md):
+Pipeline (per planning/backend/prompt-reconciler.md, with T-050 cookbook
+upgrades):
   1. Resolve menu fragments deterministically from the static map.
-  2. Look up applicable platform constraints by mode.
+  2. Look up scene + avoid platform constraints by mode.
   3. (LLM) Translate the freeform Chinese note + flag/rewrite conflicts.
-  4. Compose: constraints + menu fragments + reconciled_note_en.
+     The LLM is briefed with cookbook prompting principles so its
+     translation is enriched (photographic vocab, lock-gaze, literal-text
+     handling) — the reconciler is the agent-skill carrier for them.
+  4. Compose: scene → menu fragments → reconciled note → avoid.
+     This order matches OpenAI's image-gen prompting guide
+     (scene → subject → details → constraints to preserve/avoid).
 
-The LLM is responsible only for step 3 (translation + conflict resolution).
 Composition stays deterministic so:
 
   - Cache hits don't depend on LLM determinism.
@@ -35,6 +40,7 @@ from redis.asyncio import Redis
 from app.ai.reconciler_client import ReconcilerClient, get_reconciler_client
 from app.prompt.constraints import (
     ReconcileMode,
+    get_avoid_constraints_for_mode,
     get_constraints_for_mode,
     get_constraints_version,
 )
@@ -80,30 +86,99 @@ class PromptReconciler:
     state. Pass a `ReconcilerClient` (real or stub) for the LLM hop.
     """
 
+    # T-050: SYSTEM_PROMPT bakes in OpenAI's image-gen prompting cookbook
+    # (https://developers.openai.com/cookbook/examples/multimodal/image-gen-models-prompting-guide)
+    # so the reconciler is the agent-skill carrier for those principles.
+    # Updates here automatically shift the cache key via `_logic_version`.
     SYSTEM_PROMPT = (
-        "You are a prompt engineering assistant for an AI character "
-        "generation platform.\n"
+        "You are a prompt-engineering specialist for an AI character-generation "
+        "platform. The character is a virtual avatar for an AI tour-guide system "
+        "— asset-quality, not scene/storytelling.\n"
         "\n"
-        "Your job: given (1) user menu selections, (2) a user freeform note "
-        "in Chinese, and (3) platform-level fixed constraints, produce two "
-        "things:\n"
-        "  - A natural English translation of the freeform note, with any "
-        "    segments that conflict with platform constraints rewritten or "
-        "    removed.\n"
-        "  - A list of removed segments with the reason each was dropped.\n"
+        "OUTPUT TARGETS (your translation will be assembled into prompts for):\n"
+        "  - gpt-image-2 — text-to-image and image-to-image edits\n"
+        "  - Veo 3.1 — image-to-video\n"
         "\n"
-        "RULES:\n"
-        "1. Translate the freeform Chinese note to natural English.\n"
-        "2. Identify any user intent that conflicts with the platform "
-        "   constraints. Rewrite or remove the conflicting parts so the "
-        "   constraint wins. Record what was removed and why.\n"
-        "3. Do NOT add content the user did not imply (no creative bloat).\n"
-        "4. If the user note is empty, return reconciled_note_en as the "
-        "   empty string.\n"
-        "5. Return JSON matching this schema EXACTLY:\n"
-        '   {"reconciled_note_en": str, "removed_segments": '
-        '[{"original_zh": str, "reason": str}]}\n'
-        "Do NOT include any other fields."
+        "MODES you may receive:\n"
+        "  - create_base: generate a brand-new character from scratch\n"
+        "  - create_base_with_ref: generate a character matching a reference "
+        "image's style\n"
+        "  - create_alias: edit the existing base character into a new outfit / "
+        "variant; identity (face, body, build) MUST be preserved\n"
+        "  - create_motion: describe a short motion for an i2v model. "
+        "Translate the user's note faithfully; do NOT apply the enrichment "
+        "principles below (i2v prompt tuning lives in a separate skill).\n"
+        "\n"
+        "SCOPE OF THE PROMPTING PRINCIPLES BELOW\n"
+        "Apply principles 1-5 ONLY to create_base, create_base_with_ref, and "
+        "create_alias (gpt-image targets). For create_motion, apply only "
+        "rule 0 (translate + flag conflicts) and skip enrichment.\n"
+        "\n"
+        "YOUR TASK\n"
+        "Given (1) menu selections, (2) a freeform user note in Chinese, and "
+        "(3) the platform's scene + avoid constraints, produce TWO outputs:\n"
+        "  - reconciled_note_en: natural-English translation of the freeform "
+        "note, with any user intent that conflicts with platform constraints "
+        "rewritten or removed.\n"
+        "  - removed_segments: list of dropped fragments, each with the "
+        "original Chinese and the reason.\n"
+        "\n"
+        "PROMPTING PRINCIPLES (apply when translating)\n"
+        "\n"
+        "1. STRUCTURE WITHIN THE NOTE\n"
+        "   The downstream code already places content in this fixed order:\n"
+        "       scene constraints  ->  subject (menu fragments)  ->  YOUR "
+        "translation  ->  avoid constraints\n"
+        "   Your translation is the 'key details' section. Keep it concrete "
+        "and tight. Do NOT restate menu selections or scene constraints — "
+        "they are already present in their own slots.\n"
+        "\n"
+        "2. ENRICH WITH TECHNICAL VOCABULARY (do not invent content)\n"
+        "   You MAY add photographic / stylistic vocabulary that is consistent "
+        "with the menu selections and the mode:\n"
+        "       lens type (50mm, 35mm), lighting direction (soft diffuse, "
+        "golden hour, rim light), depth of field (shallow, deep), texture "
+        "(visible pores, fabric weave), composition cues (eye-level, "
+        "low-angle).\n"
+        "   You MUST NOT introduce new subjects, objects, props, scene "
+        "elements, or background details that the user did not mention. "
+        "More vivid wording yes; extra characters / props / background no.\n"
+        "\n"
+        "3. PEOPLE-SPECIFIC HINTS (when the user describes the character)\n"
+        "   Prefer concrete cues over vague ones:\n"
+        "       - Lock gaze: 'looking directly at the camera' / 'looking down "
+        "at the book', not just 'looking'.\n"
+        "       - Body framing: 'full body visible, feet included'.\n"
+        "       - Interactions: 'hands resting on the desk', not 'with hands'.\n"
+        "\n"
+        "4. LITERAL TEXT IN THE IMAGE\n"
+        "   If the user specifies text that must appear in the image (signs, "
+        "badges, labels, name tags, tattoos, banners), wrap the literal text "
+        "in DOUBLE QUOTES and ALL CAPS. Example:\n"
+        '       the badge reads "GUIDE".\n'
+        "   For non-Latin scripts, keep the original characters in quotes:\n"
+        '       the banner reads "歡迎光臨".\n'
+        "   Never paraphrase literal text — it must reach the image model "
+        "verbatim.\n"
+        "\n"
+        "5. EDITS (create_alias) — PRESERVATION DEFAULT\n"
+        "   Alias mode is image-to-image. The user's note is an EDIT "
+        "instruction, not a fresh description. Translate ONLY the requested "
+        "change. If the user implies altering identity (face / proportions / "
+        "build), record it in removed_segments. Default behavior: preserve "
+        "identity, geometry, pose, lighting, and surrounding objects.\n"
+        "\n"
+        "CONFLICT HANDLING\n"
+        "- For each segment of the user's note that contradicts a platform "
+        "  constraint, rewrite or drop it so the constraint wins. Record "
+        "  what was dropped and why in removed_segments.\n"
+        "- Empty user note: reconciled_note_en is the empty string and "
+        "  removed_segments is [].\n"
+        "\n"
+        "OUTPUT\n"
+        "Return JSON matching this schema EXACTLY. No additional fields:\n"
+        '  {"reconciled_note_en": str, "removed_segments": '
+        '[{"original_zh": str, "reason": str}]}'
     )
 
     def __init__(self, redis: Redis, client: ReconcilerClient) -> None:
@@ -128,7 +203,8 @@ class PromptReconciler:
         if cached is not None:
             return cached
 
-        constraints = get_constraints_for_mode(inp.mode)
+        scene = get_constraints_for_mode(inp.mode)
+        avoid = get_avoid_constraints_for_mode(inp.mode)
         menu_fragments = resolve_menu_fragments(inp.menu_selections)
         note = (inp.freeform_note or "").strip()
 
@@ -138,18 +214,20 @@ class PromptReconciler:
             output = self._compose_output(
                 reconciled_note_en="",
                 removed_segments=(),
-                constraints=constraints,
+                scene=scene,
+                avoid=avoid,
                 menu_fragments=menu_fragments,
                 llm_latency_ms=0,
                 cached=False,
             )
         else:
-            llm_response, latency_ms = await self._call_llm(inp, constraints, menu_fragments)
+            llm_response, latency_ms = await self._call_llm(inp, scene, avoid, menu_fragments)
             reconciled, removed = self._validate_llm_response(llm_response)
             output = self._compose_output(
                 reconciled_note_en=reconciled,
                 removed_segments=removed,
-                constraints=constraints,
+                scene=scene,
+                avoid=avoid,
                 menu_fragments=menu_fragments,
                 llm_latency_ms=latency_ms,
                 cached=False,
@@ -267,10 +345,11 @@ class PromptReconciler:
     async def _call_llm(
         self,
         inp: ReconcileInput,
-        constraints: tuple[str, ...],
+        scene: tuple[str, ...],
+        avoid: tuple[str, ...],
         menu_fragments: list[str],
     ) -> tuple[dict[str, Any], int]:
-        user_prompt = self._compose_user_prompt(inp, constraints, menu_fragments)
+        user_prompt = self._compose_user_prompt(inp, scene, avoid, menu_fragments)
         started = time.perf_counter()
         response = await self.client.call(
             system_prompt=self.SYSTEM_PROMPT,
@@ -282,13 +361,15 @@ class PromptReconciler:
     def _compose_user_prompt(
         self,
         inp: ReconcileInput,
-        constraints: tuple[str, ...],
+        scene: tuple[str, ...],
+        avoid: tuple[str, ...],
         menu_fragments: list[str],
     ) -> str:
         menu_pretty = (
             "\n".join(f"- {k}: {v}" for k, v in (inp.menu_selections or {}).items()) or "(none)"
         )
-        constraints_pretty = "\n".join(f"- {c}" for c in constraints)
+        scene_pretty = "\n".join(f"- {c}" for c in scene) or "(none)"
+        avoid_pretty = "\n".join(f"- {c}" for c in avoid) or "(none)"
         fragments_pretty = "\n".join(f"- {f}" for f in menu_fragments) or "(none)"
         note = (inp.freeform_note or "").strip() or "(empty)"
         return (
@@ -296,9 +377,14 @@ class PromptReconciler:
             f"Has reference image: {inp.has_reference_image}\n"
             f"Has inpaint mask: {inp.has_inpaint_mask}\n"
             f"\nMenu selections:\n{menu_pretty}\n"
-            f"\nMenu fragments (already mapped to English):\n{fragments_pretty}\n"
+            f"\nMenu fragments (already mapped to English; do NOT restate):\n"
+            f"{fragments_pretty}\n"
             f"\nUser freeform note (Chinese):\n{note}\n"
-            f"\nPlatform constraints (must respect):\n{constraints_pretty}\n"
+            f"\nPlatform scene constraints "
+            f"(injected BEFORE your translation; do NOT restate):\n{scene_pretty}\n"
+            f"\nPlatform avoid constraints "
+            f"(injected AFTER your translation; flag user intent that conflicts):\n"
+            f"{avoid_pretty}\n"
         )
 
     def _validate_llm_response(
@@ -377,27 +463,31 @@ class PromptReconciler:
         *,
         reconciled_note_en: str,
         removed_segments: tuple[RemovedSegment, ...],
-        constraints: tuple[str, ...],
+        scene: tuple[str, ...],
+        avoid: tuple[str, ...],
         menu_fragments: list[str],
         llm_latency_ms: int,
         cached: bool,
     ) -> ReconcileOutput:
-        # Ordering per planning §5 rule 3: scene constraints → character
-        # attributes (menu) → user-specific (note). Sentences keep gpt-image-2
-        # focused on each block; downstream tweaks can re-tokenise safely.
+        # T-050: cookbook ordering — scene → subject (menu) → details
+        # (note) → avoid (preserve/avoid). The image model reads "what to
+        # preserve, what to avoid" last, so it stays salient against the
+        # other blocks during attention pooling.
         parts: list[str] = []
-        if constraints:
-            parts.append(", ".join(constraints))
+        if scene:
+            parts.append(", ".join(scene))
         if menu_fragments:
             parts.append(", ".join(menu_fragments))
         if reconciled_note_en:
             parts.append(reconciled_note_en)
+        if avoid:
+            parts.append(", ".join(avoid))
         final_prompt = ". ".join(parts) + ("." if parts else "")
         return ReconcileOutput(
             final_prompt=final_prompt,
             reconciled_note_en=reconciled_note_en,
             menu_fragments_en=tuple(menu_fragments),
-            applied_constraints=tuple(constraints),
+            applied_constraints=tuple(scene) + tuple(avoid),
             removed_segments=removed_segments,
             llm_latency_ms=llm_latency_ms,
             cached=cached,

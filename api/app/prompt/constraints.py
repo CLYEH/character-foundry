@@ -9,6 +9,10 @@ reconciler doesn't have to know that:
     prompt and the final image prompt).
   - The set of legal modes is enumerated in `ReconcileMode`; an unknown
     mode is a programming error, not a runtime issue, so we raise.
+
+T-050 split: `get_constraints_for_mode` returns the SCENE block (prepended
+to the final prompt). `get_avoid_constraints_for_mode` returns the AVOID
+block (appended). Both flatten alias inheritance the same way.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ def get_constraints_for_mode(
     *,
     source: PlatformConstraints | None = None,
 ) -> tuple[str, ...]:
+    """Scene-setting constraints (prepended to the final prompt)."""
     cs = source or load_platform_constraints()
     if mode in (ReconcileMode.CREATE_BASE, ReconcileMode.CREATE_BASE_WITH_REF):
         return cs.base_creation
@@ -44,6 +49,28 @@ def get_constraints_for_mode(
         return cs.base_creation + extra
     if mode is ReconcileMode.CREATE_MOTION:
         return cs.motion_creation
+    raise ValueError(f"unknown reconcile mode: {mode!r}")
+
+
+def get_avoid_constraints_for_mode(
+    mode: ReconcileMode,
+    *,
+    source: PlatformConstraints | None = None,
+) -> tuple[str, ...]:
+    """Preserve / avoid constraints (appended to the final prompt).
+
+    Per OpenAI image-gen cookbook: the image model should read
+    "what to preserve, what to avoid" last. Same alias-inheritance flatten
+    as `get_constraints_for_mode`.
+    """
+    cs = source or load_platform_constraints()
+    if mode in (ReconcileMode.CREATE_BASE, ReconcileMode.CREATE_BASE_WITH_REF):
+        return cs.base_creation_avoid
+    if mode is ReconcileMode.CREATE_ALIAS:
+        extra = tuple(c for c in cs.alias_creation_avoid if "inherits" not in c.lower())
+        return cs.base_creation_avoid + extra
+    if mode is ReconcileMode.CREATE_MOTION:
+        return cs.motion_creation_avoid
     raise ValueError(f"unknown reconcile mode: {mode!r}")
 
 

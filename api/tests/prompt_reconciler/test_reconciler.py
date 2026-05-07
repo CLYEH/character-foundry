@@ -80,9 +80,14 @@ async def test_reconcile_caches_result_and_skips_second_llm_call(
     assert second.cached is True
 
 
-async def test_final_prompt_structure_constraints_then_menu_then_note(
+async def test_final_prompt_structure_scene_then_menu_then_note_then_avoid(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
+    """T-050: final prompt order matches OpenAI's image-gen cookbook —
+    scene constraints, then subject (menu fragments), then user note
+    (details), then avoid constraints last so the image model attends
+    to "what to preserve / what to avoid" most recently.
+    """
     client = FakeReconcilerClient(_no_conflict_response)
     rec = PromptReconciler(redis=fake_redis, client=client)
 
@@ -95,10 +100,11 @@ async def test_final_prompt_structure_constraints_then_menu_then_note(
     )
 
     final = output.final_prompt
-    constraints_pos = final.find("transparent background")
+    scene_pos = final.find("transparent background")
     menu_pos = final.find("anime style")
     note_pos = final.find("an elegant figure")
-    assert -1 < constraints_pos < menu_pos < note_pos
+    avoid_pos = final.find("no watermarks or signatures")
+    assert -1 < scene_pos < menu_pos < note_pos < avoid_pos
 
 
 async def test_menu_only_no_note_skips_llm(
@@ -319,7 +325,10 @@ async def test_menu_selection_order_isolates_cache_slots(
     assert len(client.calls) == 2
     assert out_a.menu_fragments_en != out_b.menu_fragments_en
     assert out_a.menu_fragments_en[0] == "adult woman"
-    assert out_b.menu_fragments_en[0] == "anime style, 2D illustration"
+    # T-050 expanded the `style` mappings; assert via prefix so we catch
+    # the order without pinning the full descriptive string.
+    assert out_b.menu_fragments_en[0].startswith("anime style")
+    assert out_b.menu_fragments_en[1] == "adult woman"
 
 
 async def test_cache_key_isolates_stub_and_real_clients(
@@ -426,3 +435,108 @@ async def test_cache_corruption_falls_back_to_fresh_llm_call(
     output = await rec.reconcile(inp)
     assert output.cached is False
     assert len(client.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# T-050 — cookbook structure (scene → menu → note → avoid) and per-mode
+# avoid-block content. These tests pin the new behaviour so a future tweak
+# can't silently regress the cookbook ordering or drop the alias preserve
+# rules.
+# ---------------------------------------------------------------------------
+
+
+async def test_base_avoid_block_appears_after_user_note(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Cookbook ordering: avoid clauses must come AFTER the reconciled
+    note, not before. Otherwise the image model reads avoid rules first
+    and they lose salience under attention pooling."""
+    client = FakeReconcilerClient(_no_conflict_response)
+    rec = PromptReconciler(redis=fake_redis, client=client)
+
+    output = await rec.reconcile(
+        ReconcileInput(
+            mode=ReconcileMode.CREATE_BASE,
+            freeform_note="戴眼鏡",
+        )
+    )
+
+    note_pos = output.final_prompt.find("an elegant figure")
+    avoid_pos = output.final_prompt.find("no watermarks or signatures")
+    assert -1 < note_pos < avoid_pos
+    assert "no cropping at frame edges" in output.final_prompt
+
+
+async def test_alias_avoid_includes_preservation_clauses(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """Alias avoid block must surface the cookbook edit-mode preservation
+    list (identity / geometry / proportions / pose / lighting). Otherwise
+    image-to-image edits drift on unintended dimensions."""
+    client = FakeReconcilerClient(_no_conflict_response)
+    rec = PromptReconciler(redis=fake_redis, client=client)
+
+    output = await rec.reconcile(
+        ReconcileInput(
+            mode=ReconcileMode.CREATE_ALIAS,
+            freeform_note="改成西裝",
+        )
+    )
+
+    final = output.final_prompt
+    assert "preserves character identity" in final
+    assert "preserves overall body proportions and build" in final
+    assert "do not alter pose, framing, or lighting" in final
+    # Alias avoid inherits base avoid clauses too.
+    assert "no watermarks or signatures" in final
+
+
+async def test_motion_mode_unchanged_no_avoid_block(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """T-050 only tunes gpt-image-bound modes. Motion mode keeps the
+    pre-T-050 composition (scene → menu → note, no avoid block) — i2v
+    prompt tuning is deferred to a future ticket. This test fails loudly
+    if anyone adds motion_creation_avoid entries by mistake."""
+    client = FakeReconcilerClient(_no_conflict_response)
+    rec = PromptReconciler(redis=fake_redis, client=client)
+
+    output = await rec.reconcile(
+        ReconcileInput(
+            mode=ReconcileMode.CREATE_MOTION,
+            freeform_note="揮手",
+        )
+    )
+
+    # Motion's scene constraints are present.
+    assert "transparent background (match base)" in output.final_prompt
+    # No avoid clauses for motion (those would all be base/alias-specific).
+    assert "preserve character's appearance" not in output.final_prompt
+    assert "no identity morphing" not in output.final_prompt
+    # Composition still ends with the user note (no trailing avoid block).
+    assert output.final_prompt.rstrip(".").endswith("an elegant figure in classical attire")
+
+
+async def test_user_prompt_presents_scene_and_avoid_blocks_separately(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """The LLM needs to know which constraints will be injected before vs
+    after its translation, so it can flag user-note conflicts against
+    BOTH lists without restating either in `reconciled_note_en`."""
+    client = FakeReconcilerClient(_no_conflict_response)
+    rec = PromptReconciler(redis=fake_redis, client=client)
+
+    await rec.reconcile(
+        ReconcileInput(
+            mode=ReconcileMode.CREATE_BASE,
+            freeform_note="某個補述",
+        )
+    )
+
+    assert len(client.calls) == 1
+    _, user_prompt = client.calls[0]
+    assert "Platform scene constraints" in user_prompt
+    assert "Platform avoid constraints" in user_prompt
+    # Both blocks are rendered with the actual entries.
+    assert "transparent background" in user_prompt
+    assert "no watermarks or signatures" in user_prompt
