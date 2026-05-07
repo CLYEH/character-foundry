@@ -242,6 +242,96 @@ async def test_edit_inpaint_rejects_empty_mask(
     assert await fake_redis.zcard("circuit:gpt-image-2:failures") == 0
 
 
+# --------------------------------------------------------------------------- alpha convention
+#
+# Regression: InpaintCanvas (web/src/components/aliases/InpaintCanvas.tsx)
+# exports masks where the user's painted region is OPAQUE (alpha=255) and
+# the untouched canvas is TRANSPARENT (alpha=0) — the natural Konva
+# `layer.toCanvas` output.  OpenAI's `/v1/images/edits` contract is the
+# opposite: alpha=0 marks the edit region; alpha=255 means preserve.
+# Without an inversion the user's "edit here" stroke is read by OpenAI as
+# "preserve here", and the rest of the canvas (mostly transparent) is
+# treated as the edit region — the model regenerates almost the entire
+# image while keeping only the small painted region intact, exactly
+# opposite from user intent.
+
+
+def _extract_multipart_part(body: bytes, content_type: str, name: str) -> bytes:
+    """Return the binary content of a named part in a multipart body.
+
+    The httpx client uses standard RFC 7578 multipart so a boundary split
+    is enough — no need to pull in `python-multipart` for this one test.
+    """
+    boundary = content_type.split("boundary=", 1)[1].encode("latin-1")
+    sep = b"--" + boundary
+    for part in body.split(sep):
+        marker = f'name="{name}"'.encode("latin-1")
+        if marker not in part:
+            continue
+        head_end = part.index(b"\r\n\r\n") + 4
+        # Strip trailing \r\n that precedes the next boundary.
+        return part[head_end:].rstrip(b"\r\n")
+    raise AssertionError(f"multipart part name={name!r} not found")
+
+
+async def test_edit_inpaint_inverts_frontend_alpha_to_openai_convention(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """The wire mask must use OpenAI's convention (alpha=0 = edit) even
+    when the caller hands in a mask in the frontend's natural convention
+    (painted region = alpha=255). See header comment for why."""
+    base = _make_rgba_png(32, 32, alpha=255)
+
+    # Frontend-style mask: 32×32 transparent canvas with a small opaque
+    # 8×8 "stroke" at the center — the shape Konva's `layer.toCanvas`
+    # produces after the user paints once.
+    mask_im = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+    for y in range(12, 20):
+        for x in range(12, 20):
+            mask_im.putpixel((x, y), (255, 255, 255, 255))
+    buf = io.BytesIO()
+    mask_im.save(buf, format="PNG")
+    frontend_mask = buf.getvalue()
+
+    captured: dict[str, bytes | str] = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content
+        captured["content_type"] = request.headers.get("content-type", "")
+        return _success_response(request)
+
+    client = _make_client(fake_redis, _handler)
+    try:
+        await client.edit_inpaint(
+            base_image_bytes=base,
+            mask_png_bytes=frontend_mask,
+            prompt="x",
+        )
+    finally:
+        await client.aclose()
+
+    sent_mask_bytes = _extract_multipart_part(
+        captured["body"],  # type: ignore[arg-type]
+        captured["content_type"],  # type: ignore[arg-type]
+        "mask",
+    )
+    sent_mask = Image.open(io.BytesIO(sent_mask_bytes)).convert("RGBA")
+    alpha = sent_mask.getchannel("A")
+
+    painted_alpha = alpha.getpixel((16, 16))
+    unpainted_alpha = alpha.getpixel((0, 0))
+    assert painted_alpha == 0, (
+        f"painted region (user 'edit here') must be alpha=0 on the wire "
+        f"(OpenAI 'edit' convention); got alpha={painted_alpha}. The mask "
+        f"is being shipped to OpenAI in the frontend's convention without "
+        f"inversion — see header comment in this test section."
+    )
+    assert unpainted_alpha == 255, (
+        f"unpainted region must be alpha=255 on the wire (OpenAI "
+        f"'preserve' convention); got alpha={unpainted_alpha}."
+    )
+
+
 # --------------------------------------------------------------------------- resilience
 
 
