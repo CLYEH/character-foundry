@@ -517,6 +517,76 @@ async def test_motion_mode_unchanged_no_avoid_block(
     assert output.final_prompt.rstrip(".").endswith("an elegant figure in classical attire")
 
 
+async def test_constraint_yaml_content_change_invalidates_cache(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-050 codex round-2: editing a constraint string in
+    `platform_constraints.yaml` without bumping `version:` must still
+    shift the cache key. `_logic_version` now hashes the loaded constraint
+    payload alongside SYSTEM_PROMPT + MENU_FRAGMENTS so the safety net
+    no longer relies on operators remembering to bump the version.
+    """
+    from app.core.platform_constraints import PlatformConstraints
+
+    client = FakeReconcilerClient(_no_conflict_response)
+    rec = PromptReconciler(redis=fake_redis, client=client)
+    inp = ReconcileInput(mode=ReconcileMode.CREATE_BASE, freeform_note="補述")
+
+    await rec.reconcile(inp)
+    assert len(client.calls) == 1
+
+    # Mutate the YAML content (different wording) but keep version unchanged.
+    mutated = PlatformConstraints(
+        version="v1.2",
+        updated_at="2026-05-07",
+        base_creation=("transparent background", "different wording here"),
+        base_creation_avoid=("no watermarks or signatures",),
+        alias_creation=(),
+        alias_creation_avoid=(),
+        motion_creation=(),
+        motion_creation_avoid=(),
+    )
+    monkeypatch.setattr(
+        "app.prompt.reconciler.load_platform_constraints",
+        lambda: mutated,
+    )
+
+    await rec.reconcile(inp)
+    assert len(client.calls) == 2
+
+
+async def test_final_prompt_has_no_double_period_when_note_ends_with_one(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """T-050 codex round-2: SYSTEM_PROMPT principle 4 (literal-text
+    handling) shows the LLM a period-terminated example, so the
+    reconciled note may legitimately end in `.`. The composer must strip
+    trailing periods before joining so we never emit `... "GUIDE".. <next>`.
+    """
+
+    def _note_with_trailing_period(_s: str, _u: str) -> dict[str, Any]:
+        return {
+            "reconciled_note_en": 'wearing a badge that reads "GUIDE".',
+            "removed_segments": [],
+        }
+
+    client = FakeReconcilerClient(_note_with_trailing_period)
+    rec = PromptReconciler(redis=fake_redis, client=client)
+
+    output = await rec.reconcile(
+        ReconcileInput(
+            mode=ReconcileMode.CREATE_BASE,
+            freeform_note="戴著寫著導覽員的徽章",
+        )
+    )
+
+    assert ".." not in output.final_prompt
+    # Final prompt still ends with exactly one terminating period.
+    assert output.final_prompt.endswith(".")
+    assert not output.final_prompt.endswith("..")
+
+
 async def test_user_prompt_presents_scene_and_avoid_blocks_separately(
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:

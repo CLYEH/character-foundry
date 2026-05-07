@@ -38,6 +38,7 @@ from typing import Any
 from redis.asyncio import Redis
 
 from app.ai.reconciler_client import ReconcilerClient, get_reconciler_client
+from app.core.platform_constraints import load_platform_constraints
 from app.prompt.constraints import (
     ReconcileMode,
     get_avoid_constraints_for_mode,
@@ -111,8 +112,9 @@ class PromptReconciler:
         "\n"
         "SCOPE OF THE PROMPTING PRINCIPLES BELOW\n"
         "Apply principles 1-5 ONLY to create_base, create_base_with_ref, and "
-        "create_alias (gpt-image targets). For create_motion, apply only "
-        "rule 0 (translate + flag conflicts) and skip enrichment.\n"
+        "create_alias (gpt-image targets). For create_motion, follow only the "
+        "baseline behaviour described in YOUR TASK / CONFLICT HANDLING — "
+        "translate the note and flag conflicts, but skip enrichment.\n"
         "\n"
         "YOUR TASK\n"
         "Given (1) menu selections, (2) a freeform user note in Chinese, and "
@@ -272,17 +274,30 @@ class PromptReconciler:
         return f"{_CACHE_KEY_PREFIX}{digest}"
 
     def _logic_version(self) -> str:
-        """SHA-256 prefix of the reconciler's prompt + menu mapping.
+        """SHA-256 prefix of the reconciler's prompt + menu mapping +
+        constraint YAML payload.
 
         Computed on each cache-key call; the hash is microseconds-cheap
-        compared to the LLM hop it gates. Updating SYSTEM_PROMPT or
-        MENU_FRAGMENTS in code automatically shifts the digest and
-        invalidates entries written under the old logic.
+        compared to the LLM hop it gates (`load_platform_constraints` is
+        lru_cached). Updating SYSTEM_PROMPT, MENU_FRAGMENTS, OR any
+        constraint list in `platform_constraints.yaml` automatically
+        shifts the digest and invalidates entries written under the old
+        logic — so a YAML wording fix that forgets to bump the manual
+        `version:` field still gets picked up safely. Codex P1 (T-050).
         """
+        constraints = load_platform_constraints()
         blob = json.dumps(
             {
                 "system_prompt": self.SYSTEM_PROMPT,
                 "menu_fragments": MENU_FRAGMENTS,
+                "constraints_payload": {
+                    "base_creation": list(constraints.base_creation),
+                    "base_creation_avoid": list(constraints.base_creation_avoid),
+                    "alias_creation": list(constraints.alias_creation),
+                    "alias_creation_avoid": list(constraints.alias_creation_avoid),
+                    "motion_creation": list(constraints.motion_creation),
+                    "motion_creation_avoid": list(constraints.motion_creation_avoid),
+                },
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -473,15 +488,22 @@ class PromptReconciler:
         # (note) → avoid (preserve/avoid). The image model reads "what to
         # preserve, what to avoid" last, so it stays salient against the
         # other blocks during attention pooling.
-        parts: list[str] = []
+        #
+        # Strip a trailing period from each part before the `". "` join so
+        # parts that already end in a period (typical when the LLM emits
+        # literal-text examples like `the badge reads "GUIDE".` per
+        # SYSTEM_PROMPT principle 4) don't produce a `..` boundary.
+        # Codex P1 (T-050) round-2.
+        raw_parts: list[str] = []
         if scene:
-            parts.append(", ".join(scene))
+            raw_parts.append(", ".join(scene))
         if menu_fragments:
-            parts.append(", ".join(menu_fragments))
+            raw_parts.append(", ".join(menu_fragments))
         if reconciled_note_en:
-            parts.append(reconciled_note_en)
+            raw_parts.append(reconciled_note_en)
         if avoid:
-            parts.append(", ".join(avoid))
+            raw_parts.append(", ".join(avoid))
+        parts = [p.rstrip(".").rstrip() for p in raw_parts if p.rstrip(".").rstrip()]
         final_prompt = ". ".join(parts) + ("." if parts else "")
         return ReconcileOutput(
             final_prompt=final_prompt,
