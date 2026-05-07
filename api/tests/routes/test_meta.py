@@ -13,7 +13,7 @@ def test_meta_returns_five_preset_motions_and_versions(client: TestClient) -> No
     body = resp.json()
 
     assert body["api_version"] == "v1"
-    assert body["platform_constraints_version"] == "v1.1"
+    assert body["platform_constraints_version"] == "v1.2"
     assert body["models"] == {
         "image": "gpt-image-2",
         "video": "veo-3.1",

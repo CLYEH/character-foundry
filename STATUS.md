@@ -1,6 +1,6 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-05-03 — T-044 closes T-042's last follow-up by adding `tests/ai/test_gpt_image_2_contract.py`: 6 in-memory contract tests (one per gpt-image client method, plus a 2nd path for `edit_image2image` with-refs / no-refs) that pin the wire body against the OpenAI gpt-image schema mirror. Existing tests only matched body substrings; this set asserts the JSON / multipart field set is a subset of the gpt-image-allowed enum and explicitly forbids `response_format` / `seed` / `quality="hd"` (the three params T-042 stripped out). Sprint 3 follow-up backlog from T-042 / T-045 / T-046 / T-047 / T-048 now fully cleared. Previous sprint head: T-041 (M3 e2e smoke).
+> **Last updated:** 2026-05-07 — T-050 (TODO, awaiting user verification) reconciler prompt tuning vs OpenAI image-gen cookbook: SYSTEM_PROMPT全面 rewrite 注入 cookbook 5 大 prompting 原則 (structure / photographic vocab / people hints / literal text / edit preservation)；`platform_constraints.yaml` v1.1 → v1.2 新增 `base_creation_avoid` + `alias_creation_avoid` block; `menu_fragments.py` style 4 個 option 從單行擴成完整描述（lens / lighting / texture）；final prompt 組裝順序改成 cookbook 推薦的 scene → menu → note → avoid。Scope 限定 gpt-image 路徑 (base / alias)，motion / i2v 端 prompt tuning 之後另開單。Cache via `_logic_version` + `constraint_version` 自動失效。Tests: 236 passed / 255 skipped。Previous: T-044 closes T-042's last follow-up by adding `tests/ai/test_gpt_image_2_contract.py`.
 > **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 done（T-029 ~ T-041，13 張全部 done，M3 達成）**
 
 ---
@@ -86,6 +86,7 @@
 | T-047 | Aspect-ratio dropdown + framing guidance（head cropping fix）| DONE |
 | T-048 | Sync planning docs（T-042 / T-045 / T-046 / T-047）+ yaml bind-mount in dev override | DONE |
 | T-049 | Require e2e happy path for routing / new-page / critical-action PRs（process gate）| DONE |
+| T-050 | Reconciler prompt tuning vs OpenAI image-gen cookbook（gpt-image only；i2v 之後另開單） | TODO（awaiting user verification） |
 
 **Dependency / parallelization plan：** 見 `tickets/PARALLEL_WORKFLOW.md`。Wave A（T-029 / T-030 / T-035 / T-036 / T-040）可立即平行開工。
 

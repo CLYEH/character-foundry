@@ -55,11 +55,30 @@ MENU_FRAGMENTS: Final[dict[str, dict[str, str]]] = {
         "average": "average build",
         "athletic": "athletic build",
     },
+    # T-050: style fragments are descriptive enough on their own to engage
+    # the target gpt-image render mode (cookbook: "photorealistic" alone
+    # is a weak signal — pair it with lens / lighting / texture / framing
+    # cues so the model commits to the intended look). Updates here ripple
+    # via `_logic_version` so cached prompts auto-invalidate.
     "style": {
-        "realistic": "photorealistic portrait",
-        "anime": "anime style, 2D illustration",
-        "ink_wash": "traditional Chinese ink wash painting style",
-        "watercolor": "soft watercolor illustration",
+        "realistic": (
+            "photorealistic portrait, natural skin texture with visible pores "
+            "and subtle imperfections, soft diffuse lighting, 50mm lens, "
+            "shallow depth of field, candid unposed feel"
+        ),
+        "anime": (
+            "anime style, 2D cel-shaded illustration, clean line art, flat "
+            "colors with soft shading, expressive eyes"
+        ),
+        "ink_wash": (
+            "traditional Chinese ink wash painting, sumi-e style, varied "
+            "brush strokes, monochrome with subtle gray washes, generous "
+            "negative space"
+        ),
+        "watercolor": (
+            "soft watercolor illustration, visible paper texture, gentle "
+            "color bleeds, loose brush strokes, pastel palette"
+        ),
     },
 }
 
