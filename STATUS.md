@@ -1,6 +1,6 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-05-07 — T-050 merged (#69, commit 05a0ceb) reconciler prompt tuning vs OpenAI image-gen cookbook: SYSTEM_PROMPT全面 rewrite 注入 cookbook 5 大 prompting 原則 (structure / photographic vocab / people hints / literal text / edit preservation)；`platform_constraints.yaml` v1.1 → v1.2 新增 `base_creation_avoid` + `alias_creation_avoid` block; `menu_fragments.py` style 4 個 option 從單行擴成完整描述（lens / lighting / texture）；final prompt 組裝順序改成 cookbook 推薦的 scene → menu → note → avoid。Scope 限定 gpt-image 路徑 (base / alias)，motion / i2v 端 prompt tuning 之後另開單。Cache via `_logic_version` + `constraint_version` 自動失效（含 YAML payload，防止 wording 改動忘 bump version）。Codex review 跑了 3 round（rule-0 reference / YAML hash / double-period strip + period-then-whitespace ordering），都採納。Previous: T-044 closes T-042's last follow-up by adding `tests/ai/test_gpt_image_2_contract.py`.
+> **Last updated:** 2026-05-08 — T-051 opened: Veo 3.1 RAI filter 走「`done: true` 但無 videos」shape，目前被 `_fetch_video_bytes` 誤分類為 `MODEL_INVALID_REQUEST` 並硬塞「returned 4xx」字串（user 真機 task `371fc9a8` 命中）。Google 已知 RAI false positive 多（`googleapis/js-genai#1272`）。本單會偵測 `raiMediaFilteredCount` / `raiMediaFilteredReasons`、新增 retryable 的 `MODEL_CONTENT_FILTERED`、加 post-submit RAI retry 小預算（env `VEO_RAI_MAX_RETRIES` default 2），並 audit 修掉 `model_invalid_request` template 在非 4xx 路徑硬塞「returned 4xx」的 5 個誤報點。Previous: T-050 merged (#69, commit 05a0ceb) reconciler prompt tuning vs OpenAI image-gen cookbook: SYSTEM_PROMPT全面 rewrite 注入 cookbook 5 大 prompting 原則 (structure / photographic vocab / people hints / literal text / edit preservation)；`platform_constraints.yaml` v1.1 → v1.2 新增 `base_creation_avoid` + `alias_creation_avoid` block; `menu_fragments.py` style 4 個 option 從單行擴成完整描述（lens / lighting / texture）；final prompt 組裝順序改成 cookbook 推薦的 scene → menu → note → avoid。Scope 限定 gpt-image 路徑 (base / alias)，motion / i2v 端 prompt tuning 之後另開單。Cache via `_logic_version` + `constraint_version` 自動失效（含 YAML payload，防止 wording 改動忘 bump version）。Codex review 跑了 3 round（rule-0 reference / YAML hash / double-period strip + period-then-whitespace ordering），都採納。Previous: T-044 closes T-042's last follow-up by adding `tests/ai/test_gpt_image_2_contract.py`.
 > **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 done（T-029 ~ T-041，13 張全部 done，M3 達成）**
 
 ---
@@ -87,6 +87,7 @@
 | T-048 | Sync planning docs（T-042 / T-045 / T-046 / T-047）+ yaml bind-mount in dev override | DONE |
 | T-049 | Require e2e happy path for routing / new-page / critical-action PRs（process gate）| DONE |
 | T-050 | Reconciler prompt tuning vs OpenAI image-gen cookbook（gpt-image only；i2v 之後另開單） | DONE |
+| T-051 | Veo 3.1 RAI filter 偵測 + 修 `model_invalid_request` template 誤導性「returned 4xx」字串 | TODO |
 
 **Dependency / parallelization plan：** 見 `tickets/PARALLEL_WORKFLOW.md`。Wave A（T-029 / T-030 / T-035 / T-036 / T-040）可立即平行開工。
 
