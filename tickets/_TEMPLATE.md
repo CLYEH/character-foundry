@@ -43,6 +43,30 @@
 
 ---
 
+## OAuth scope required（後端 endpoint 必填；frontend / docs / infra 票寫 `n/a`）
+
+新增 / 改動 endpoint 時，列每個 endpoint 需要的 scope。沒新增 endpoint 寫 `n/a`。
+
+| Endpoint | Scope |
+|---|---|
+| `POST /v1/...` | `character:write` |
+
+決策出處：`planning/backend/oauth-mcp-integration.md`
+
+---
+
+## MCP tool delta（agent surface 影響；無影響寫 `n/a`）
+
+這張 ticket 對 `app/mcp/tools/` registry 的影響。
+
+- **新 tool**：列 `name` / `scopes` / `bundles`
+- **修 tool**：列改了什麼
+- **無影響**：寫 `n/a`
+
+決策出處：`planning/backend/oauth-mcp-integration.md`
+
+---
+
 ## Notes
 
 任何實作 hint、已知陷阱、曾討論過的 trade-off。

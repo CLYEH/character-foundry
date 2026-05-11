@@ -92,6 +92,17 @@ Step 4：frontend + devops（並行，~0.5 + 0.5 週）
 
 **怎麼啟動：** 開新 session 時對 Claude 說「請用 agent-interface agent 的視角，從 open-questions.md 開始，把 9 條全部拍板」。auth 同 pattern（8 條全部）。Step 3 是 backend agent 視角接到 agent-interface + auth 收斂後的 spec。
 
+### 5.2.1 Plan phase 完成狀態（2026-05-07）
+
+| Step | 範圍 | 狀態 | Deliverable |
+|---|---|---|---|
+| Step 1 | agent-interface 9 條 open-questions | ✅ Done | `planning/agent-interface/open-questions.md` Round 1/2/3 決策紀錄 |
+| Step 2 | auth 8 條 open-questions | ✅ Done | `planning/auth/open-questions.md` 決策紀錄 |
+| Step 3 | backend scope decorator + MCP tool 條目 ticket 模板 | ✅ Done | `planning/backend/oauth-mcp-integration.md` + `tickets/_TEMPLATE.md` 新欄位 |
+| Step 4 | frontend authStore/login UI + devops Authentik stack | ✅ Done | `planning/frontend/oauth-integration.md` + `planning/devops/authentik-stack.md` |
+
+可開 Sprint 3.5a/b/c ticket。
+
 ### 5.3 暫定時序（plan phase 收斂後）
 
 | 階段 | 內容 | 估時 |

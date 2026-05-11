@@ -113,3 +113,28 @@ per agent-interface 設計，MCP server 接 streamable HTTP transport，agent cl
 ## 決策時點
 
 跟 agent-interface open-questions 同一輪 review（M3 收尾 / Wave G ship 後）。Auth 與 agent-interface 強耦合，必須一起定。
+
+---
+
+## 決策紀錄
+
+### 2026-05-07（auth agent 視角，user confirmed，Step 2 完成）
+
+**前置 context**：agent-interface Step 1 已完成（Round 1/2/3 全 9 條），其中 4 條 auth 問題從上游 cascade 已決（Q2 / Q3 / Q5 / Q8）。本輪只處理剩餘 4 條真決定（Q1 / Q4 / Q6 / Q7）。
+
+| Q | Decision | 備註 |
+|---|---|---|
+| **Q1** | **Authentik (OSS, self-hosted) + Google Workspace 當 upstream IdP** | OAuth provider 用 Authentik OSS（免費 tier 涵蓋所有需要功能：OIDC、PRM、DCR-off、Client Credentials、custom scope）；UX 上提供「Sign in with Google」用公司 Workspace 帳號。對齊 B3 內網自架；避開 Google Identity 整套接管會踩到的三個雷（M2M JWT bearer assertion 不是 Client Credentials / 無法 host PRM / custom scope 不在 Google 框架）|
+| **Q2** | ✅ 由上游決定 | agent-interface Round 2 前提：delegation（Auth Code + PKCE）+ M2M（Client Credentials）並存 |
+| **Q3** | ✅ 由上游決定 | agent-interface Q5 sub-5a：5 條 scope（`character:read` / `character:write` / `task:read` / `task:cancel` / `usage:read`）+ narrow default + per-client 覆寫 |
+| **Q4** | **簡化 dual-stack：1 sprint 完成** | OAuth 上線後新 login 走 OAuth；既有 JWT session 自然到期消失；`auth.py` 兩條 path 並存 ~3 週後刪 JWT path。doc 原 4 階段（dual-stack → 410 Gone → refresh disabled → code 移除）是 enterprise 場景，Phase 1 single user 過度複雜 |
+| **Q5** | ✅ 由上游決定 | agent-interface Q6：signed URL 維持獨立 JWT，與 OAuth 完全解耦（`STORAGE_SIGNED_URL_SECRET` 不動、TTL 7d 不縮）|
+| **Q6** | **重用既有 `refresh_token` table + 加 `token_source` 欄位**（`jwt` / `oauth`）| Round 2 5b 已決 delegated agent 無 refresh → refresh 只給 human OAuth session；既有 table 加 enum 欄位，migration 簡單 |
+| **Q7** | **軟切換** | 既有 JWT session 跑到自然到期不強制登出；Login UI 直接換 OAuth flow（不放 banner，single user 不需要過渡 UX）|
+| **Q8** | ✅ 由上游決定 | agent-interface Q7 sub-7a（same-process）+ sub-7c（allowlist 驗 token）：MCP server 自己驗 token + scope，與 backend `/v1/*` 走相同 token middleware |
+
+---
+
+## Step 2 完成（2026-05-07）
+
+8 條 open-questions 全部拍板（4 條真決定 + 4 條從上游 cascade）。下一步切換 backend agent 視角做 Step 3：endpoint scope decorator + MCP tool 條目該怎麼長進每張 ticket 模板。
