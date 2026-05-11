@@ -106,3 +106,76 @@ agent 怎麼知道 i2v / image gen 進度？
 ## 決策時點
 
 建議在 M3 收尾時（Sprint 3 W-G ship 後）跟使用者過一次這份清單，定案後才動 implementation。
+
+---
+
+## 決策紀錄
+
+### Round 1（2026-05-03，agent-interface agent 視角，user confirmed）
+
+| Q | Decision | 備註 |
+|---|---|---|
+| **Q1** | **Streamable HTTP** | OAuth Bearer header 直接接，SSE 內建。耦合 auth Q8 |
+| **Q2** | **混合：核心流程 packaging + CRUD 1:1** | packaged tool: `character.create` / `character.add_alias` / `motion.generate` / `character.export`；CRUD（list / get / rename / delete）保 1:1 |
+| **Q3** | **Option A — tool 阻塞 + MCP `notifications/progress`** | 走 MCP first-class primitive，agent 不必感知 task system。實作 gotcha 見下方 |
+| **Q4** | **Dotted namespace**（例：`character.create`） | 可組成階層；避免 snake_case 平展長期擠名 |
+
+### Q3 實作 gotcha（Sprint 3.5b 開單時必處理）
+
+1. **Python SDK 版本 pin**：`mcp` 套件須 ≥ 包含 PR #2038 的 release（2026-02-18 merge，修 `ctx.report_progress()` 在 streamable HTTP 下 `related_request_id` 漏帶導致 notification 走錯 stream）。Smoke test 必須**真的**斷言 notification 跨 streamable HTTP 有送達，不只靠 SDK 自家 unit test。
+2. **nginx `proxy_read_timeout` ≥ 180s** for `/mcp` 路徑。i2v 跑 30–120s，nginx 預設 60s 會在 SSE stream 中段剪斷。step 4 devops 必須處理（比照既有 `/v1/tasks/{id}/stream` 配置）。
+3. **`Last-Event-ID` resumability** 是必要不是 nice-to-have。i2v 任務貴，spec 又明確說斷線**不能**當 cancel；server 對每個 SSE event 賦 monotonic id，client 重連帶 `Last-Event-ID` header 拿斷點之後的訊息。獨立開一張 Sprint 3.5b ticket。
+
+### Round 2（2026-05-07，agent-interface agent 視角，user confirmed）
+
+**前提決策（refocus）**：Phase 1 同時支援兩條 grant：
+- **Delegation**（Auth Code + PKCE）— 給 human user + 人授權的 agent（例：你授權 Claude Code 用你身分）
+- **M2M**（Client Credentials）— 給 headless agent（例：`cf-test-agent` 跑 CI smoke、未來 batch cleanup）
+
+| Q | Decision | 備註 |
+|---|---|---|
+| **Q5** | **Strict tier 模型 + 3 sub（見下）** | 耦合 auth Q3（scope 清單）、auth Q5（signed URL 解耦） |
+| **Q6** | **Lock：signed URL 維持獨立 JWT，與 OAuth 完全解耦** | `STORAGE_SIGNED_URL_SECRET` 不動；TTL 7d 不縮（人貼 URL 到 Notion / Slack 場景）；S3 cutover 時再評估 |
+| **Q7** | **3 sub（見下）** | 耦合 devops（docker stack 不多 service）+ nginx config |
+
+#### Q5 sub-decisions
+
+- **5a. M2M scope 顆粒度** → **Narrow default + per-client 覆寫**。Allowlist 內定 `M2M_DEFAULT_SCOPES = ["character:write", "task:read"]`；個別 client（如 `cf-test-agent`）在 `app/auth/mcp_clients.py` 顯式覆寫拿全 5 個 scope。理由：default 安全（不熟的 agent 自動 narrow），CI 等需要全套的顯式覆寫，2 行 config。
+- **5b. Delegated agent token TTL** → **1h、無 refresh**。理由：delegation = agent 借 user 身分行動，30d refresh 等於把「代刷權」交出去 30 天，blast radius 太大；1h 一次性符合 agent 任務型用法。常駐 agent 場景出現再評估開 refresh。
+- **5c. `*:admin` scope** → **不開**。理由：Phase 1 single user single team 沒 admin/member 分層；Phase 2 multi-team 時 scope 整體要重設計，預留省不到工。
+
+#### Q7 sub-decisions
+
+- **7a. MCP server 位置** → **Same-process**（FastAPI sub-app `/mcp`）。理由：共用 DB session / AgentError / task 系統，無跨網路 overhead，docker stack 不多 service；獨立 container Phase 1 過早優化。
+- **7b. 網路邊界** → **LAN 可達**（nginx 不限 IP）。理由：security 靠 OAuth + allowlist 守，不靠 IP boundary；之後從手機 / 別台機器 demo 不會卡。
+- **7c. Client 註冊** → **Pre-registered allowlist（Figma 模式）**。Allowlist 存 `app/auth/mcp_clients.py` module-level dict（同時涵蓋 delegated client 與 M2M client）。Phase 1 預定登記：`claude-code` / `vs-code` / `cursor` / `cf-test-agent`。理由：Phase 1 client < 5，DCR 開等於任何 agent 自我註冊就能進，反而擴大攻擊面；OAuth 2.1 spec 允許不開 DCR。
+
+### Round 3（2026-05-07，agent-interface agent 視角，user confirmed）
+
+| Q | Decision | 備註 |
+|---|---|---|
+| **Q8** | **Independent versioning** — MCP tool surface 自己 v1 / v2，與 REST `/v1` 解耦 | 核心 packaging tool 吃合多個 REST endpoint，REST 增刪欄位 MCP tool 內部可吸收；REST `/v2` 不強迫 MCP 一起跳 |
+| **Q9** | **Blacklist by category**（先定原則，實作時 enumerate） | 細目落地在 Sprint 3.5b 對 `api-shape.md §5.X` 逐條 review |
+
+#### Q9 分類
+
+- ❌ **Ops**：`/health`、未來監控 endpoint
+- ❌ **Auth**：`/v1/auth/*`（OAuth 接管，agent 不需要看 login flow）
+- ❌ **Pure-UI redirect**：例 `/v1/exports/{id}/download` 走 302 redirect，agent 用 signed URL 直接抓即可
+- ✅ **Whitelist 範疇**：`/v1/characters/*`、`/v1/aliases/*`、`/v1/motions/*`、`/v1/tasks/*`、`/v1/usage/*`、`/v1/meta`
+
+遇到不確定要不要包的 endpoint 列為待決，Sprint 3.5b 開單前對齊。
+
+---
+
+## Step 1 完成（2026-05-07）
+
+9 條 open-questions 全部拍板（Round 1 Q1-Q4 / Round 2 Q5-Q7 / Round 3 Q8-Q9）。下一步切換到 auth agent 視角，過 `../auth/open-questions.md` 8 條（Step 2）。
+
+---
+
+## 關聯來源
+
+- MCP spec progress: https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/progress
+- MCP spec streamable HTTP: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
+- Python SDK fix: https://github.com/modelcontextprotocol/python-sdk/pull/2038 (merged 2026-02-18)

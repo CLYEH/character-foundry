@@ -97,11 +97,26 @@ ZIP 匯出、Copy Character、Usage dashboard。
 ### Sprint 5 — Polish（尚未開單）
 剩餘錯誤處理、E2E coverage、效能調整。
 
-### Sprint 3.5 — Agent-native baseline（M3 ship 後展開；尚未開單）
+### Sprint 3.5 — Agent-native baseline（plan phase 完成 2026-05-07，未開單）
 **目標：** OAuth 2.1（替換 JWT）+ MCP server，外部 agent 不看 REST 文件就能跑全流程。
-**規劃：** `planning/agent-interface/`、`planning/auth/` 已開骨架；open-questions 待 M3 收尾時 review 定案後才開 ticket。
+**規劃：** ✅ 4-step plan phase 全部完成（2026-05-07）。可開 ticket。
 
-> ⚠ **開 M3.5 任何 ticket 之前必讀** `planning/agent-interface/scope.md` §5「規劃啟動順序」。M3.5 有 17 條未決 open-questions（9 + 8）彼此耦合，必須走完 4-step plan phase（agent-interface → auth → backend → frontend + devops，前 3 步嚴格序列、最後一步並行）才可以開 ticket，否則會邊做邊改大量返工。
+**Plan phase deliverable：**
+- `planning/agent-interface/open-questions.md` — Round 1/2/3 決策紀錄（9 條全鎖）
+- `planning/auth/open-questions.md` — 決策紀錄（8 條全鎖）
+- `planning/backend/oauth-mcp-integration.md` — scope decorator + MCP tool registry + CI 護欄
+- `planning/frontend/oauth-integration.md` — login UI + authStore dual-stack
+- `planning/devops/authentik-stack.md` — Authentik docker stack + persistence
+- `tickets/_TEMPLATE.md` — 新增「OAuth scope required」+「MCP tool delta」section
+
+**關鍵決策（high level）：**
+- OAuth provider：Authentik (OSS) + Google Workspace 當 upstream IdP
+- Grant types：delegation（Auth Code + PKCE）+ M2M（Client Credentials）並存
+- Scope：5 條（`character:read/write` / `task:read/cancel` / `usage:read`）+ narrow default + per-client 覆寫
+- Signed URL：維持獨立 JWT，與 OAuth 解耦
+- MCP transport：streamable HTTP, same-process FastAPI sub-app `/mcp`
+- Client 註冊：pre-registered allowlist（Figma 模式），DCR 不開
+- Migration：簡化 dual-stack，1 sprint 完成
 
 ---
 
