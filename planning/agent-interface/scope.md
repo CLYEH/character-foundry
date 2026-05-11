@@ -116,8 +116,12 @@ Step 4：frontend + devops（並行，~0.5 + 0.5 週）
 
 ## 6. 關聯文件
 
-- `open-questions.md` — 需要決策的事項
-- `mcp-surface.md`（待開）— tool schema 詳列
-- `../auth/` — OAuth 那一塊
+- `open-questions.md` — 9 條 open-questions 決策紀錄（plan phase Step 1）
+- `../auth/open-questions.md` — OAuth 8 條決策紀錄（plan phase Step 2）
+- `../backend/oauth-mcp-integration.md` — scope decorator + MCP tool registry pattern（plan phase Step 3）
+- `../frontend/oauth-integration.md` — login UI + authStore dual-stack（plan phase Step 4）
+- `../devops/authentik-stack.md` — Authentik docker stack（plan phase Step 4）
 - `../backend/api-shape.md` — REST 合約（agent surface 的起點）
 - `../product/functional-scope.md` §4.6 F-50, F-51
+
+> Tool schema 細節（input/output pydantic models）直接寫進 `app/mcp/tools/*.py`，不另開 planning doc——pydantic 本身即規格。
