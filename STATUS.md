@@ -97,9 +97,27 @@ ZIP 匯出、Copy Character、Usage dashboard。
 ### Sprint 5 — Polish（尚未開單）
 剩餘錯誤處理、E2E coverage、效能調整。
 
-### Sprint 3.5 — Agent-native baseline（plan phase 完成 2026-05-07，未開單）
+### Sprint 3.5 — Agent-native baseline（plan phase 完成 2026-05-07，3.5a 已開單）
 **目標：** OAuth 2.1（替換 JWT）+ MCP server，外部 agent 不看 REST 文件就能跑全流程。
-**規劃：** ✅ 4-step plan phase 全部完成（2026-05-07）。可開 ticket。
+**規劃：** ✅ 4-step plan phase 全部完成（2026-05-07）。
+
+#### Sprint 3.5a — OAuth migration（已開單，未動工）
+
+| # | Ticket | Status |
+|---|---|---|
+| T-052 | Authentik docker service 加入 stack | TODO |
+| T-053 | Authentik 設定 Google upstream IdP + client 註冊 | TODO |
+| T-054 | Backend dual-stack auth middleware（JWT + OAuth） | TODO |
+| T-055 | `refresh_token` table 加 `token_source` 欄位 | TODO |
+| T-056 | Frontend Sign in with Google + AuthCallbackPage + authStore dual-stack | TODO |
+| T-057 | E2E OAuth login smoke + dual-stack 並存測試（ship gate） | TODO |
+
+**Dependency / parallelization：**
+- T-052 / T-055 可平行起步（無 dep）
+- T-053 等 T-052；T-054 等 T-055 + T-053
+- T-056 等 T-054；T-057 等 T-056
+
+#### Sprint 3.5b / 3.5c — 未開單（3.5a ship 完再開）
 
 **Plan phase deliverable：**
 - `planning/agent-interface/open-questions.md` — Round 1/2/3 決策紀錄（9 條全鎖）
