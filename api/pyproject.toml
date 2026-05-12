@@ -42,6 +42,8 @@ dev = [
     "httpx>=0.27",
     # In-memory Redis for unit tests of arq queue + pubsub paths.
     "fakeredis>=2.20",
+    # Architecture fitness tests (T-059, Harness A2).
+    "import-linter>=2.0",
 ]
 
 [build-system]
@@ -108,3 +110,79 @@ exclude = ["alembic/"]
 [[tool.mypy.overrides]]
 module = ["pgvector.*", "alembic.*", "yaml.*"]
 ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Architecture fitness — import-linter contracts (T-059, Harness A2).
+#
+# Enforced by `tests/arch/test_layering.py`, which shells out to
+# `lint-imports --config pyproject.toml`. Failing contracts surface in PR CI
+# via the existing `pytest` step — no separate workflow needed.
+#
+# Background: planning/harness/roadmap.md §1 A2.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "app"
+
+[[tool.importlinter.contracts]]
+name = "Routes don't import ORM models directly"
+type = "forbidden"
+source_modules = ["app.api"]
+forbidden_modules = ["app.models"]
+# Only flag *direct* `from app.models...` imports inside `app.api.*`.
+# The whole point of repositories / schemas is to be a sanctioned indirect
+# bridge to ORM types; without this flag, every `route -> repository -> models`
+# chain gets flagged and the contract becomes uneditable.
+allow_indirect_imports = true
+ignore_imports = [
+    # ── Sanctioned auth-context pattern ──────────────────────────────────────
+    # `Depends(get_current_user)` exposes the User ORM row to handlers so
+    # they can do `user.id` / `user.team_id`. Long-term fix is to wrap it in
+    # a UserContext Pydantic schema (STATUS.md backlog row S3.5-1). Until
+    # then, treat these specific edges as an accepted exception, not a green
+    # light to widen ignore_imports for new code.
+    "app.api.deps -> app.models.user",
+    "app.api.routes.aliases -> app.models.user",
+    "app.api.routes.auth -> app.models.user",
+    "app.api.routes.characters -> app.models.user",
+    "app.api.routes.checkpoints -> app.models.user",
+    "app.api.routes.creation_sessions -> app.models.user",
+    "app.api.routes.motions -> app.models.user",
+    "app.api.routes.prompt -> app.models.user",
+    "app.api.routes.reference_images -> app.models.user",
+    "app.api.routes.tasks -> app.models.user",
+    # ── Real leaks ───────────────────────────────────────────────────────────
+    # `routes/characters.py` and `routes/tasks.py` still reach into other
+    # ORMs instead of going through repositories. Tracked in STATUS.md
+    # backlog row S3.5-1; remove these entries once each call site is
+    # migrated to `app.repositories.*`.
+    "app.api.routes.characters -> app.models.character",
+    "app.api.routes.characters -> app.models.creation_session",
+    "app.api.routes.characters -> app.models.base",
+    "app.api.routes.tasks -> app.models.task",
+]
+
+[[tool.importlinter.contracts]]
+name = "AI clients don't depend on the HTTP layer"
+type = "forbidden"
+source_modules = ["app.ai"]
+forbidden_modules = ["app.api"]
+# Indirect imports are forbidden here on purpose — there is no legitimate
+# `ai -> X -> api` indirection in the architecture, so a future chain via
+# `app.core` or `app.schemas` SHOULD trip this contract. Only the
+# `routes -> models` rule above turns this flag on, because repositories /
+# schemas are the sanctioned indirect bridge to ORM types.
+
+# Placeholder contract (M3.5 — T-054 / T-055):
+#
+# Once `app.mcp/` ships, both `app.mcp.*` and `app.auth.*` must source the
+# five OAuth scope literals (`character:read`, `character:write`,
+# `task:read`, `task:cancel`, `usage:read`) from one canonical module
+# (`app.auth.scopes`) rather than each redefining them. import-linter alone
+# cannot express "must import X" cleanly, so the actual enforcement is the
+# `test_oauth_scope_source_is_centralized` test in `tests/arch/test_layering.py`,
+# which activates automatically the moment `app/auth/scopes.py` exists.
+#
+# When T-054 lands, replace this comment block with the actual contract(s)
+# you need — OR keep this comment alongside a sibling `[[tool.importlinter.contracts]]`
+# block, but leave the breadcrumb in either case so the next implementer
+# knows the scope-source story.
