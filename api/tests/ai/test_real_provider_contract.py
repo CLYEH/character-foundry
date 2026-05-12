@@ -99,33 +99,29 @@ def assert_chat_completion_shape(payload: Any) -> None:
     """Pins `/v1/chat/completions` for gpt-5-mini in `json_object` mode.
 
     Source of truth: `app.ai.reconciler_client.Gpt5MiniClient._parse_chat_json`.
-    Mirrors three invariants from the prod parser, in order:
+    Mirrors four invariants from the prod parser, in order:
 
-    1. `choices[0].message.content` is a non-empty string OR a list of
+    1. `choices[0].finish_reason` is not one of the non-retryable terminal
+       states prod rejects (`length` → `MODEL_RESPONSE_TRUNCATED`,
+       `content_filter` → `prompt_content_policy`). These trigger BEFORE
+       prod even looks at content, so the sensor must too — otherwise a
+       truncated completion that happens to contain JSON-decodable text
+       passes shape but every prod call still 5xx's (Codex review round-6
+       on PR #76).
+    2. `choices[0].message.content` is a non-empty string OR a list of
        `{type: "text", text: str}` parts whose concatenation is non-empty.
-    2. That string parses via `json.loads`.
-    3. The parsed result is a JSON object (dict).
+    3. That string parses via `json.loads`.
+    4. The parsed result is a JSON object (dict).
 
-    The third invariant is what prevents the false-negative class Codex
-    review round-2 (PR #76) flagged: the provider could regress to
-    returning plain text or whitespace under `response_format:
-    json_object`, our shape check would pass (non-empty string), but
-    every prod request would 5xx at `json.loads`. Asserting JSON-
-    decodability + dict-shape catches that drift class.
+    Together these are the same checks the prod parser runs before
+    returning. JSON-decodability is structural (a parse call, not a
+    semantic validation), so it sits on the same side of the ticket's
+    "shape, not content semantics" scope line as type / existence checks.
 
-    JSON-decodability is structural, not semantic — we don't inspect the
-    parsed object's keys / values. "Is this JSON I can parse?" sits on
-    the same side of the line as "does this field exist?".
-
-    On refusal handling: the prod parser also accepts `finish_reason:
-    content_filter` and `message.refusal: str` as legal terminal states
-    (T-045 / Codex round-3/4). This shape check stays structural — a
-    refusal whose `content` is a valid JSON object will pass silently
-    (the test prompt is too benign for that to be a likely real
-    response). A *structurally degraded* refusal — null content, empty
-    text-parts, plain-text content, or non-object JSON — surfaces as
-    drift, which is the right behaviour: if our trivial probe trips one
-    of those, something has shifted worth investigating.
+    On `finish_reason: "stop"`: the normal success case. Other values
+    (`tool_calls`, future additions) aren't checked here — we only
+    reject the two prod explicitly rejects, to avoid false-flagging
+    legitimate provider additions.
     """
     if not isinstance(payload, dict):
         raise _drift("gpt-5-mini: top-level payload is not a JSON object", payload)
@@ -135,6 +131,24 @@ def assert_chat_completion_shape(payload: Any) -> None:
     first = choices[0]
     if not isinstance(first, dict):
         raise _drift("gpt-5-mini: `choices[0]` is not an object", payload)
+
+    finish_reason = first.get("finish_reason")
+    if finish_reason == "length":
+        raise _drift(
+            'gpt-5-mini: `finish_reason: "length"` — prod would raise '
+            "MODEL_RESPONSE_TRUNCATED here; raise RECONCILER_MAX_TOKENS or "
+            "shorten the input. Truncated completions with JSON-shaped "
+            "content would silently pass otherwise (Codex round-6 PR #76).",
+            payload,
+        )
+    if finish_reason == "content_filter":
+        raise _drift(
+            'gpt-5-mini: `finish_reason: "content_filter"` — prod would raise '
+            "PROMPT_CONTENT_POLICY here. The test prompt is benign, so a hit "
+            "on this branch means the policy layer has shifted under us.",
+            payload,
+        )
+
     message = first.get("message")
     if not isinstance(message, dict):
         raise _drift("gpt-5-mini: `choices[0].message` missing or not an object", payload)
@@ -522,6 +536,54 @@ def test_chat_completion_accepts_multi_part_text_with_valid_json() -> None:
 def test_chat_completion_accepts_single_string_with_valid_json() -> None:
     """Sanity: the common case — content is a single JSON-object string."""
     payload = {"choices": [{"message": {"role": "assistant", "content": '{"ok": true}'}}]}
+    assert_chat_completion_shape(payload)  # must not raise
+
+
+def test_chat_completion_drift_detects_finish_reason_length() -> None:
+    """Codex review round-6 (PR #76): a truncated completion can have
+    `finish_reason: "length"` AND a content fragment that happens to be
+    valid JSON (e.g., model finished a tiny JSON object but ate all
+    `reasoning_tokens` budget). Prod's `_parse_chat_json` raises
+    MODEL_RESPONSE_TRUNCATED on `length` BEFORE parsing content, so the
+    sensor must too — otherwise this scenario silently false-negatives."""
+    drifted = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": '{"ok": true}'},
+                "finish_reason": "length",
+            }
+        ]
+    }
+    with pytest.raises(ContractDriftError, match="finish_reason"):
+        assert_chat_completion_shape(drifted)
+
+
+def test_chat_completion_drift_detects_finish_reason_content_filter() -> None:
+    """Prod raises PROMPT_CONTENT_POLICY on `content_filter`. The test
+    prompt is benign, so hitting this branch means policy has shifted —
+    structurally identical case to `length`."""
+    drifted = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": '{"ok": true}'},
+                "finish_reason": "content_filter",
+            }
+        ]
+    }
+    with pytest.raises(ContractDriftError, match="content_filter"):
+        assert_chat_completion_shape(drifted)
+
+
+def test_chat_completion_accepts_finish_reason_stop() -> None:
+    """Sanity: the normal success terminal state."""
+    payload = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": '{"ok": true}'},
+                "finish_reason": "stop",
+            }
+        ]
+    }
     assert_chat_completion_shape(payload)  # must not raise
 
 
