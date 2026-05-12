@@ -38,7 +38,7 @@
 - [ ] `gitleaks` 加進 `.pre-commit-config.yaml` + `.github/workflows/pr.yml`
 - [ ] `bandit` + `semgrep` 加進 backend CI job
 - [ ] 三者各自跑過 baseline，false positive 列入 ignore list（gitleaks `.gitleaksignore` / bandit `# nosec` 註解附原因 / semgrep `.semgrepignore`），**禁止無說明 ignore**
-- [ ] `.env.example` 不被 gitleaks flag（已在 ignore list）
+- [ ] `.env.example` **仍在 gitleaks 掃描範圍**（不整檔 ignore；真有 placeholder 觸發 false positive 用 `gitleaks.toml` `allowlist.regexes` 對應 placeholder pattern 開白，**不可加進 `.gitleaksignore` 整檔豁免**——那會放掉一個 tracked file 的 secret coverage）
 - [ ] 故意送一個 fake secret（dummy `sk-test123456` 字串）進 PR 驗證 gitleaks 真的攔得住
 - [ ] STATUS.md 更新後 T-053 ticket 加 `Depends on: T-061`
 - [ ] 三者執行時間總和不超過 PR CI 既有時間的 +20%
