@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import os
 from importlib import resources
@@ -77,10 +78,18 @@ def _drift(message: str, payload: Any) -> ContractDriftError:
 def assert_gpt_image_generation_shape(payload: Any) -> None:
     """Pins the `/v1/images/generations` response for gpt-image-2.
 
-    Source of truth: `app.ai.gpt_image_2.GptImage2Client._parse_success`
-    reads `payload.data[0].b64_json`. Anything else is drift the client
-    would 500 on. `model` is included in the live response but the parser
-    falls back to the configured SKU, so we don't pin it here.
+    Source of truth: `app.ai.gpt_image_2.GptImage2Client._parse_success`.
+    Mirrors two invariants:
+
+    1. `payload.data[0].b64_json` exists and is a non-empty string.
+    2. That string is valid base64 (prod calls `base64.b64decode` and
+       raises on `ValueError`/`TypeError`). A drift that keeps the key
+       but ships e.g. raw bytes or URL-encoded data would pass the
+       structural check while every prod call still 5xx's (Codex review
+       round-7 on PR #76).
+
+    `model` is included in the live response but the parser falls back
+    to the configured SKU, so we don't pin it here.
     """
     if not isinstance(payload, dict):
         raise _drift("gpt-image-2: top-level payload is not a JSON object", payload)
@@ -93,25 +102,36 @@ def assert_gpt_image_generation_shape(payload: Any) -> None:
     b64 = first.get("b64_json")
     if not isinstance(b64, str) or not b64:
         raise _drift("gpt-image-2: `data[0].b64_json` missing / not a non-empty string", payload)
+    try:
+        # `validate=True` rejects whitespace / non-base64-alphabet bytes
+        # that the lenient default would silently strip, matching prod's
+        # `base64.b64decode(b64)` behaviour with strict input.
+        base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise _drift(
+            f"gpt-image-2: `data[0].b64_json` is not valid base64 "
+            f"({type(exc).__name__}: {exc}); prod `_parse_success` would 5xx here",
+            payload,
+        ) from None
 
 
 def assert_chat_completion_shape(payload: Any) -> None:
     """Pins `/v1/chat/completions` for gpt-5-mini in `json_object` mode.
 
     Source of truth: `app.ai.reconciler_client.Gpt5MiniClient._parse_chat_json`.
-    Mirrors four invariants from the prod parser, in order:
+    Mirrors five invariants from the prod parser, in order:
 
     1. `choices[0].finish_reason` is not one of the non-retryable terminal
        states prod rejects (`length` → `MODEL_RESPONSE_TRUNCATED`,
        `content_filter` → `prompt_content_policy`). These trigger BEFORE
-       prod even looks at content, so the sensor must too — otherwise a
-       truncated completion that happens to contain JSON-decodable text
-       passes shape but every prod call still 5xx's (Codex review round-6
-       on PR #76).
-    2. `choices[0].message.content` is a non-empty string OR a list of
+       prod even looks at content (Codex round-6 PR #76).
+    2. `choices[0].message.refusal` is absent / empty. Prod raises
+       `prompt_content_policy` on any non-empty refusal *before* parsing
+       content (Codex round-7 PR #76).
+    3. `choices[0].message.content` is a non-empty string OR a list of
        `{type: "text", text: str}` parts whose concatenation is non-empty.
-    3. That string parses via `json.loads`.
-    4. The parsed result is a JSON object (dict).
+    4. That string parses via `json.loads`.
+    5. The parsed result is a JSON object (dict).
 
     Together these are the same checks the prod parser runs before
     returning. JSON-decodability is structural (a parse call, not a
@@ -152,6 +172,19 @@ def assert_chat_completion_shape(payload: Any) -> None:
     message = first.get("message")
     if not isinstance(message, dict):
         raise _drift("gpt-5-mini: `choices[0].message` missing or not an object", payload)
+
+    # Prod parser (`_parse_chat_json`) checks `message.refusal` BEFORE
+    # content and raises `prompt_content_policy` on any non-empty string
+    # (Codex round-7 PR #76). A payload with both refusal AND valid JSON
+    # content would otherwise silently pass the sensor while prod fails.
+    refusal = message.get("refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        raise _drift(
+            f"gpt-5-mini: `message.refusal` is non-empty ({refusal!r:.80}) — "
+            "prod would raise PROMPT_CONTENT_POLICY here. Trivial test prompt "
+            "shouldn't trip this; a hit means policy has shifted.",
+            payload,
+        )
 
     raw_content = message.get("content")
     if isinstance(raw_content, str):
@@ -459,6 +492,23 @@ def test_gpt_image_drift_detects_empty_data() -> None:
         assert_gpt_image_generation_shape({"data": []})
 
 
+def test_gpt_image_drift_detects_invalid_base64() -> None:
+    """Codex review round-7 (PR #76): a payload with the right key but
+    a non-base64 string would pass the structural check while prod
+    `_parse_success` runs `base64.b64decode` and 5xx's. Mirror that."""
+    # `~~~not.base64~~~` has chars outside the base64 alphabet
+    drifted = {"data": [{"b64_json": "~~~not.base64~~~"}]}
+    with pytest.raises(ContractDriftError, match="not valid base64"):
+        assert_gpt_image_generation_shape(drifted)
+
+
+def test_gpt_image_accepts_valid_base64() -> None:
+    """Sanity: a real base64-encoded PNG payload (decodes cleanly)
+    passes."""
+    encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nstub-bytes").decode("ascii")
+    assert_gpt_image_generation_shape({"data": [{"b64_json": encoded}]})  # must not raise
+
+
 def test_chat_completion_drift_detects_missing_content() -> None:
     drifted = {"choices": [{"message": {"role": "assistant"}}]}
     with pytest.raises(ContractDriftError, match="not a string or text-parts"):
@@ -581,6 +631,43 @@ def test_chat_completion_accepts_finish_reason_stop() -> None:
             {
                 "message": {"role": "assistant", "content": '{"ok": true}'},
                 "finish_reason": "stop",
+            }
+        ]
+    }
+    assert_chat_completion_shape(payload)  # must not raise
+
+
+def test_chat_completion_drift_detects_non_empty_refusal() -> None:
+    """Codex review round-7 (PR #76): prod `_parse_chat_json` raises
+    `prompt_content_policy` on non-empty `message.refusal` BEFORE
+    parsing content. A payload with both valid JSON content AND a
+    refusal would be marked healthy by the sensor while prod rejects."""
+    drifted = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": '{"ok": true}',
+                    "refusal": "I cannot help with that.",
+                }
+            }
+        ]
+    }
+    with pytest.raises(ContractDriftError, match="refusal"):
+        assert_chat_completion_shape(drifted)
+
+
+def test_chat_completion_accepts_null_refusal() -> None:
+    """Sanity: prod parser tolerates `refusal: null` (the common form on
+    success). The sensor must too."""
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": '{"ok": true}',
+                    "refusal": None,
+                }
             }
         ]
     }
