@@ -148,36 +148,45 @@ jobs:
               '```',
             ].join('\n');
 
-            // Dedupe: if an open `provider-drift` issue exists that was
-            // created within the last 24h, comment on it with the new run
-            // URL rather than opening a fresh issue. Three consecutive
-            // nightly failures for the same persistent drift should be
-            // one issue + two comments, not three issues — that's alert
-            // fatigue. The 24h window still lets independently-occurring
-            // drifts (next-day rollout) open separate issues so the
-            // `provider-drift` label tracks distinct events for retro
-            // analysis (operations.md §7.4 trend tracking).
+            // Dedupe: if an open `provider-drift` issue has been touched
+            // (created or commented on) within the lookback window,
+            // comment on it instead of opening a fresh issue. Three
+            // consecutive nightly failures for the same persistent
+            // drift should be one issue + N comments, not N issues —
+            // that's the alert-fatigue goal.
             //
-            // KNOWN LIMITATION (T-064 follow-up): this dedup is time-
-            // based only — two distinct failures within 24h (e.g.,
-            // OpenAI schema drift in the morning + Veo outage in the
-            // evening) currently collapse into one thread. Rare in
-            // practice (one nightly fire + occasional manual dispatch),
-            // but T-064 will key dedup on a failure signature (failing
-            // test name → provider tag in issue title) so distinct
-            // providers stay separate. Deferred from T-058 PR #76
-            // Codex round-3; tracked in tickets/T-064-*.md.
+            // Why `updated_at` not `created_at`, and why 72h not 24h
+            // (Codex PR #76 review round-5): GH Actions cron is best-
+            // effort with up to multi-minute jitter under platform
+            // load. With `created_at` + a hard 24h window, the second
+            // nightly fire at `T0 + 24h + jitter` falls *outside* the
+            // window and a brand-new issue gets filed — defeating the
+            // dedup intent on the very next night, especially when
+            // jitter compounds across days. `updated_at` self-extends
+            // (each comment refreshes the bucket), and a 72h fallback
+            // window covers up to 3 nightly fires with cumulative
+            // jitter slack.
+            //
+            // KNOWN LIMITATION (T-064 follow-up): dedup is still time-
+            // and-state-based only, not signature-based — two distinct
+            // failures within the window (e.g., OpenAI schema drift +
+            // Veo outage on the same week) currently collapse into one
+            // thread. Rare in practice; T-064 will compose signature
+            // dedup on top of this window so distinct provider
+            // failures stay separate. Deferred from T-058 PR #76 Codex
+            // round-3; tracked in tickets/T-064-*.md.
             const open = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               labels: 'provider-drift',
               state: 'open',
               per_page: 10,
-              sort: 'created',
+              sort: 'updated',
               direction: 'desc',
             });
-            const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
-            const recent = open.data.find(i => new Date(i.created_at).getTime() >= dayAgo);
+            const lookbackMs = 72 * 60 * 60 * 1000;
+            const cutoff = Date.now() - lookbackMs;
+            const recent = open.data.find(i => new Date(i.updated_at).getTime() >= cutoff);
 
             if (recent) {
               await github.rest.issues.createComment({
