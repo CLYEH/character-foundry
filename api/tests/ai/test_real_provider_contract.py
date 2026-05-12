@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 from importlib import resources
 from typing import Any
@@ -97,23 +98,34 @@ def assert_gpt_image_generation_shape(payload: Any) -> None:
 def assert_chat_completion_shape(payload: Any) -> None:
     """Pins `/v1/chat/completions` for gpt-5-mini in `json_object` mode.
 
-    Source of truth: `app.ai.reconciler_client.Gpt5MiniClient._parse_chat_json`
-    accepts `choices[0].message.content` as either a string or a list of
-    `{type: "text", text: str}` parts. We mirror that union here so a
-    nightly probe where the provider switches to the parts form doesn't
-    false-positive.
+    Source of truth: `app.ai.reconciler_client.Gpt5MiniClient._parse_chat_json`.
+    Mirrors three invariants from the prod parser, in order:
+
+    1. `choices[0].message.content` is a non-empty string OR a list of
+       `{type: "text", text: str}` parts whose concatenation is non-empty.
+    2. That string parses via `json.loads`.
+    3. The parsed result is a JSON object (dict).
+
+    The third invariant is what prevents the false-negative class Codex
+    review round-2 (PR #76) flagged: the provider could regress to
+    returning plain text or whitespace under `response_format:
+    json_object`, our shape check would pass (non-empty string), but
+    every prod request would 5xx at `json.loads`. Asserting JSON-
+    decodability + dict-shape catches that drift class.
+
+    JSON-decodability is structural, not semantic — we don't inspect the
+    parsed object's keys / values. "Is this JSON I can parse?" sits on
+    the same side of the line as "does this field exist?".
 
     On refusal handling: the prod parser also accepts `finish_reason:
     content_filter` and `message.refusal: str` as legal terminal states
-    (T-045 / Codex round-3/4). This shape check is *structural* only — a
-    refusal that returns a non-empty string in `content` will pass
-    silently (the test prompt is too benign for that to be a likely real
-    response, and validating "this is not a refusal" semantically is out
-    of scope for a shape sensor). A *structurally degraded* refusal —
-    null/empty `content` with no text-parts list — will surface as drift,
-    which is the right behaviour: if our trivial probe trips a hard
-    refusal, something has shifted in the model's policy layer worth
-    investigating.
+    (T-045 / Codex round-3/4). This shape check stays structural — a
+    refusal whose `content` is a valid JSON object will pass silently
+    (the test prompt is too benign for that to be a likely real
+    response). A *structurally degraded* refusal — null content, empty
+    text-parts, plain-text content, or non-object JSON — surfaces as
+    drift, which is the right behaviour: if our trivial probe trips one
+    of those, something has shifted worth investigating.
     """
     if not isinstance(payload, dict):
         raise _drift("gpt-5-mini: top-level payload is not a JSON object", payload)
@@ -126,35 +138,46 @@ def assert_chat_completion_shape(payload: Any) -> None:
     message = first.get("message")
     if not isinstance(message, dict):
         raise _drift("gpt-5-mini: `choices[0].message` missing or not an object", payload)
-    content = message.get("content")
-    if isinstance(content, str) and content:
-        return
-    if isinstance(content, list):
-        # Mirror prod parser's behaviour: concatenate all text parts and
-        # require the result is non-empty. The prod parser
-        # (`Gpt5MiniClient._parse_chat_json`) does the same join then
-        # `json.loads(content)` — a payload like
-        # `[{"type":"text","text":""}]` joins to `""` and crashes at
-        # parse time. Accepting it here as a "shape" pass would create a
-        # false-negative sensor result (Codex review feedback).
-        joined = "".join(
+
+    raw_content = message.get("content")
+    if isinstance(raw_content, str):
+        text = raw_content
+    elif isinstance(raw_content, list):
+        # Mirror prod parser: concatenate all text parts. A payload like
+        # `[{"type":"text","text":""}]` joins to `""` and fails downstream.
+        text = "".join(
             part["text"]
-            for part in content
+            for part in raw_content
             if isinstance(part, dict)
             and part.get("type") == "text"
             and isinstance(part.get("text"), str)
         )
-        if joined:
-            return
+    else:
         raise _drift(
-            "gpt-5-mini: `message.content` text-parts list yields empty concatenation "
-            "(no `{type: text, text: str}` part with non-empty text)",
+            "gpt-5-mini: `message.content` missing / not a string or text-parts list",
             payload,
         )
-    raise _drift(
-        "gpt-5-mini: `message.content` missing / not a non-empty string or text-parts list",
-        payload,
-    )
+
+    if not text:
+        raise _drift(
+            "gpt-5-mini: `message.content` resolved to empty string "
+            "(missing content, only-empty text-parts, etc)",
+            payload,
+        )
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise _drift(
+            f"gpt-5-mini: `message.content` is not valid JSON "
+            f"(json.loads error: {exc}); prod `_parse_chat_json` would 5xx here",
+            payload,
+        ) from None
+    if not isinstance(parsed, dict):
+        raise _drift(
+            f"gpt-5-mini: `message.content` parsed as {type(parsed).__name__}, "
+            "expected JSON object (dict)",
+            payload,
+        )
 
 
 def _rai_fields_present(container: Any) -> bool:
@@ -406,7 +429,7 @@ def test_gpt_image_drift_detects_empty_data() -> None:
 
 def test_chat_completion_drift_detects_missing_content() -> None:
     drifted = {"choices": [{"message": {"role": "assistant"}}]}
-    with pytest.raises(ContractDriftError, match="message.content"):
+    with pytest.raises(ContractDriftError, match="not a string or text-parts"):
         assert_chat_completion_shape(drifted)
 
 
@@ -416,24 +439,52 @@ def test_chat_completion_drift_detects_non_text_parts_list() -> None:
             {"message": {"role": "assistant", "content": [{"type": "image", "image_url": "x"}]}}
         ]
     }
-    with pytest.raises(ContractDriftError, match="empty concatenation"):
+    with pytest.raises(ContractDriftError, match="empty string"):
         assert_chat_completion_shape(drifted)
 
 
 def test_chat_completion_drift_detects_empty_text_parts() -> None:
-    """`[{"type":"text","text":""}]` is the regression case Codex flagged:
-    structurally valid shape, but the prod parser would join to `""` and
-    crash at `json.loads`. False-negative sensor unless we require the
-    concatenated text be non-empty."""
+    """`[{"type":"text","text":""}]` is structurally valid but joins to
+    `""` and prod's `_parse_chat_json` would crash at `json.loads`.
+    False-negative sensor unless we reject the empty join."""
     drifted = {
         "choices": [{"message": {"role": "assistant", "content": [{"type": "text", "text": ""}]}}]
     }
-    with pytest.raises(ContractDriftError, match="empty concatenation"):
+    with pytest.raises(ContractDriftError, match="empty string"):
         assert_chat_completion_shape(drifted)
 
 
-def test_chat_completion_accepts_multi_part_text() -> None:
-    """Sanity: concatenation of multiple non-empty text parts passes."""
+def test_chat_completion_drift_detects_non_json_plain_text() -> None:
+    """Codex review round-2 (PR #76): the provider could regress to
+    returning plain text under `response_format: json_object`. Our
+    shape check used to pass (non-empty string), but prod
+    `_parse_chat_json` runs `json.loads(content)` immediately and would
+    5xx. Lock this down."""
+    drifted = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+    with pytest.raises(ContractDriftError, match="not valid JSON"):
+        assert_chat_completion_shape(drifted)
+
+
+def test_chat_completion_drift_detects_json_array_not_object() -> None:
+    """Prod requires the parsed JSON be a dict (object), not a list /
+    scalar. A regression that returns `[1, 2]` would parse but prod
+    `_parse_chat_json` raises `chat JSON content was not an object`."""
+    drifted = {"choices": [{"message": {"role": "assistant", "content": "[1, 2, 3]"}}]}
+    with pytest.raises(ContractDriftError, match="expected JSON object"):
+        assert_chat_completion_shape(drifted)
+
+
+def test_chat_completion_drift_detects_whitespace_only_content() -> None:
+    """Whitespace-only content is technically a non-empty string but
+    `json.loads(" ")` raises ValueError — prod would 5xx."""
+    drifted = {"choices": [{"message": {"role": "assistant", "content": "   "}}]}
+    with pytest.raises(ContractDriftError, match="not valid JSON"):
+        assert_chat_completion_shape(drifted)
+
+
+def test_chat_completion_accepts_multi_part_text_with_valid_json() -> None:
+    """Sanity: concatenation of multiple non-empty text parts whose join
+    is a valid JSON object should pass."""
     payload = {
         "choices": [
             {
@@ -447,6 +498,12 @@ def test_chat_completion_accepts_multi_part_text() -> None:
             }
         ]
     }
+    assert_chat_completion_shape(payload)  # must not raise
+
+
+def test_chat_completion_accepts_single_string_with_valid_json() -> None:
+    """Sanity: the common case — content is a single JSON-object string."""
+    payload = {"choices": [{"message": {"role": "assistant", "content": '{"ok": true}'}}]}
     assert_chat_completion_shape(payload)  # must not raise
 
 
