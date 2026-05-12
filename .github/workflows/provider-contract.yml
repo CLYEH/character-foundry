@@ -157,6 +157,16 @@ jobs:
             // drifts (next-day rollout) open separate issues so the
             // `provider-drift` label tracks distinct events for retro
             // analysis (operations.md §7.4 trend tracking).
+            //
+            // KNOWN LIMITATION (T-064 follow-up): this dedup is time-
+            // based only — two distinct failures within 24h (e.g.,
+            // OpenAI schema drift in the morning + Veo outage in the
+            // evening) currently collapse into one thread. Rare in
+            // practice (one nightly fire + occasional manual dispatch),
+            // but T-064 will key dedup on a failure signature (failing
+            // test name → provider tag in issue title) so distinct
+            // providers stay separate. Deferred from T-058 PR #76
+            // Codex round-3; tracked in tickets/T-064-*.md.
             const open = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
