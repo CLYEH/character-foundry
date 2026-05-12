@@ -3,7 +3,7 @@
 **Status:** TODO
 **Sprint:** 3.5a
 **Est:** M
-**Depends on:** T-052（Authentik service 必須先起來）
+**Depends on:** T-052（Authentik service 必須先起來）, T-061（Secret scan + SAST 必須先 land，否則 `client_secret` 進 repo 歷史就晚了；見 `planning/harness/roadmap.md` §1 A4）
 **Related:** T-054（後端要驗 token，需要本單登好的 client）
 
 ---

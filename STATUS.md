@@ -101,20 +101,41 @@ ZIP 匯出、Copy Character、Usage dashboard。
 **目標：** OAuth 2.1（替換 JWT）+ MCP server，外部 agent 不看 REST 文件就能跑全流程。
 **規劃：** ✅ 4-step plan phase 全部完成（2026-05-07）。
 
-#### Sprint 3.5a — OAuth migration（已開單，未動工）
+> **2026-05-12 sequencing 決定（使用者）：** Sprint 3.5a OAuth 系列**整體 blocked on Sprint 3.5-pre harness 全完成**。Harness 蓋完才開始做 M3.5——避免 OAuth + MCP 兩個新 layer 在沒 guardrail 的狀態下落地。詳見 `planning/harness/`。
+
+#### Sprint 3.5-pre — Harness pre-flight（已開單 2026-05-12，未動工）
+
+對照 Martin Fowler "Harness Engineering for Coding Agents"，由 Harness Agent 規劃。完整 rationale 見 `planning/harness/roadmap.md`。
+
+| # | Ticket | Status |
+|---|---|---|
+| T-058 | Nightly 真 provider contract replay sensor（A1）| TODO |
+| T-059 | Architecture fitness — layering / import-direction test（A2）| TODO |
+| T-060 | Coverage gate + mutation testing on critical modules（A3）| TODO |
+| T-061 | Secret scan + SAST baseline（A4；**T-053 之前必 land**）| TODO |
+| T-062 | Subagent stack — security-engineer + db-optimizer（A5）| TODO |
+| T-063 | `CF_SKIP_REVIEW=1` audit log（A6）| TODO |
+
+**Dependency / parallelization：**
+- T-058 / T-059 / T-060 / T-062 / T-063 五張無內部 dep，可全 wave 平行
+- T-061 也無內部 dep，但**對下游 T-053 是 hard blocker**
+- 全部 land 後才解 Sprint 3.5a OAuth 系列的 sequencing block
+
+#### Sprint 3.5a — OAuth migration（已開單，未動工；blocked on Sprint 3.5-pre）
 
 | # | Ticket | Status |
 |---|---|---|
 | T-052 | Authentik docker service 加入 stack | TODO |
-| T-053 | Authentik 設定 Google upstream IdP + client 註冊 | TODO |
+| T-053 | Authentik 設定 Google upstream IdP + client 註冊（**Depends on: T-061**） | TODO |
 | T-054 | Backend dual-stack auth middleware（JWT + OAuth） | TODO |
 | T-055 | `refresh_token` table 加 `token_source` 欄位 | TODO |
 | T-056 | Frontend Sign in with Google + AuthCallbackPage + authStore dual-stack | TODO |
 | T-057 | E2E OAuth login smoke + dual-stack 並存測試（ship gate） | TODO |
 
 **Dependency / parallelization：**
-- T-052 / T-055 可平行起步（無 dep）
-- T-053 等 T-052；T-054 等 T-055 + T-053
+- 整個 Sprint 3.5a blocked on Sprint 3.5-pre 全完成（2026-05-12 決定）
+- 解 block 後：T-052 / T-055 可平行起步（無內部 dep）
+- T-053 等 T-052 **且** T-061（A4 secret scan）已 merge；T-054 等 T-055 + T-053
 - T-056 等 T-054；T-057 等 T-056
 
 #### Sprint 3.5b / 3.5c — 未開單（3.5a ship 完再開）
