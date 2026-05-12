@@ -137,6 +137,20 @@ pnpm -C web format:check  # ⚠ 推 PR 前一定要跑，CI 會擋
 # （見 .env.example：那個 URL 指到的 DB 會被 pytest DROP 所有 table，不要用主 DB）
 docker compose exec api pytest
 
+# Backend 含 coverage gate（reproduce CI；T-060）
+# `fail_under = 75` 設在 api/pyproject.toml [tool.coverage.report]，
+# 只在 --cov=app 加上去時才會觸發
+docker compose exec api pytest --cov=app --cov-report=term
+
+# Mutation testing baseline（T-060；本機 reproduce nightly workflow）
+# 範圍由 api/pyproject.toml [tool.mutmut] paths_to_mutate 控制；
+# 第一次跑會建 mutants/ workspace，之後 incremental。.harness/ bind-mount
+# 在 docker-compose.override.yml 設好，所以 --baseline 用容器內 /app/.harness 路徑
+docker compose exec api bash -lc "mutmut run && mutmut export-cicd-stats"
+docker compose exec api bash -lc "python scripts/check_mutation_drift.py \\
+  --stats mutants/mutmut-cicd-stats.json \\
+  --baseline .harness/mutation-baseline.json"
+
 # E2E（Playwright）
 pnpm -C web e2e
 ```

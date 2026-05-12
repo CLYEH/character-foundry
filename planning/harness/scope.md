@@ -92,9 +92,33 @@ Harness 包含**所有非 model 的東西**，分兩條主軸：
 
 | 主題 | 覆蓋度 | 說明 |
 |---|---|---|
-| **Maintainability** | 中 | linter / format / type / test 都有，但門檻（coverage / 複雜度）沒鎖；無 dead-code / duplication / mutation |
+| **Maintainability** | **中**（T-060 後升）| linter / format / type / test 都有；**coverage gate 已鎖**（`fail_under = 75` in `api/pyproject.toml` [tool.coverage.report]，2026-05-12 baseline 77 %，留 2 pp 緩衝）；**mutation testing baseline 已建**（`app/core/errors.py` + `app/ai/circuit.py`，nightly via `.github/workflows/mutation.yml`）。仍缺：dead-code / duplication、複雜度門檻、`app/auth/*` mutation（見 §2.5 附表的 known gap） |
 | **Architecture fitness** | **部分**（T-059 後）| `api/tests/arch/test_layering.py` + `[tool.importlinter]` 兩條 forbidden contract：(a) `app.api.*` 不直接 import `app.models.*`、(b) `app.ai.*` 不 import `app.api.*`；既有 14 條 violation 列在 ignore_imports（含 sanctioned User-as-auth-context 10 條 + 真 leak 4 條，後者由 STATUS.md backlog row S3.5-1 追蹤）。M3.5 placeholder：`test_oauth_scope_source_is_centralized` 預先寫好、`pytest.skip` 等 `app/auth/scopes.py` 由 T-054 建立後自動 activate。仍缺：perf SLO、observability convention check |
 | **Behaviour** | 中 | unit + e2e + stub mode + circuit breaker + 一條 outgoing-body contract test；無 prompt assembly snapshot、無真 provider replay、無 LLM-as-judge |
+
+#### Coverage + mutation baseline（T-060，2026-05-12 snapshot）
+
+| 軸 | 值 | 出處 |
+|---|---|---|
+| Overall backend `app/` coverage | **77 %**（5787 stmts / 1307 missed）| `pytest --cov=app` against `character_foundry_test` schema head |
+| `fail_under` 門檻 | **75 %**（2 pp 緩衝） | `api/pyproject.toml` `[tool.coverage.report]` |
+| Mutation kill rate baseline | **79.84 %**（99 killed / 124 evaluable）| `mutmut run` over `app/core/errors.py` + `app/ai/circuit.py`，tests under `tests/ai/*` + `tests/prompt_reconciler/test_reconciler.py` |
+| Drift threshold | **5 pp**（kill rate < 74.84 % → 開 `mutation-drift` issue）| `.harness/mutation-baseline.json` |
+
+##### Module-level coverage (selected, 2026-05-12)
+
+| Module | Coverage | 備註 |
+|---|---|---|
+| `app/core/errors.py` | 98 % | AgentError envelope 是 API trust boundary |
+| `app/ai/circuit.py` | 97 % | 包含在 mutation scope |
+| `app/auth/jwt.py` | 87 % | T-054 dual-stack 前置 |
+| `app/auth/passwords.py` | 100 % | T-054 dual-stack 前置 |
+| `app/auth/schemas.py` | 100 % | T-054 dual-stack 前置 |
+| `app/auth/service.py` | 53 % | T-054 dual-stack 前置；**低於整體 baseline**，建議在 OAuth migration 期間順手補 |
+
+##### Known gap：`app/auth/*` 不在 mutation scope
+
+ticket T-060 原規劃含 `app/auth/*`，實作時撞牆：`tests/auth/` 透過 `app.main` → ORM models → `pgvector` 拉 numpy，與 mutmut 3.5 in-process trampoline 衝突（`ImportError: cannot load module more than once per process`）。`pytest-forked` 能讓 test 通過，但會讓 mutmut 的 stats collection 看不到 trampoline hits（`mutate_only_covered_lines=true` 因此失效）。已在 `api/pyproject.toml` `[tool.mutmut]` 註解處留下完整 reproduce + 兩個可能修法（cosmic-ray 切換、conftest 改成 lazy import / 不打 `app.main`）。**T-054 落地前若 auth/* 仍未進 mutation scope，要在 OAuth migration PR 自帶足夠的 unit 測試補強**。
 
 ### 2.6 Lifecycle distribution
 
@@ -102,9 +126,9 @@ Harness 包含**所有非 model 的東西**，分兩條主軸：
 |---|---|---|
 | **pre-commit** | ruff / mypy / eslint / prettier | —— |
 | **pre-push** | engineering-code-reviewer subagent（可 `CF_SKIP_REVIEW=1` bypass）| 無 bypass log |
-| **PR CI** | backend lint+type+test、frontend lint+type+test、e2e on docker compose | 無 coverage gate、無 SAST、無 secret scan |
+| **PR CI** | backend lint+type+test、**coverage gate `fail_under = 75`**（T-060）、frontend lint+type+test、e2e on docker compose、arch fitness test（T-059）| 無 SAST、無 secret scan |
 | **PR 開後** | Codex App auto-review + auto-loop merge gate | —— |
-| **post-integration / nightly** | **幾乎空的** | 無 nightly real-provider replay、無 scheduled CSO audit、無 LLM-as-judge、無 SLO 回灌 |
+| **post-integration / nightly** | **provider-contract.yml**（T-058）+ **mutation.yml**（T-060）| 無 scheduled CSO audit、無 LLM-as-judge、無 SLO 回灌 |
 
 ### 2.7 Harnessability（強項）
 
@@ -139,9 +163,9 @@ Harness 包含**所有非 model 的東西**，分兩條主軸：
 按嚴重度排序：
 
 1. ~~**Architecture fitness 幾乎零**——M3.5 加 OAuth middleware + MCP server 兩個新 layer，沒 arch test 會偷偷穿層。~~ ✅ T-059 補上 baseline arch test（2026-05-12）；T-054 落地後 `test_oauth_scope_source_is_centralized` 自動 activate。
-2. **真 provider drift sensor 缺**——T-042 / T-045 / T-051 同模式三次。
-3. **OAuth 落地前該有的 sensor 還沒裝**——secret scan / SAST / mutation on auth。
-4. **Post-integration 那層幾乎空的**——nightly job 沒有 cron 設好。
+2. ~~**真 provider drift sensor 缺**——T-042 / T-045 / T-051 同模式三次。~~ ✅ T-058 補上 nightly real-provider replay（2026-05-12）。
+3. **OAuth 落地前該有的 sensor 還沒裝完**——secret scan / SAST 仍缺（T-061）。**T-060 補上 coverage gate + mutation baseline（errors + circuit）**，但 `app/auth/*` mutation 因 pgvector × mutmut 衝突 defer，見 §2.5 known gap。
+4. ~~**Post-integration 那層幾乎空的**——nightly job 沒有 cron 設好。~~ ✅ T-058 + T-060 兩條 nightly workflow 已 land（provider-contract、mutation）。
 5. **Inferential sensor stack 只有一個 subagent**——security-engineer / db-optimizer 對 M3.5 sprint 馬上要用。
 6. **CF_SKIP_REVIEW=1 沒 audit log**——觀察不到 bypass-rate 趨勢。
 7. **沒 scaffold codemod**——新 endpoint / 新 AI client / 新 MCP tool 都靠手刻。

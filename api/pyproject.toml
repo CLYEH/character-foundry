@@ -44,6 +44,11 @@ dev = [
     "fakeredis>=2.20",
     # Architecture fitness tests (T-059, Harness A2).
     "import-linter>=2.0",
+    # Mutation testing on high-trust modules (T-060, Harness A3).
+    # Runs nightly via `.github/workflows/mutation.yml`, NOT in PR CI —
+    # a full sweep over `app/core/errors.py` + `app/ai/circuit.py` +
+    # `app/auth/*` takes 30+ min and would suffocate the PR loop.
+    "mutmut>=3.0",
 ]
 
 [build-system]
@@ -78,10 +83,32 @@ markers = [
     "real_provider: contract replay against live AI providers (T-058); skipped by default, run via `pytest -m real_provider` with API keys set",
 ]
 
+# ---------------------------------------------------------------------------
+# Coverage gate (T-060, Harness A3).
+#
+# `fail_under` fires only when coverage is actually computed (i.e. callers
+# pass `--cov=app`). Local `pytest tests/auth/test_login.py` runs without
+# coverage and therefore without the gate — only the CI invocation
+# `pytest --cov=app --cov-report=term` red-CIs on regression.
+#
+# Threshold sits 2 points below the 2026-05-12 baseline of 77 % (see
+# `planning/harness/scope.md` §2.5) so legitimate variance from excluded
+# lines doesn't false-alarm. Tighten manually as coverage climbs; never
+# auto-raise (per ticket Notes — incentivises dummy tests).
+# ---------------------------------------------------------------------------
+[tool.coverage.report]
+fail_under = 75
+skip_covered = false
+show_missing = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["alembic/versions"]
+# `mutants/` is mutmut's sandbox copy of the codebase with trampoline
+# injections — see `[tool.mutmut]` below. Linting the generated files
+# is meaningless and breaks PR CI when a developer runs `mutmut run`
+# locally before pushing.
+extend-exclude = ["alembic/versions", "mutants"]
 
 [tool.ruff.lint]
 select = [
@@ -186,3 +213,69 @@ forbidden_modules = ["app.api"]
 # you need — OR keep this comment alongside a sibling `[[tool.importlinter.contracts]]`
 # block, but leave the breadcrumb in either case so the next implementer
 # knows the scope-source story.
+
+# ---------------------------------------------------------------------------
+# Mutation testing — mutmut config (T-060, Harness A3).
+#
+# Current scope: the two trust-bearing modules whose test suites stay
+# inside pure-Python territory:
+#   * `app/core/errors.py`   — AgentError envelope is the API trust boundary
+#   * `app/ai/circuit.py`    — fail-safe wrong → caller never finds out
+#
+# `app/auth/*` is part of the ticket's design intent (pre-OAuth baseline
+# for T-054) but its test suite transitively imports `app.main` → ORM
+# models → `pgvector` → numpy, which collides with mutmut 3.5's in-
+# process trampoline approach (`ImportError: cannot load module more
+# than once per process` during pytest collection on the mutated
+# workspace; reproduced 2026-05-12). Forking via `pytest-forked` works
+# at the test level but breaks mutmut's `mutate_only_covered_lines`
+# stats collection because forked subprocesses don't report trampoline
+# hits back to the parent. Deferred to a follow-up — adding auth/* later
+# is purely a `paths_to_mutate` + `tests_dir` edit + baseline rerun once
+# the isolation story is solved (cosmic-ray switch, conftest refactor,
+# or upstream mutmut fix all in play).
+#
+# Runs nightly via `.github/workflows/mutation.yml` (NOT in PR CI — a
+# full sweep takes 5–10 min today; will grow when auth/* lands). The
+# workflow compares the run's kill rate against
+# `.harness/mutation-baseline.json` and opens a `mutation-drift`-labelled
+# issue if it drops more than 5 pp.
+#
+# `mutate_only_covered_lines = true` is the speed knob: mutmut asks
+# coverage.py which lines have *any* test touching them and skips
+# mutations on the rest. Without it, mutmut wastes time on dead code
+# paths that no test could ever distinguish.
+# ---------------------------------------------------------------------------
+[tool.mutmut]
+paths_to_mutate = [
+    "app/core/errors.py",
+    "app/ai/circuit.py",
+]
+# Restrict tests to the suites that demonstrably touch the mutation
+# targets and do NOT transitively import `app.main` / ORM models. The
+# selection below was derived from a coverage trace plus a `grep -L
+# 'app\\.models\\|app\\.main'` over each `tests/<dir>/conftest.py` on
+# 2026-05-12. Anything that pulls pgvector via ORM blows the in-process
+# numpy reload guard.
+tests_dir = [
+    "tests/ai/test_circuit.py",
+    "tests/ai/test_errors.py",
+    "tests/ai/test_gpt_image_2.py",
+    "tests/ai/test_gpt_image_2_edit.py",
+    "tests/ai/test_reconciler_client.py",
+    "tests/ai/test_stub.py",
+    "tests/ai/test_veo_3_1.py",
+    "tests/prompt_reconciler/test_reconciler.py",
+]
+mutate_only_covered_lines = true
+# Files mutmut needs available in its sandbox workspace beyond the
+# defaults (`tests/`, `setup.cfg`, `pyproject.toml`, `pytest.ini`,
+# `.gitignore`). Without these, the mutated imports of `app.*` fail at
+# collection time and every mutant looks "killed" for the wrong reason
+# — a green run that proves nothing.
+also_copy = [
+    "app/",
+    "alembic/",
+    "alembic.ini",
+    "platform_constraints.yaml",
+]
