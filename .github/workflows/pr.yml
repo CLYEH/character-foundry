@@ -59,13 +59,33 @@ jobs:
         working-directory: api
         run: mypy app/
 
-      - name: Pytest
+      - name: Pytest (with coverage gate)
+        # `fail_under` lives in pyproject.toml `[tool.coverage.report]`
+        # (T-060, Harness A3). Coverage gates only fire when `--cov=app`
+        # is on the command line, so we keep the flag here and let
+        # coverage.py compare against the threshold itself. Tighten by
+        # editing `fail_under` in pyproject.toml, not by drifting the
+        # CI command away from the local `pytest --cov=app`
+        # invocation documented in README.
         working-directory: api
         env:
           TEST_DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/test
           DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/test
           REDIS_URL: redis://localhost:6379/0
-        run: pytest --cov=app --cov-report=term
+        run: pytest --cov=app --cov-report=term --cov-report=xml
+
+      - name: Upload coverage.xml
+        # 14-day retention (vs. provider-contract's 30) — coverage XML is
+        # cheap to regenerate from a re-run, and the artifact mostly
+        # exists so a reviewer can spot-check specific module gaps when
+        # the gate trips. Soft-deletion after two sprints keeps the
+        # artifact bin tidy.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: api/coverage.xml
+          retention-days: 14
 
   frontend-lint-test:
     name: frontend (lint + typecheck + test)

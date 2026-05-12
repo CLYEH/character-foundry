@@ -70,6 +70,20 @@ entities.json
 mempalace.yaml
 .mempalace/
 
+# ========================
+# Mutation testing (T-060)
+# ========================
+# `mutmut run` writes a sandbox copy of the codebase + per-mutant metadata
+# into `api/mutants/`. The sandbox is fully reproducible from
+# `[tool.mutmut]` in `api/pyproject.toml`; checking it in just bloats
+# the repo. The committed `.harness/mutation-baseline.json` is the only
+# artifact the workflow needs to keep across runs.
+api/mutants/
+api/drift-report.txt
+.coverage
+api/.coverage
+api/coverage.xml
+
 # .claude/: ignore everything by default, but track the project-shared
 # settings, agents, and hooks (per-user state like settings.local.json
 # and scheduled_tasks.lock stay out).
