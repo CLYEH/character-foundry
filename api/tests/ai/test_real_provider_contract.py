@@ -245,35 +245,43 @@ _NESTED_URI_KEYS: tuple[str, ...] = ("uri", "videoUri")
 
 
 def _video_item_payload_present(video: Any, *, uri_keys: tuple[str, ...]) -> bool:
-    """A video item must carry at least one of the form-specific URI keys
-    (string, non-empty) or `bytesBase64Encoded` (string). Otherwise the
-    prod parser `_fetch_video_bytes` in `app.ai.veo_3_1` raises
-    `model_invalid_request("video item missing both bytesBase64Encoded
-    and uri")`.
+    """A video item must carry valid payload — mirrors what prod
+    `Veo31Client._fetch_video_bytes` (veo_3_1.py:330-348) accepts:
 
-    The `uri_keys` parameter exists because prod uses *different* key
-    sets for the two response shapes (Codex review round-10 PR #76):
+    - If `bytesBase64Encoded` is a non-empty string, prod runs
+      `base64.b64decode` on it **unconditionally** and raises on
+      failure. We mirror that here — malformed b64 = drift even if a
+      valid URI is also set, because prod never falls through to the
+      URI path when `bytes_base64` is present (Codex review round-11
+      PR #76).
+    - If `bytesBase64Encoded` is absent / empty, prod falls back to
+      the URI path. The URI key set is form-specific:
+      - **Direct** `response.videos[]`: `uri_keys=("videoUri",)` —
+        only `videoUri` is recognised (round-10 fix).
+      - **Nested** `generateVideoResponse.generatedSamples[].video`:
+        `uri_keys=("uri", "videoUri")` — both keys work.
 
-    - **Direct** `response.videos[]` items go through
-      `_video_item_from(v, uri_keys=("videoUri",))` — only `videoUri`
-      is recognised. A direct item carrying only `uri` would yield a
-      hollow `_VideoItem(uri=None, ...)` and fail downstream.
-    - **Nested** `generateVideoResponse.generatedSamples[].video` items
-      go through `_video_item_from(v, uri_keys=("uri", "videoUri"))`
-      — both keys work, with `uri` preferred.
-
-    Calling code must pass the form-appropriate tuple. Sharing one
-    helper across both forms (the original implementation) created a
-    false-negative where `response.videos[0] = {"uri": "..."}` would
-    pass shape but fail prod."""
+    Sharing one helper across both forms created the round-10 false-
+    negative; ignoring `bytes_base64` decodability created the
+    round-11 one. This version mirrors prod tuple-for-tuple AND
+    matches the prefer-bytes-then-uri ordering."""
     if not isinstance(video, dict):
         return False
+    b64 = video.get("bytesBase64Encoded")
+    if isinstance(b64, str) and b64:
+        # Lenient decode to match prod's default `base64.b64decode(s)`
+        # — same calibration lesson as round 8 (don't use validate=True).
+        try:
+            base64.b64decode(b64)
+        except (binascii.Error, ValueError):
+            return False
+        return True
+    # bytes_base64 absent → fall back to URI (form-specific key set).
     for key in uri_keys:
         value = video.get(key)
         if isinstance(value, str) and value:
             return True
-    b64 = video.get("bytesBase64Encoded")
-    return isinstance(b64, str) and bool(b64)
+    return False
 
 
 def _videos_present(response: Any) -> bool:
@@ -777,6 +785,49 @@ def test_veo_drift_detects_hollow_first_nested_sample() -> None:
         assert_veo_terminal_shape(drifted)
 
 
+def test_veo_drift_detects_invalid_inline_base64() -> None:
+    """Codex review round-11 (PR #76): prod `_fetch_video_bytes` runs
+    `base64.b64decode` on `bytes_base64` unconditionally and raises on
+    malformed padding. A payload with non-empty but invalid b64 would
+    have passed shape while every prod call still 5xx's."""
+    drifted = {
+        "done": True,
+        # `abc` is 3 chars — strips clean but length-not-multiple-of-4
+        # raises binascii.Error in lenient mode.
+        "response": {"videos": [{"bytesBase64Encoded": "abc"}]},
+    }
+    with pytest.raises(ContractDriftError, match="neither Shape A"):
+        assert_veo_terminal_shape(drifted)
+
+
+def test_veo_drift_detects_invalid_b64_even_with_valid_uri() -> None:
+    """Subtle ordering case: prod prefers `bytes_base64` over `uri` —
+    if bytes_base64 is set (even if also bad), prod runs decode and
+    raises before falling through to the URI path. A payload with
+    invalid b64 PLUS a valid videoUri would have slipped through any
+    "either field is valid" check."""
+    drifted = {
+        "done": True,
+        "response": {
+            "videos": [
+                {
+                    "bytesBase64Encoded": "abc",  # invalid
+                    "videoUri": "https://veo.test/x.mp4",  # valid but ignored by prod
+                }
+            ]
+        },
+    }
+    with pytest.raises(ContractDriftError, match="neither Shape A"):
+        assert_veo_terminal_shape(drifted)
+
+
+def test_veo_accepts_valid_inline_base64() -> None:
+    """Sanity: a Veo response with valid base64 inline bytes passes."""
+    encoded = base64.b64encode(b"fake-mp4-bytes").decode("ascii")
+    payload = {"done": True, "response": {"videos": [{"bytesBase64Encoded": encoded}]}}
+    assert_veo_terminal_shape(payload)  # must not raise
+
+
 def test_veo_drift_detects_direct_video_with_only_nested_uri_key() -> None:
     """Codex review round-10 (PR #76): prod `_extract_videos` uses
     `uri_keys=("videoUri",)` for direct `response.videos[]` items — `uri`
@@ -832,11 +883,15 @@ def test_veo_drift_detects_done_false() -> None:
 
 def test_veo_shape_a_passes() -> None:
     # Shape A — direct `response.videos[]` form. Should NOT raise.
+    # `bytesBase64Encoded` must be valid base64 since round-11 added
+    # decode validation (prod's `_fetch_video_bytes` decodes
+    # unconditionally when b64 is present).
+    encoded = base64.b64encode(b"fake-mp4").decode("ascii")
     assert_veo_terminal_shape(
         {
             "done": True,
             "response": {
-                "videos": [{"bytesBase64Encoded": "xx", "videoUri": "https://veo.test/x.mp4"}]
+                "videos": [{"bytesBase64Encoded": encoded, "videoUri": "https://veo.test/x.mp4"}]
             },
         }
     )
