@@ -130,15 +130,25 @@ def assert_chat_completion_shape(payload: Any) -> None:
     if isinstance(content, str) and content:
         return
     if isinstance(content, list):
-        for part in content:
-            if (
-                isinstance(part, dict)
-                and part.get("type") == "text"
-                and isinstance(part.get("text"), str)
-            ):
-                return
+        # Mirror prod parser's behaviour: concatenate all text parts and
+        # require the result is non-empty. The prod parser
+        # (`Gpt5MiniClient._parse_chat_json`) does the same join then
+        # `json.loads(content)` — a payload like
+        # `[{"type":"text","text":""}]` joins to `""` and crashes at
+        # parse time. Accepting it here as a "shape" pass would create a
+        # false-negative sensor result (Codex review feedback).
+        joined = "".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        )
+        if joined:
+            return
         raise _drift(
-            "gpt-5-mini: `message.content` is a list but has no `{type: text, text: str}` part",
+            "gpt-5-mini: `message.content` text-parts list yields empty concatenation "
+            "(no `{type: text, text: str}` part with non-empty text)",
             payload,
         )
     raise _drift(
@@ -406,8 +416,38 @@ def test_chat_completion_drift_detects_non_text_parts_list() -> None:
             {"message": {"role": "assistant", "content": [{"type": "image", "image_url": "x"}]}}
         ]
     }
-    with pytest.raises(ContractDriftError, match=r"no `\{type: text"):
+    with pytest.raises(ContractDriftError, match="empty concatenation"):
         assert_chat_completion_shape(drifted)
+
+
+def test_chat_completion_drift_detects_empty_text_parts() -> None:
+    """`[{"type":"text","text":""}]` is the regression case Codex flagged:
+    structurally valid shape, but the prod parser would join to `""` and
+    crash at `json.loads`. False-negative sensor unless we require the
+    concatenated text be non-empty."""
+    drifted = {
+        "choices": [{"message": {"role": "assistant", "content": [{"type": "text", "text": ""}]}}]
+    }
+    with pytest.raises(ContractDriftError, match="empty concatenation"):
+        assert_chat_completion_shape(drifted)
+
+
+def test_chat_completion_accepts_multi_part_text() -> None:
+    """Sanity: concatenation of multiple non-empty text parts passes."""
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": '{"ok": '},
+                        {"type": "text", "text": "true}"},
+                    ],
+                }
+            }
+        ]
+    }
+    assert_chat_completion_shape(payload)  # must not raise
 
 
 def test_veo_drift_detects_neither_shape_a_nor_shape_b() -> None:

@@ -85,17 +85,33 @@ jobs:
           # GitHub issue body cap is ~65 KB; trim aggressively. Test bodies
           # never echo API keys (they live in request headers), so the
           # snippet is safe to surface in a repo issue.
-          head -c 60000 api/real_provider.log > log_snippet.txt
-          # Belt-and-braces redaction: strip anything that looks like a
-          # bearer token if a future test starts logging request headers
-          # by mistake. Matches `sk-...` (OpenAI) and `AIza...` (Google).
-          # Apply to BOTH the snippet (issue body) and the full log
-          # (uploaded as a 30-day artifact, visible to all repo
-          # collaborators) — defence-in-depth doesn't extend to the
-          # artifact unless we redact it too.
-          REDACT='s/(sk-[A-Za-z0-9_-]{8,})/sk-***REDACTED***/g; s/(AIza[A-Za-z0-9_-]{8,})/AIza***REDACTED***/g'
-          sed -i -E "$REDACT" log_snippet.txt
-          sed -i -E "$REDACT" api/real_provider.log
+          #
+          # Codex review feedback: if an earlier step fails (e.g. the
+          # nightly secret precheck), `api/real_provider.log` doesn't
+          # exist and `head` would fail — taking down the whole alerting
+          # path (no `provider-drift` issue gets filed for infra failures,
+          # so the workflow goes red silently). Always produce a
+          # `log_snippet.txt`; if the log is absent, write a fallback
+          # explaining that an earlier step failed.
+          if [ -s api/real_provider.log ]; then
+            head -c 60000 api/real_provider.log > log_snippet.txt
+            # Belt-and-braces redaction: strip anything that looks like a
+            # bearer token if a future test starts logging request headers
+            # by mistake. Matches `sk-...` (OpenAI) and `AIza...` (Google).
+            # Apply to BOTH the snippet (issue body) and the full log
+            # (uploaded as a 30-day artifact, visible to all repo
+            # collaborators) — defence-in-depth doesn't extend to the
+            # artifact unless we redact it too.
+            REDACT='s/(sk-[A-Za-z0-9_-]{8,})/sk-***REDACTED***/g; s/(AIza[A-Za-z0-9_-]{8,})/AIza***REDACTED***/g'
+            sed -i -E "$REDACT" log_snippet.txt
+            sed -i -E "$REDACT" api/real_provider.log
+          else
+            echo "(no pytest log — an earlier workflow step failed before the contract tests ran; check the workflow run for the actual error)" > log_snippet.txt
+            # `upload-artifact` step below has `if: always()` and would
+            # error on a missing path. Create a stub so the upload step
+            # is consistent with the issue-creation path.
+            mkdir -p api && touch api/real_provider.log
+          fi
 
       - name: Ensure `provider-drift` label exists
         if: failure()
