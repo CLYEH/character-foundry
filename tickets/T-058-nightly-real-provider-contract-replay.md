@@ -70,6 +70,21 @@ n/a（無 agent surface 影響）
 ## Notes
 
 - API key 不共用：gpt-image-2 / gpt-5-mini / Veo 3.1 各開獨立 test 帳號或 project，spending cap 設 $5/month。**不要用 dev key**，會把 dev quota 吃掉。
-- shape assertion 寫法建議：`response.json()["videos"]` 不檢查內容，只檢查 `isinstance(list)` + len ≥ 1；T-051 RAI filter 場景刻意保留為 valid pass case（沒 videos field 是 RAI shape，不算 contract drift）。
+- **shape assertion 要明確定義兩個合法 shape，符合其一就 pass，皆不符才算 drift：**
+
+  **Shape A — normal success（Veo 3.1 順利生影片）：**
+  - `done: true`
+  - `videos: list[…]` 且 `len(videos) >= 1`
+  - 每個 video 元素含必要欄位（依 Veo API 實際 schema，baseline 第一次跑時 lock）
+
+  **Shape B — RAI-filtered（T-051 場景：Google RAI 擋下，仍是合法 provider 回應）：**
+  - `done: true`
+  - `raiMediaFilteredCount >= 1`
+  - `raiMediaFilteredReasons: list[str]`
+  - **不要求** `videos` field（可能完全沒 key、或 `len == 0`）
+
+  Contract drift 的判定：**A 與 B 皆不符**（例如：欄位 rename、型別變更、新的未知 terminal state）才算。落地時兩條斷言用 `pytest.fixture` parametrize 或 `match/case`，**不要寫成「videos 必須有」這種會誤殺 RAI 的單一 invariant**。
+
+  gpt-image-2 / gpt-5-mini 路徑各自 single-shape 即可（沒有對應 RAI 拆分需求），但同樣只斷言 shape 不斷言內容。
 - 失敗 issue 模板要附 raw response 全文（mask API key），方便快速判讀是真 drift 還是 provider 暫時 5xx flake。
 - 第一次跑會 establish baseline——baseline 跑出來後加 commit 把 expected shape 寫死。
