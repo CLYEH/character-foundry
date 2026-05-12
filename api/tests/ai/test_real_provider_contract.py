@@ -240,19 +240,38 @@ def _rai_fields_present(container: Any) -> bool:
     return all(isinstance(r, str) for r in reasons)
 
 
-def _video_item_payload_present(video: Any) -> bool:
-    """A video item must carry at least one of `videoUri` / `uri` (string)
-    or `bytesBase64Encoded` (string) — otherwise the prod parser
-    `_fetch_video_bytes` in `app.ai.veo_3_1` would raise `model_invalid_request
-    ("video item missing both bytesBase64Encoded and uri")`. Asserting
-    payload presence here catches the "schema looks right but is hollow"
-    drift class — e.g. provider returns `videos: [{}]` or renames both
-    payload fields simultaneously."""
+_DIRECT_URI_KEYS: tuple[str, ...] = ("videoUri",)
+_NESTED_URI_KEYS: tuple[str, ...] = ("uri", "videoUri")
+
+
+def _video_item_payload_present(video: Any, *, uri_keys: tuple[str, ...]) -> bool:
+    """A video item must carry at least one of the form-specific URI keys
+    (string, non-empty) or `bytesBase64Encoded` (string). Otherwise the
+    prod parser `_fetch_video_bytes` in `app.ai.veo_3_1` raises
+    `model_invalid_request("video item missing both bytesBase64Encoded
+    and uri")`.
+
+    The `uri_keys` parameter exists because prod uses *different* key
+    sets for the two response shapes (Codex review round-10 PR #76):
+
+    - **Direct** `response.videos[]` items go through
+      `_video_item_from(v, uri_keys=("videoUri",))` — only `videoUri`
+      is recognised. A direct item carrying only `uri` would yield a
+      hollow `_VideoItem(uri=None, ...)` and fail downstream.
+    - **Nested** `generateVideoResponse.generatedSamples[].video` items
+      go through `_video_item_from(v, uri_keys=("uri", "videoUri"))`
+      — both keys work, with `uri` preferred.
+
+    Calling code must pass the form-appropriate tuple. Sharing one
+    helper across both forms (the original implementation) created a
+    false-negative where `response.videos[0] = {"uri": "..."}` would
+    pass shape but fail prod."""
     if not isinstance(video, dict):
         return False
-    uri = video.get("videoUri") or video.get("uri")
-    if isinstance(uri, str) and uri:
-        return True
+    for key in uri_keys:
+        value = video.get(key)
+        if isinstance(value, str) and value:
+            return True
     b64 = video.get("bytesBase64Encoded")
     return isinstance(b64, str) and bool(b64)
 
@@ -283,10 +302,11 @@ def _videos_present(response: Any) -> bool:
     if isinstance(direct, list) and direct:
         # `_extract_videos` skips non-dict entries when building `items`
         # — find the first that would be normalised in, then require it
-        # carry payload (mirrors prod `items[0]` lookup).
+        # carry payload (mirrors prod `items[0]` lookup). Direct form
+        # accepts only `videoUri`, not `uri`.
         first_direct = next((v for v in direct if isinstance(v, dict)), None)
         if first_direct is not None:
-            return _video_item_payload_present(first_direct)
+            return _video_item_payload_present(first_direct, uri_keys=_DIRECT_URI_KEYS)
         # `direct` was non-empty but had no dict entries — fall through
         # to the nested path (matches prod, where the direct loop would
         # have appended nothing and `items[0]` becomes the nested one).
@@ -295,7 +315,8 @@ def _videos_present(response: Any) -> bool:
         samples = nested.get("generatedSamples")
         if isinstance(samples, list) and samples:
             # Match prod: skip samples that don't have a dict `video`
-            # field — those never make it into the `items` list.
+            # field — those never make it into the `items` list. Nested
+            # form accepts both `uri` and `videoUri`.
             first_video = next(
                 (
                     s["video"]
@@ -305,7 +326,7 @@ def _videos_present(response: Any) -> bool:
                 None,
             )
             if first_video is not None:
-                return _video_item_payload_present(first_video)
+                return _video_item_payload_present(first_video, uri_keys=_NESTED_URI_KEYS)
     return False
 
 
@@ -754,6 +775,35 @@ def test_veo_drift_detects_hollow_first_nested_sample() -> None:
     }
     with pytest.raises(ContractDriftError, match="neither Shape A"):
         assert_veo_terminal_shape(drifted)
+
+
+def test_veo_drift_detects_direct_video_with_only_nested_uri_key() -> None:
+    """Codex review round-10 (PR #76): prod `_extract_videos` uses
+    `uri_keys=("videoUri",)` for direct `response.videos[]` items — `uri`
+    is NOT recognised on the direct form (only on nested
+    `generatedSamples[].video`). A drift that ships
+    `response.videos[0] = {"uri": "..."}` would otherwise pass shape
+    while prod normalises it to a hollow `_VideoItem` and fails."""
+    drifted = {
+        "done": True,
+        "response": {"videos": [{"uri": "https://veo.test/x.mp4"}]},
+    }
+    with pytest.raises(ContractDriftError, match="neither Shape A"):
+        assert_veo_terminal_shape(drifted)
+
+
+def test_veo_accepts_nested_video_with_uri_key() -> None:
+    """Sanity counterpart: in the NESTED form, `uri` is a legal key per
+    prod's `uri_keys=("uri", "videoUri")`. Must NOT drift."""
+    payload = {
+        "done": True,
+        "response": {
+            "generateVideoResponse": {
+                "generatedSamples": [{"video": {"uri": "https://veo.test/y.mp4"}}]
+            }
+        },
+    }
+    assert_veo_terminal_shape(payload)  # must not raise
 
 
 def test_veo_accepts_nested_sample_with_leading_metadata_only_dict() -> None:
