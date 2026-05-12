@@ -144,11 +144,12 @@ docker compose exec api pytest --cov=app --cov-report=term
 
 # Mutation testing baseline（T-060；本機 reproduce nightly workflow）
 # 範圍由 api/pyproject.toml [tool.mutmut] paths_to_mutate 控制；
-# 第一次跑會建 mutants/ workspace，之後 incremental
+# 第一次跑會建 mutants/ workspace，之後 incremental。.harness/ bind-mount
+# 在 docker-compose.override.yml 設好，所以 --baseline 用容器內 /app/.harness 路徑
 docker compose exec api bash -lc "mutmut run && mutmut export-cicd-stats"
 docker compose exec api bash -lc "python scripts/check_mutation_drift.py \\
   --stats mutants/mutmut-cicd-stats.json \\
-  --baseline ../.harness/mutation-baseline.json"
+  --baseline .harness/mutation-baseline.json"
 
 # E2E（Playwright）
 pnpm -C web e2e

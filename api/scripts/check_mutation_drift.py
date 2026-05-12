@@ -167,6 +167,17 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        # Guard against a typo'd baseline (e.g. `0.7984` mistyped as
+        # `7.984` — the float parses fine but no real kill rate could
+        # ever clear the bar, so every nightly fires a `mutation-drift`
+        # issue forever). Six lines cheaper than auditing the noise.
+        if not 0.0 <= baseline_kill_rate <= 1.0:
+            print(
+                f"::error::Baseline file {args.baseline} has out-of-range "
+                f"baseline_kill_rate={baseline_kill_rate}; expected 0.0 <= x <= 1.0.",
+                file=sys.stderr,
+            )
+            return 2
 
     report = _format_report(stats, baseline_kill_rate, drift_threshold_pp, actual_kill_rate)
     print(report)
