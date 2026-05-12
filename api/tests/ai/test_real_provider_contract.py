@@ -277,9 +277,13 @@ def _video_item_payload_present(video: Any, *, uri_keys: tuple[str, ...]) -> boo
             return False
         return True
     # bytes_base64 absent → fall back to URI (form-specific key set).
+    # Use `.strip()` to match prod `_video_item_from` (veo_3_1.py:574),
+    # which accepts only URIs where the stripped string is non-empty —
+    # a whitespace-only URI normalises to `uri=None` and fails downstream
+    # (Codex review round-12 PR #76).
     for key in uri_keys:
         value = video.get(key)
-        if isinstance(value, str) and value:
+        if isinstance(value, str) and value.strip():
             return True
     return False
 
@@ -826,6 +830,16 @@ def test_veo_accepts_valid_inline_base64() -> None:
     encoded = base64.b64encode(b"fake-mp4-bytes").decode("ascii")
     payload = {"done": True, "response": {"videos": [{"bytesBase64Encoded": encoded}]}}
     assert_veo_terminal_shape(payload)  # must not raise
+
+
+def test_veo_drift_detects_whitespace_only_uri() -> None:
+    """Codex review round-12 (PR #76): prod `_video_item_from` accepts a
+    URI only when `value.strip()` is non-empty, so `{"videoUri": "   "}`
+    normalises to `_VideoItem(uri=None, ...)` and fails downstream. The
+    sensor must mirror the strip check."""
+    drifted = {"done": True, "response": {"videos": [{"videoUri": "   "}]}}
+    with pytest.raises(ContractDriftError, match="neither Shape A"):
+        assert_veo_terminal_shape(drifted)
 
 
 def test_veo_drift_detects_direct_video_with_only_nested_uri_key() -> None:
