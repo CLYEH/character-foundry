@@ -210,19 +210,37 @@ def _video_item_payload_present(video: Any) -> bool:
 
 
 def _videos_present(response: Any) -> bool:
+    """Mirror prod `Veo31Client._fetch_video_bytes`: it reads `items[0]`
+    only (after `_extract_videos` normalises both direct and nested shapes
+    into a single list, direct first). If `items[0]` is hollow it raises
+    `model_invalid_request`, regardless of whether later items would have
+    been valid.
+
+    Codex PR #76 review round-4: an earlier `any(...)` check accepted a
+    mixed `videos: [{}, {real}]` payload that prod would still 5xx on
+    (item[0] is empty). Match the prod ordering: prefer the first direct
+    video, else the first nested sample's `video`, and require it carry
+    payload."""
     if not isinstance(response, dict):
         return False
     direct = response.get("videos")
     if isinstance(direct, list) and direct:
-        if any(_video_item_payload_present(v) for v in direct):
-            return True
+        # `_extract_videos` skips non-dict entries when building `items`
+        # — find the first that would be normalised in, then require it
+        # carry payload (mirrors prod `items[0]` lookup).
+        first_direct = next((v for v in direct if isinstance(v, dict)), None)
+        if first_direct is not None:
+            return _video_item_payload_present(first_direct)
+        # `direct` was non-empty but had no dict entries — fall through
+        # to the nested path (matches prod, where the direct loop would
+        # have appended nothing and `items[0]` becomes the nested one).
     nested = response.get("generateVideoResponse")
     if isinstance(nested, dict):
         samples = nested.get("generatedSamples")
         if isinstance(samples, list) and samples:
-            for sample in samples:
-                if isinstance(sample, dict) and _video_item_payload_present(sample.get("video")):
-                    return True
+            first_sample = next((s for s in samples if isinstance(s, dict)), None)
+            if first_sample is not None:
+                return _video_item_payload_present(first_sample.get("video"))
     return False
 
 
@@ -518,6 +536,42 @@ def test_veo_drift_detects_hollow_video_items() -> None:
     `videoUri` / `uri` / `bytesBase64Encoded` — the prod parser
     `_fetch_video_bytes` would 5xx on it. Treat as drift."""
     drifted = {"done": True, "response": {"videos": [{}]}}
+    with pytest.raises(ContractDriftError, match="neither Shape A"):
+        assert_veo_terminal_shape(drifted)
+
+
+def test_veo_drift_detects_hollow_first_with_valid_second() -> None:
+    """Codex review round-4 (PR #76): `videos[0]={}, videos[1]={valid}`
+    would have passed the earlier `any(...)` check but prod
+    `_fetch_video_bytes` reads `items[0]` only and raises if hollow,
+    regardless of later valid samples. Mirror that: first-item-must-
+    carry-payload."""
+    drifted = {
+        "done": True,
+        "response": {
+            "videos": [
+                {},
+                {"videoUri": "https://veo.test/x.mp4"},
+            ]
+        },
+    }
+    with pytest.raises(ContractDriftError, match="neither Shape A"):
+        assert_veo_terminal_shape(drifted)
+
+
+def test_veo_drift_detects_hollow_first_nested_sample() -> None:
+    """Same first-item rule for the nested `generatedSamples` form."""
+    drifted = {
+        "done": True,
+        "response": {
+            "generateVideoResponse": {
+                "generatedSamples": [
+                    {"video": {}},
+                    {"video": {"uri": "https://veo.test/y.mp4"}},
+                ]
+            }
+        },
+    }
     with pytest.raises(ContractDriftError, match="neither Shape A"):
         assert_veo_terminal_shape(drifted)
 
