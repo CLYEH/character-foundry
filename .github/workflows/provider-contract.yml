@@ -186,7 +186,16 @@ jobs:
             });
             const lookbackMs = 72 * 60 * 60 * 1000;
             const cutoff = Date.now() - lookbackMs;
-            const recent = open.data.find(i => new Date(i.updated_at).getTime() >= cutoff);
+            // `issues.listForRepo` returns both issues AND PRs (GitHub's
+            // data model treats PRs as a subtype of issue). Pull requests
+            // have a non-null `pull_request` field; real issues don't.
+            // Without this filter, if anyone ever applied the
+            // `provider-drift` label to a PR, the dedup would attach
+            // drift activity to that PR and skip opening the real issue
+            // — silent alerting failure (Codex review round-9 PR #76).
+            const recent = open.data.find(i =>
+              !i.pull_request && new Date(i.updated_at).getTime() >= cutoff
+            );
 
             if (recent) {
               await github.rest.issues.createComment({
