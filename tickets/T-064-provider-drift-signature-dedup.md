@@ -10,15 +10,16 @@
 
 ## Scope
 
-The dedup logic that T-058 added to `.github/workflows/provider-contract.yml` consolidates any open `provider-drift` issue created within 24h, regardless of which test/provider failed. Codex PR #76 review round-3 flagged that two distinct failures on the same calendar day (e.g., OpenAI schema drift in the morning, Veo outage in the evening) would collapse into one issue thread — hiding the second incident.
+The dedup logic that T-058 added to `.github/workflows/provider-contract.yml` looks up an open `provider-drift` issue touched (created or commented) within a 72h `updated_at` window — but doesn't distinguish *which* test/provider failed. Codex PR #76 review round-3 flagged that two distinct failures within that window (e.g., OpenAI schema drift one day, Veo outage two days later) would collapse into one thread, hiding the second incident.
 
-This ticket extends the dedup to key on a **failure signature** (test name, which is 1:1 with provider) so distinct provider failures stay as distinct issues even within the 24h window.
+This ticket composes a **failure signature** (test name, which is 1:1 with provider) on top of the existing time+state window so distinct provider failures stay as distinct issues even when they overlap in time.
 
 **In scope:**
 - Extract failing test names from `log_snippet.txt` (`api/tests/ai/test_real_provider_contract.py::test_gpt_image_2_real_response_shape`, `…::test_gpt_5_mini_real_response_shape`, `…::test_veo_3_1_real_response_shape`) — pytest's `-rA` summary prints these.
 - Use the test name set as a signature when looking up existing open issues. Match → comment; new signature → fresh issue.
 - Carry the signature in the issue title (e.g., `[provider-drift][veo-3.1] …`) so visual triage is faster.
-- One open issue per provider per active drift; multiple providers drifting same day = N issues.
+- One open issue per provider per active drift; multiple providers drifting in overlapping time windows = N issues.
+- Compose with the existing 72h `updated_at` lookback (T-058 c8e0a60): match requires both signature AND active time window.
 
 **Not in scope**（保留給其他單）：
 - LLM-as-judge for output quality（B6 in roadmap）— different sensor entirely.
