@@ -50,7 +50,7 @@
 **做什麼：**
 - `api/tests/arch/test_layering.py`，用 `import-linter` 或 30-50 行 `ast` walk
 - 斷言：
-  - `app/api/routes/*` 不可直接 import `app/db/models/*`（要走 `repositories/` / `schemas/`）
+  - `app/api/routes/*` 不可直接 import `app/models/*`（要走 `repositories/` / `schemas/`；本 repo ORM 在 `app/models/`，`app/db/` 只有 `base.py` + `session.py` infra）
   - `app/ai/*` 不可 import `app/api/*`
   - 未來 `app/mcp/*` 與 `app/auth/*` 必須共用同一個 scope source（不可各自硬編 scope 字串）
 - 配合 mypy CI 一起跑
@@ -69,10 +69,10 @@
 ### A3. Coverage + mutation gate（auth + errors + circuit）
 
 **做什麼：**
-- `pyproject.toml` pytest config：`--cov-fail-under=80`
+- `pyproject.toml` pytest config：`--cov-fail-under=<baseline>`（先用 T-060 第一次跑出來的 baseline，不硬鎖 80%——硬鎖會在 baseline 低於 80% 時立刻紅 CI；ticket 採後續手動往上爬的策略）
 - CI workflow `pr.yml` backend job：失敗就 red
 - `mutmut` on `app/core/errors.py` + `app/ai/circuit.py` + `app/auth/*`
-  - kill rate 門檻 80%
+  - kill rate 門檻同樣先設 baseline - 5%，三個月後手動往上爬
   - 跑在 nightly（不在 PR CI，太慢）
 
 **為什麼前移：**
@@ -200,7 +200,7 @@
 **做什麼：**
 - 自訂 ruff rule（或 pre-commit script）：`app/api/routes/*` 禁用 `raise HTTPException(...)`
 - error message 寫成 LLM-friendly：「Use one of `AgentErrorException` factories from `app/core/errors.py` — e.g. `auth_invalid_credentials()` for 401 / `validation_error()` for 422」
-- 同類擴充：禁直接 `await db.execute(text(...))` 在 route 層、禁從 `app/api/` import `app/db/models/`
+- 同類擴充：禁直接 `await db.execute(text(...))` 在 route 層、禁從 `app/api/` import `app/models/`
 
 **為什麼放 C：**
 - 手刻 ruff plugin 或 ast hook 工時不小（半天起跳）
