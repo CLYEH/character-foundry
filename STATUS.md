@@ -138,11 +138,12 @@ ZIP 匯出、Copy Character、Usage dashboard。
 - T-053 等 T-052 **且** T-061（A4 secret scan）已 merge；T-054 等 T-055 + T-053
 - T-056 等 T-054；T-057 等 T-056
 
-#### Harness B-tier follow-ups（M3.5 ship 後再排）
+#### Harness B-tier follow-ups（M3.5 ship 後再排；可隨時插單，不 block Sprint 3.5a）
 
 | # | Ticket | Status |
 |---|---|---|
 | T-064 | Provider-drift issue dedup by failure signature（T-058 round-3 defer）| TODO |
+| T-065 | PR CI guard — `[tool.mutmut]` change must bump `.harness/mutation-baseline.json`（T-060 enforcement upgrade）| TODO |
 
 #### Sprint 3.5b / 3.5c — 未開單（3.5a ship 完再開）
 
