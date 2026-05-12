@@ -47,11 +47,11 @@ T-060 落地後，mutmut baseline (`baseline_kill_rate: 0.7984`) 鎖在 `app/cor
 
 ## Acceptance criteria
 
-- [ ] `api/scripts/check_baseline_resync.py` 存在，CLI 介面：`python check_baseline_resync.py --base-ref origin/main`（從 `git diff <base-ref>...HEAD` 取 diff）
-- [ ] 正向 case：手動跑 `python check_baseline_resync.py --base-ref origin/main` 在「動 `paths_to_mutate` + 同 PR 改 baseline JSON」的 commit 上，exit 0
+- [ ] `api/scripts/check_baseline_resync.py` 存在，CLI 介面：`python api/scripts/check_baseline_resync.py --base-ref origin/main`（從 repo root 跑；script 內從 `git diff <base-ref>...HEAD` 取 diff）
+- [ ] 正向 case：手動跑 `python api/scripts/check_baseline_resync.py --base-ref origin/main` 在「動 `paths_to_mutate` + 同 PR 改 baseline JSON」的 commit 上，exit 0
 - [ ] 反向 case：在「動 `paths_to_mutate` 但**沒**動 baseline JSON」的 fake commit 上 exit 1，stderr 印 actionable hint 含具體該跑哪條 `mutmut run`
 - [ ] Escape hatch：commit message 含 `baseline-irrelevant` 時 exit 0（即使 `[tool.mutmut]` 在 diff 裡）
-- [ ] `.github/workflows/pr.yml` backend job 加 step：`python api/scripts/check_baseline_resync.py --base-ref origin/${{ github.event.pull_request.base.ref }}`；失敗 red CI
+- [ ] `.github/workflows/pr.yml` backend job 加 step：`python api/scripts/check_baseline_resync.py --base-ref origin/${{ github.event.pull_request.base.ref }}`；失敗 red CI（與上面的本機 invocation 路徑一致 —— 兩處都用 `python api/scripts/check_baseline_resync.py`，在 repo root 跑）
 - [ ] 該 step 在 `pip install -e ".[dev]"` 之後跑（script 用 stdlib only，但保險）
 - [ ] mypy --strict + ruff 都過
 - [ ] PR 本身的 e2e green（這條的 PR 自己也會被新 sensor 檢查 — `[tool.mutmut]` 沒動，baseline 沒動，應該綠）
@@ -87,8 +87,23 @@ n/a（純 harness sensor，不碰 agent surface）
 
 **Implementation hint — escape hatch 設計：** `baseline-irrelevant` magic string 走 commit message body 而不是 PR title。理由：(a) squash merge 時 PR title 變 commit subject，body 內容反而最後一個 commit 的 message — 不穩定。(b) PR title 上加 magic string 也容易被作者拿去當 marketing copy 一部分，誤用率高。Script 應該 walk `git log --format=%B <base-ref>..HEAD` 看全部 commits 的 message，任何一個 commit 含 `baseline-irrelevant` 就 pass。
 
-**Implementation hint — 計算 hash 的細節：** 用 `tomllib`（py3.11+ stdlib）讀 `api/pyproject.toml` 兩次（base + head），取 `data["tool"]["mutmut"]`，serialize 成 canonical form（`json.dumps(..., sort_keys=True)`），hash compare。**順序變動不算 baseline 變動**（e.g. 重排 `paths_to_mutate` 順序，set 等價）。但**內容變動**（加 / 拿掉 module、改 `mutate_only_covered_lines` 從 true 到 false）會 trip。
+**Implementation hint — 計算 hash 的細節：** 用 `tomllib`（py3.11+ stdlib）讀 `api/pyproject.toml` 兩次（base + head），取 `data["tool"]["mutmut"]`，**遞迴 canonicalize**（dict key 排序 **+ list element 排序**）再 serialize 成 stable string 後 hash compare。`json.dumps(..., sort_keys=True)` **只**排 dict key 不排 list element —— 直接用會讓「重排 `paths_to_mutate` / `tests_dir` 順序」當成內容變動，違反「set 等價」的設計意圖。最小實作：
 
-**Implementation hint — mutmut 版本變動的偵測：** 同樣 toml 解析，取 `[project.optional-dependencies].dev`，grep `^mutmut`，若兩次 spec 字串不同（`>=3.0` → `>=3.5` 算動，`>=3.0` 重排到 list 不同位置不算動）就 trip。
+```python
+def _canonical(v):
+    if isinstance(v, dict):
+        return {k: _canonical(v[k]) for k in sorted(v)}
+    if isinstance(v, list):
+        # paths_to_mutate / tests_dir / also_copy 都是 list[str]，
+        # 排序後 set 等價；嵌套 list 用 stringify 之後 sort，避免
+        # heterogeneous list 比較炸掉。
+        return sorted((_canonical(x) for x in v), key=lambda x: json.dumps(x, sort_keys=True))
+    return v
+hashlib.sha256(json.dumps(_canonical(data["tool"]["mutmut"]), sort_keys=True).encode()).hexdigest()
+```
+
+**順序變動不算 baseline 變動**（e.g. 重排 `paths_to_mutate` 順序，set 等價）。**內容變動**（加 / 拿掉 module、改 `mutate_only_covered_lines` 從 true 到 false）會 trip。
+
+**Implementation hint — mutmut 版本變動的偵測：** 同樣 toml 解析，取 `[project.optional-dependencies].dev` list，filter 出開頭是 `mutmut`（含 extras 寫法如 `mutmut[fast]`）的 spec 字串，比對 base vs head。同樣需要 list 排序的考量 —— `mutmut>=3.0` 跟它在 list 裡的位置無關，但 spec 字串本身改了（`>=3.0` → `>=3.5`）就 trip。最簡：取出 mutmut spec 後直接字串 compare，list 位置不入考量。
 
 **反 enforcement 的合理 trade-off：** 如果這條 sensor 經常 false-fire（e.g. 純 typo 修正觸發），加 escape hatch 比加更多 logic 好。`baseline-irrelevant` 是顯式的 author 聲明，author 為這個聲明負責。
