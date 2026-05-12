@@ -1,6 +1,6 @@
 # Character Foundry — Implementation Status
 
-> **Last updated:** 2026-05-08 — T-051 opened: Veo 3.1 RAI filter 走「`done: true` 但無 videos」shape，目前被 `_fetch_video_bytes` 誤分類為 `MODEL_INVALID_REQUEST` 並硬塞「returned 4xx」字串（user 真機 task `371fc9a8` 命中）。Google 已知 RAI false positive 多（`googleapis/js-genai#1272`）。本單會偵測 `raiMediaFilteredCount` / `raiMediaFilteredReasons`、新增 retryable 的 `MODEL_CONTENT_FILTERED`、加 post-submit RAI retry 小預算（env `VEO_RAI_MAX_RETRIES` default 2），並 audit 修掉 `model_invalid_request` template 在非 4xx 路徑硬塞「returned 4xx」的 5 個誤報點。Previous: T-050 merged (#69, commit 05a0ceb) reconciler prompt tuning vs OpenAI image-gen cookbook: SYSTEM_PROMPT全面 rewrite 注入 cookbook 5 大 prompting 原則 (structure / photographic vocab / people hints / literal text / edit preservation)；`platform_constraints.yaml` v1.1 → v1.2 新增 `base_creation_avoid` + `alias_creation_avoid` block; `menu_fragments.py` style 4 個 option 從單行擴成完整描述（lens / lighting / texture）；final prompt 組裝順序改成 cookbook 推薦的 scene → menu → note → avoid。Scope 限定 gpt-image 路徑 (base / alias)，motion / i2v 端 prompt tuning 之後另開單。Cache via `_logic_version` + `constraint_version` 自動失效（含 YAML payload，防止 wording 改動忘 bump version）。Codex review 跑了 3 round（rule-0 reference / YAML hash / double-period strip + period-then-whitespace ordering），都採納。Previous: T-044 closes T-042's last follow-up by adding `tests/ai/test_gpt_image_2_contract.py`.
+> **Last updated:** 2026-05-12 — T-058 implemented: nightly real-provider contract replay sensor (Harness A1). Adds `@pytest.mark.real_provider` (registered + default-skipped via `addopts = -m "not real_provider"` in `api/pyproject.toml`), three shape-only contract tests in `api/tests/ai/test_real_provider_contract.py` against gpt-image-2 / gpt-5-mini / Veo 3.1, plus 9 drift-detection tests that exercise the same shape assertion functions on fabricated payloads (no network). Veo accepts Shape A (`done=true` + `response.videos[]` or nested `generateVideoResponse.generatedSamples[]`) OR Shape B (`done=true` + `raiMediaFilteredCount >= 1` + `raiMediaFilteredReasons: list[str]`; T-051 RAI shape) — explicitly NOT a single "videos must exist" invariant. New `.github/workflows/provider-contract.yml`: cron `0 0 * * *` UTC + `workflow_dispatch`, dedicated `PROVIDER_CONTRACT_OPENAI_KEY` + `PROVIDER_CONTRACT_VEO_KEY` secrets (NOT shared with dev), on failure auto-creates `provider-drift` labeled issue via `actions/github-script` with truncated 60 KB pytest log (sed-redacted for `sk-*` / `AIza*` bearer tokens). Triage SOP in `planning/devops/operations.md` §7 covers test-key registration, $5/month spending cap per provider, three-way drift triage (real drift / transient 5xx / infra). `gpt-5-mini` test budget bumped from 64 → 512 `max_completion_tokens` after empirical probe showed the reasoning model burned the 64-cap on `reasoning_tokens` before emitting `content`. Previous: T-051 opened: Veo 3.1 RAI filter 走「`done: true` 但無 videos」shape，目前被 `_fetch_video_bytes` 誤分類為 `MODEL_INVALID_REQUEST` 並硬塞「returned 4xx」字串（user 真機 task `371fc9a8` 命中）。Google 已知 RAI false positive 多（`googleapis/js-genai#1272`）。本單會偵測 `raiMediaFilteredCount` / `raiMediaFilteredReasons`、新增 retryable 的 `MODEL_CONTENT_FILTERED`、加 post-submit RAI retry 小預算（env `VEO_RAI_MAX_RETRIES` default 2），並 audit 修掉 `model_invalid_request` template 在非 4xx 路徑硬塞「returned 4xx」的 5 個誤報點。Previous: T-050 merged (#69, commit 05a0ceb) reconciler prompt tuning vs OpenAI image-gen cookbook: SYSTEM_PROMPT全面 rewrite 注入 cookbook 5 大 prompting 原則 (structure / photographic vocab / people hints / literal text / edit preservation)；`platform_constraints.yaml` v1.1 → v1.2 新增 `base_creation_avoid` + `alias_creation_avoid` block; `menu_fragments.py` style 4 個 option 從單行擴成完整描述（lens / lighting / texture）；final prompt 組裝順序改成 cookbook 推薦的 scene → menu → note → avoid。Scope 限定 gpt-image 路徑 (base / alias)，motion / i2v 端 prompt tuning 之後另開單。Cache via `_logic_version` + `constraint_version` 自動失效（含 YAML payload，防止 wording 改動忘 bump version）。Codex review 跑了 3 round（rule-0 reference / YAML hash / double-period strip + period-then-whitespace ordering），都採納。Previous: T-044 closes T-042's last follow-up by adding `tests/ai/test_gpt_image_2_contract.py`.
 > **Phase:** Sprint 1 done（T-006 ~ T-012 全部 done，M1 達成）；Sprint 2 done（T-013 ~ T-028 全部 done，M2 達成）；**Sprint 3 done（T-029 ~ T-041，13 張全部 done，M3 達成）**
 
 ---
@@ -109,7 +109,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 
 | # | Ticket | Status |
 |---|---|---|
-| T-058 | Nightly 真 provider contract replay sensor（A1）| TODO |
+| T-058 | Nightly 真 provider contract replay sensor（A1）| DONE |
 | T-059 | Architecture fitness — layering / import-direction test（A2）| TODO |
 | T-060 | Coverage gate + mutation testing on critical modules（A3）| TODO |
 | T-061 | Secret scan + SAST baseline（A4；**T-053 之前必 land**）| TODO |
@@ -137,6 +137,12 @@ ZIP 匯出、Copy Character、Usage dashboard。
 - 解 block 後：T-052 / T-055 可平行起步（無內部 dep）
 - T-053 等 T-052 **且** T-061（A4 secret scan）已 merge；T-054 等 T-055 + T-053
 - T-056 等 T-054；T-057 等 T-056
+
+#### Harness B-tier follow-ups（M3.5 ship 後再排）
+
+| # | Ticket | Status |
+|---|---|---|
+| T-064 | Provider-drift issue dedup by failure signature（T-058 round-3 defer）| TODO |
 
 #### Sprint 3.5b / 3.5c — 未開單（3.5a ship 完再開）
 

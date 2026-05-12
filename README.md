@@ -233,3 +233,4 @@ tickets/            實作工單；DONE/ 下是已完成
 | 前端元件對應 | [planning/frontend/component-map.md](./planning/frontend/component-map.md) |
 | Wireframes | [planning/ux/wireframes.md](./planning/ux/wireframes.md) |
 | Env 變數定義 | [planning/devops/environment-variables.md](./planning/devops/environment-variables.md) |
+| Nightly provider contract replay（test API key 註冊 / spending cap / triage） | [planning/devops/operations.md §7](./planning/devops/operations.md) |
