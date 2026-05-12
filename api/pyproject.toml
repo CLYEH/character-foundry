@@ -65,6 +65,16 @@ include = ["app*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Default test run skips real-provider contract replay (T-058). Those tests
+# hit live OpenAI / Veo endpoints and burn money; they only fire on the
+# nightly `provider-contract.yml` workflow which sets `-m real_provider`
+# explicitly. Local devs can opt in the same way. pytest's `-m` takes the
+# last value on the command line, so `pytest -m real_provider` overrides
+# this default without needing to disable addopts.
+addopts = ["-m", "not real_provider"]
+markers = [
+    "real_provider: contract replay against live AI providers (T-058); skipped by default, run via `pytest -m real_provider` with API keys set",
+]
 
 [tool.ruff]
 line-length = 100

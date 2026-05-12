@@ -1,0 +1,179 @@
+name: Provider Contract Replay (T-058)
+
+# Nightly probe of gpt-image-2 / gpt-5-mini / Veo 3.1 response shapes.
+# Runs detached from PR CI (`pr.yml`) so a real-provider 5xx or shape drift
+# never blocks a merge — the failure mode is an auto-filed `provider-drift`
+# issue that an operator triages against the SOP in
+# `planning/devops/operations.md`.
+
+on:
+  schedule:
+    # 00:00 UTC nightly. Cron uses UTC regardless of repo timezone setting.
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+concurrency:
+  # At most one replay at a time. Don't cancel an in-flight nightly when a
+  # manual dispatch starts — the manual run waits its turn. Keeps both
+  # runs' provider-drift signal independent.
+  group: provider-contract
+  cancel-in-progress: false
+
+jobs:
+  contract-replay:
+    name: contract replay
+    runs-on: ubuntu-latest
+    permissions:
+      # `issues: write` is needed for the auto-filed provider-drift issue.
+      # `contents: read` keeps the rest of GITHUB_TOKEN's default scope
+      # locked down — explicit allowlist is preferred over inherited
+      # write-all defaults.
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/pyproject.toml
+
+      - name: Install api (dev extras)
+        working-directory: api
+        run: pip install -e ".[dev]"
+
+      - name: Verify required secrets are set (nightly only)
+        # On `workflow_dispatch` we let operators run partial probes (e.g.
+        # only OpenAI key set), so an unset secret turns into a pytest skip
+        # rather than a hard fail. On the unattended nightly schedule
+        # a missing secret would silently produce a green run with zero
+        # signal — that's worse than failing loudly.
+        if: github.event_name == 'schedule'
+        env:
+          OPENAI_API_KEY: ${{ secrets.PROVIDER_CONTRACT_OPENAI_KEY }}
+          VEO_API_KEY: ${{ secrets.PROVIDER_CONTRACT_VEO_KEY }}
+        run: |
+          set -e
+          [ -n "$OPENAI_API_KEY" ] || { echo "::error::PROVIDER_CONTRACT_OPENAI_KEY secret is empty"; exit 1; }
+          [ -n "$VEO_API_KEY" ] || { echo "::error::PROVIDER_CONTRACT_VEO_KEY secret is empty"; exit 1; }
+
+      - name: Run real-provider contract tests
+        id: tests
+        working-directory: api
+        env:
+          # Dedicated test keys (NOT shared with dev / prod). Spending cap
+          # on each provider account is documented in
+          # `planning/devops/operations.md` §8.
+          OPENAI_API_KEY: ${{ secrets.PROVIDER_CONTRACT_OPENAI_KEY }}
+          VEO_API_KEY: ${{ secrets.PROVIDER_CONTRACT_VEO_KEY }}
+          # Defensive: force stub mode off in case a future code path
+          # consults it during the test setup.
+          AI_STUB_MODE: "false"
+        run: |
+          # `-m real_provider` overrides the `not real_provider` default
+          # baked into pyproject.toml addopts (last `-m` wins in pytest).
+          # `-rA` prints a summary line per test including skips, so the
+          # log_snippet captured below makes the failure self-explanatory.
+          # `set -o pipefail` so `tee` doesn't mask a non-zero pytest exit.
+          set -o pipefail
+          pytest -m real_provider --no-header -rA 2>&1 | tee real_provider.log
+
+      - name: Capture truncated log for issue body
+        if: failure()
+        run: |
+          # GitHub issue body cap is ~65 KB; trim aggressively. Test bodies
+          # never echo API keys (they live in request headers), so the
+          # snippet is safe to surface in a repo issue.
+          head -c 60000 api/real_provider.log > log_snippet.txt
+          # Belt-and-braces redaction: strip anything that looks like a
+          # bearer token if a future test starts logging request headers
+          # by mistake. Matches `sk-...` (OpenAI) and `AIza...` (Google).
+          # Apply to BOTH the snippet (issue body) and the full log
+          # (uploaded as a 30-day artifact, visible to all repo
+          # collaborators) — defence-in-depth doesn't extend to the
+          # artifact unless we redact it too.
+          REDACT='s/(sk-[A-Za-z0-9_-]{8,})/sk-***REDACTED***/g; s/(AIza[A-Za-z0-9_-]{8,})/AIza***REDACTED***/g'
+          sed -i -E "$REDACT" log_snippet.txt
+          sed -i -E "$REDACT" api/real_provider.log
+
+      - name: Ensure `provider-drift` label exists
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # `--force` creates the label if missing, updates color/description
+          # if already present. Idempotent — safe on every failure.
+          gh label create provider-drift \
+            --color FF7F50 \
+            --description "Nightly real-provider contract replay drift (T-058)" \
+            --force
+
+      - name: Open or update provider-drift issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync('log_snippet.txt', 'utf8');
+            const date = new Date().toISOString().slice(0, 10);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const trailerBlock = [
+              `**Workflow run:** ${runUrl}`,
+              `**Trigger:** \`${context.eventName}\``,
+              ``,
+              `**Triage SOP:** \`planning/devops/operations.md\` Provider contract replay section.`,
+              `Decide whether this is real drift (file fix ticket against the affected provider) or a transient provider 5xx (close issue with the run URL as evidence).`,
+              ``,
+              `**Failed test output (truncated to 60 KB; API keys redacted):**`,
+              ``,
+              '```',
+              log,
+              '```',
+            ].join('\n');
+
+            // Dedupe: if an open `provider-drift` issue exists that was
+            // created within the last 24h, comment on it with the new run
+            // URL rather than opening a fresh issue. Three consecutive
+            // nightly failures for the same persistent drift should be
+            // one issue + two comments, not three issues — that's alert
+            // fatigue. The 24h window still lets independently-occurring
+            // drifts (next-day rollout) open separate issues so the
+            // `provider-drift` label tracks distinct events for retro
+            // analysis (operations.md §7.4 trend tracking).
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'provider-drift',
+              state: 'open',
+              per_page: 10,
+              sort: 'created',
+              direction: 'desc',
+            });
+            const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+            const recent = open.data.find(i => new Date(i.created_at).getTime() >= dayAgo);
+
+            if (recent) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: recent.number,
+                body: [`Nightly contract replay failed again on ${date}.`, ``, trailerBlock].join('\n'),
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `[provider-drift] Nightly contract replay failed (${date})`,
+                labels: ['provider-drift'],
+                body: [`Nightly provider contract replay (T-058) failed on ${date}.`, ``, trailerBlock].join('\n'),
+              });
+            }
+
+      - name: Upload pytest log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-provider-log
+          path: api/real_provider.log
+          retention-days: 30

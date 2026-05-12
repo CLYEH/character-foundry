@@ -400,7 +400,70 @@ echo "Restore OK: $DATE"
 
 ---
 
-## 7. 關聯文件
+## 7. Provider contract replay 維運 SOP（T-058）
+
+Nightly GitHub Actions job `.github/workflows/provider-contract.yml` 對三個 AI provider（gpt-image-2 / gpt-5-mini / Veo 3.1）跑最便宜的真 call，**只斷言 response shape**，shape drift 自動開 `provider-drift` issue。背景見 `planning/harness/roadmap.md` §1 A1；測試本體在 `api/tests/ai/test_real_provider_contract.py`。
+
+### 7.1 為什麼存在
+
+T-042（gpt-image 多圖 multipart）/ T-045（gpt-5-mini reasoning model contract drift）/ T-051（Veo RAI filter shape）連三次同款 failure mode：stub 跟真 provider 漂移、PR CI 全綠但 prod 失敗。Nightly replay 是這條 pattern 的 sensor，先 GitHub 通知再讓人類介入。
+
+### 7.2 測試 API key 註冊
+
+每個 provider **獨立** test 帳號或 project，**不要共用 dev key**（會把 dev quota 吃掉，failure mode 互相干擾）。
+
+| Secret 名稱 | Provider | 怎麼拿 |
+|---|---|---|
+| `PROVIDER_CONTRACT_OPENAI_KEY` | gpt-image-2 + gpt-5-mini | OpenAI dashboard 開新 project「`cf-contract-test`」→ 該 project 下開 API key |
+| `PROVIDER_CONTRACT_VEO_KEY` | Veo 3.1 | Google AI Studio 開獨立 API key（建議掛到專屬 GCP project）|
+
+設定步驟：
+
+1. 開新 OpenAI project + 新 Google AI Studio key（不要重用既有）
+2. 設 spending cap（§7.3）
+3. GitHub repo Settings → Secrets and variables → Actions → New repository secret
+4. 名稱用上表，值貼進去
+5. `gh workflow run provider-contract.yml` 手動跑一次驗證
+
+### 7.3 Spending cap 設定
+
+每個 provider account 都要設**月度 spending cap**，避免 nightly run 失控時把整個 quota 燒乾：
+
+- **OpenAI project：** Settings → Limits → Monthly budget = **$5/month**, hard cap（block requests when exceeded）。
+- **Google AI Studio / GCP：** Billing → Budgets & alerts → Budget = **$5/month**, alert thresholds at 50% / 100%。GCP 沒有原生 hard cap，靠 budget alert + 手動 disable API。
+
+每次 nightly run 預估成本：
+
+| Provider | Call | 預估 cost |
+|---|---|---|
+| gpt-image-2 (text2image, 1024×1024, quality=low) | 1 | ~$0.01 |
+| gpt-5-mini (chat completions, ~100 tokens in/out) | 1 | < $0.01 |
+| Veo 3.1 i2v (duration=3s, smallest legal) | 1 | ~$0.30 |
+
+月度上限 ≈ 31 × $0.32 ≈ $10。$5 cap 留一倍 margin；若連續多次 drift 觸發手動 dispatch 把月底吃滿，pytest 第 N+1 個 call 會收 4xx，自動進 drift issue 流程。
+
+### 7.4 失敗 issue 觸發後的 triage
+
+Nightly job 失敗 → `actions/github-script` 自動開 issue（label `provider-drift`），body 包含 truncated 60 KB pytest output + run URL。On-call 拿到通知後：
+
+1. **看 issue body 內的 raw payload。** Test code 用 `ContractDriftError("<message>\n\nraw payload:\n<payload>")`——payload 全文直接黏在錯誤訊息裡。
+2. **三選一判讀：**
+   - **Real drift**（provider 改 schema）→ 開新 ticket 修對應 client（gpt-image-2 / reconciler / veo-3.1 client）+ 對應 shape assertion function，commit body 連 provider 公告連結。Close issue 留 reference 到新 ticket。
+   - **Transient provider 5xx**（502 / 503 / rate limit）→ 手動 `gh workflow run provider-contract.yml` 重跑一次驗證。連兩次同類失敗 → 視為 partial outage，開 ticket 追 SLA / retry policy。
+   - **Test infra 壞掉**（GH Actions runner / secret expired / spending cap hit）→ 修 infra，補 secret，補額度。Close issue 留 root cause 註記。
+3. **不要直接關 issue 不處理**——`provider-drift` label 累積數據後可以看 drift 頻率，作為 sprint retro 的素材。
+
+### 7.5 第一次跑後的 baseline 鎖定
+
+T-058 land 後第一次 nightly green run 就是 baseline。之後若 shape 變動（即使 test pass），review 時要意識到 shape function 的判定條件夠不夠嚴——例如 `_videos_present` 接受 `videos[]` 或 `generateVideoResponse.generatedSamples[].video` 兩種 nesting，若有第三種出現要併進來。
+
+### 7.6 PR CI 互動
+
+`pyproject.toml` 的 `[tool.pytest.ini_options]` 設 `addopts = ["-m", "not real_provider"]`，所以 `pr.yml` 跑 `pytest` 時自動 skip 這層。手動本機跑：`cd api && pytest -m real_provider`（需要設好上述兩個 env var）。
+
+---
+
+## 8. 關聯文件
 
 - `deployment.md` — 部署架構
 - `environment-variables.md` — env var 清單
