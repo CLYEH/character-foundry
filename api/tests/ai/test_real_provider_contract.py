@@ -82,11 +82,13 @@ def assert_gpt_image_generation_shape(payload: Any) -> None:
     Mirrors two invariants:
 
     1. `payload.data[0].b64_json` exists and is a non-empty string.
-    2. That string is valid base64 (prod calls `base64.b64decode` and
-       raises on `ValueError`/`TypeError`). A drift that keeps the key
-       but ships e.g. raw bytes or URL-encoded data would pass the
-       structural check while every prod call still 5xx's (Codex review
-       round-7 on PR #76).
+    2. That string decodes via `base64.b64decode(b64)` — lenient mode
+       (no `validate=True`), matching prod exactly. Prod's decoder
+       silently strips whitespace / non-base64-alphabet chars; only
+       genuinely malformed payloads (length not a multiple of 4 after
+       strip, bad padding) raise. Using `validate=True` here would
+       false-flag legitimate RFC-2045-style line-wrapped base64 that
+       prod accepts (Codex review round-8 on PR #76).
 
     `model` is included in the live response but the parser falls back
     to the configured SKU, so we don't pin it here.
@@ -103,10 +105,9 @@ def assert_gpt_image_generation_shape(payload: Any) -> None:
     if not isinstance(b64, str) or not b64:
         raise _drift("gpt-image-2: `data[0].b64_json` missing / not a non-empty string", payload)
     try:
-        # `validate=True` rejects whitespace / non-base64-alphabet bytes
-        # that the lenient default would silently strip, matching prod's
-        # `base64.b64decode(b64)` behaviour with strict input.
-        base64.b64decode(b64, validate=True)
+        # Match prod exactly: no `validate=True`. Prod's lenient decoder
+        # tolerates whitespace inside otherwise-valid base64 strings.
+        base64.b64decode(b64)
     except (binascii.Error, ValueError) as exc:
         raise _drift(
             f"gpt-image-2: `data[0].b64_json` is not valid base64 "
@@ -267,7 +268,15 @@ def _videos_present(response: Any) -> bool:
     mixed `videos: [{}, {real}]` payload that prod would still 5xx on
     (item[0] is empty). Match the prod ordering: prefer the first direct
     video, else the first nested sample's `video`, and require it carry
-    payload."""
+    payload.
+
+    Codex PR #76 review round-8: in the nested branch, prod skips dict
+    samples that lack a `video` object entirely (`_extract_videos` only
+    appends `_VideoItem` for samples where `video` is a dict). So a
+    leading metadata-only sample is correctly skipped, and prod's
+    `items[0]` becomes the FIRST sample whose `video` is a dict. Mirror
+    that: filter the samples list by "has dict `video`" before picking
+    the first."""
     if not isinstance(response, dict):
         return False
     direct = response.get("videos")
@@ -285,9 +294,18 @@ def _videos_present(response: Any) -> bool:
     if isinstance(nested, dict):
         samples = nested.get("generatedSamples")
         if isinstance(samples, list) and samples:
-            first_sample = next((s for s in samples if isinstance(s, dict)), None)
-            if first_sample is not None:
-                return _video_item_payload_present(first_sample.get("video"))
+            # Match prod: skip samples that don't have a dict `video`
+            # field — those never make it into the `items` list.
+            first_video = next(
+                (
+                    s["video"]
+                    for s in samples
+                    if isinstance(s, dict) and isinstance(s.get("video"), dict)
+                ),
+                None,
+            )
+            if first_video is not None:
+                return _video_item_payload_present(first_video)
     return False
 
 
@@ -509,6 +527,18 @@ def test_gpt_image_accepts_valid_base64() -> None:
     assert_gpt_image_generation_shape({"data": [{"b64_json": encoded}]})  # must not raise
 
 
+def test_gpt_image_accepts_base64_with_whitespace() -> None:
+    """Codex review round-8 (PR #76): RFC 2045 base64 may include line
+    breaks; prod's lenient `b64decode` silently strips them. The sensor
+    must match — `validate=True` was overshooting and would false-flag
+    legitimate provider payloads that happened to include whitespace."""
+    encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nstub-bytes").decode("ascii")
+    # Splice in whitespace mid-string to simulate line-wrapped base64.
+    half = len(encoded) // 2
+    wrapped = encoded[:half] + "\n " + encoded[half:]
+    assert_gpt_image_generation_shape({"data": [{"b64_json": wrapped}]})  # must not raise
+
+
 def test_chat_completion_drift_detects_missing_content() -> None:
     drifted = {"choices": [{"message": {"role": "assistant"}}]}
     with pytest.raises(ContractDriftError, match="not a string or text-parts"):
@@ -709,7 +739,8 @@ def test_veo_drift_detects_hollow_first_with_valid_second() -> None:
 
 
 def test_veo_drift_detects_hollow_first_nested_sample() -> None:
-    """Same first-item rule for the nested `generatedSamples` form."""
+    """Same first-item rule for the nested `generatedSamples` form —
+    when the first sample HAS a `video` key but the video is hollow."""
     drifted = {
         "done": True,
         "response": {
@@ -723,6 +754,25 @@ def test_veo_drift_detects_hollow_first_nested_sample() -> None:
     }
     with pytest.raises(ContractDriftError, match="neither Shape A"):
         assert_veo_terminal_shape(drifted)
+
+
+def test_veo_accepts_nested_sample_with_leading_metadata_only_dict() -> None:
+    """Codex review round-8 (PR #76): prod `_extract_videos` SKIPS dict
+    samples that lack a `video` key entirely, so `items[0]` becomes the
+    first sample that has one. `[{metadata}, {video: {valid}}]` is a
+    legitimate prod-passable payload — sensor must match."""
+    payload = {
+        "done": True,
+        "response": {
+            "generateVideoResponse": {
+                "generatedSamples": [
+                    {"metadata": "intro frame"},
+                    {"video": {"uri": "https://veo.test/z.mp4"}},
+                ]
+            }
+        },
+    }
+    assert_veo_terminal_shape(payload)  # must not raise
 
 
 def test_veo_drift_detects_done_false() -> None:
