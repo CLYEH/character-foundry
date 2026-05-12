@@ -93,7 +93,7 @@ Harness 包含**所有非 model 的東西**，分兩條主軸：
 | 主題 | 覆蓋度 | 說明 |
 |---|---|---|
 | **Maintainability** | 中 | linter / format / type / test 都有，但門檻（coverage / 複雜度）沒鎖；無 dead-code / duplication / mutation |
-| **Architecture fitness** | **零** | 沒 layering test、沒 perf SLO、沒 observability convention check。Prometheus / Grafana / Loki 在 DECISIONS §3 寫了但沒 wire 進 coding loop |
+| **Architecture fitness** | **部分**（T-059 後）| `api/tests/arch/test_layering.py` + `[tool.importlinter]` 兩條 forbidden contract：(a) `app.api.*` 不直接 import `app.models.*`、(b) `app.ai.*` 不 import `app.api.*`；既有 14 條 violation 列在 ignore_imports（含 sanctioned User-as-auth-context 10 條 + 真 leak 4 條，後者由 STATUS.md backlog row S3.5-1 追蹤）。M3.5 placeholder：`test_oauth_scope_source_is_centralized` 預先寫好、`pytest.skip` 等 `app/auth/scopes.py` 由 T-054 建立後自動 activate。仍缺：perf SLO、observability convention check |
 | **Behaviour** | 中 | unit + e2e + stub mode + circuit breaker + 一條 outgoing-body contract test；無 prompt assembly snapshot、無真 provider replay、無 LLM-as-judge |
 
 ### 2.6 Lifecycle distribution
@@ -138,7 +138,7 @@ Harness 包含**所有非 model 的東西**，分兩條主軸：
 
 按嚴重度排序：
 
-1. **Architecture fitness 幾乎零**——M3.5 加 OAuth middleware + MCP server 兩個新 layer，沒 arch test 會偷偷穿層。
+1. ~~**Architecture fitness 幾乎零**——M3.5 加 OAuth middleware + MCP server 兩個新 layer，沒 arch test 會偷偷穿層。~~ ✅ T-059 補上 baseline arch test（2026-05-12）；T-054 落地後 `test_oauth_scope_source_is_centralized` 自動 activate。
 2. **真 provider drift sensor 缺**——T-042 / T-045 / T-051 同模式三次。
 3. **OAuth 落地前該有的 sensor 還沒裝**——secret scan / SAST / mutation on auth。
 4. **Post-integration 那層幾乎空的**——nightly job 沒有 cron 設好。
