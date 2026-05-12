@@ -52,6 +52,7 @@ T-060 落地後，mutmut baseline (`baseline_kill_rate: 0.7984`) 鎖在 `app/cor
 - [ ] 反向 case：在「動 `paths_to_mutate` 但**沒**動 baseline JSON」的 fake commit 上 exit 1，stderr 印 actionable hint 含具體該跑哪條 `mutmut run`
 - [ ] Escape hatch：commit message 含 `baseline-irrelevant` 時 exit 0（即使 `[tool.mutmut]` 在 diff 裡）
 - [ ] `.github/workflows/pr.yml` backend job 加 step：`python api/scripts/check_baseline_resync.py --base-ref origin/${{ github.event.pull_request.base.ref }}`；失敗 red CI（與上面的本機 invocation 路徑一致 —— 兩處都用 `python api/scripts/check_baseline_resync.py`，在 repo root 跑）
+- [ ] **同一個 `.github/workflows/pr.yml` backend job 的 `actions/checkout@v4` step 加 `with: fetch-depth: 0`**（或在 script step 之前明確 `git fetch origin ${{ github.event.pull_request.base.ref }}`）。預設 `fetch-depth: 1` 只 fetch trigger commit，`git diff origin/main...HEAD` 會炸 `fatal: bad revision 'origin/main'`，把所有 PR 都 red 掉。Codex PR #79 round-2 P1 抓到的具體陷阱
 - [ ] 該 step 在 `pip install -e ".[dev]"` 之後跑（script 用 stdlib only，但保險）
 - [ ] mypy --strict + ruff 都過
 - [ ] PR 本身的 e2e green（這條的 PR 自己也會被新 sensor 檢查 — `[tool.mutmut]` 沒動，baseline 沒動，應該綠）
@@ -86,6 +87,8 @@ n/a（純 harness sensor，不碰 agent surface）
 **為什麼還是要做：** T-054 dual-stack auth middleware 落地時很可能順手調 `tests/auth/conftest.py` 或 `tests/auth/*` 結構 → 也許會啟動「auth/* 進 mutation scope」這條（見 STATUS.md backlog row S3.5-2）。那時候 `[tool.mutmut]` 一定會被動到。有 T-065 在，T-054 PR 上沒 update baseline 會被 PR CI 擋下；沒 T-065 的話要等隔天 nightly false alarm 才知道。
 
 **Implementation hint — escape hatch 設計：** `baseline-irrelevant` magic string 走 commit message body 而不是 PR title。理由：(a) squash merge 時 PR title 變 commit subject，body 內容反而最後一個 commit 的 message — 不穩定。(b) PR title 上加 magic string 也容易被作者拿去當 marketing copy 一部分，誤用率高。Script 應該 walk `git log --format=%B <base-ref>..HEAD` 看全部 commits 的 message，任何一個 commit 含 `baseline-irrelevant` 就 pass。
+
+**Implementation hint — checkout 設定（PR-79 round-2 Codex P1 抓到）：** `.github/workflows/pr.yml` 目前用 `actions/checkout@v4` 預設值 = `fetch-depth: 1`，**只 fetch trigger commit，不 fetch base branch**。Script 用 `git diff origin/<base>...HEAD` 會 `fatal: bad revision 'origin/main'`，把整個 backend job red 掉，所有 PR 都被誤殺。修法二選一：(a) 在 backend job 的 checkout step 加 `with: fetch-depth: 0`（簡單，整個 history 拉下來，~50-100 KB overhead），(b) 在 script step 之前加一個 `git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1` step（lighter；只多 fetch base ref 一個 commit）。**推薦 (a)** 簡化心智模型；若未來 repo history 變很大再切 (b)。
 
 **Implementation hint — 計算 hash 的細節：** 用 `tomllib`（py3.11+ stdlib）讀 `api/pyproject.toml` 兩次（base + head），取 `data["tool"]["mutmut"]`，**遞迴 canonicalize**（dict key 排序 **+ list element 排序**）再 serialize 成 stable string 後 hash compare。`json.dumps(..., sort_keys=True)` **只**排 dict key 不排 list element —— 直接用會讓「重排 `paths_to_mutate` / `tests_dir` 順序」當成內容變動，違反「set 等價」的設計意圖。最小實作：
 
