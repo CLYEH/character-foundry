@@ -166,7 +166,11 @@ name = "AI clients don't depend on the HTTP layer"
 type = "forbidden"
 source_modules = ["app.ai"]
 forbidden_modules = ["app.api"]
-allow_indirect_imports = true
+# Indirect imports are forbidden here on purpose — there is no legitimate
+# `ai -> X -> api` indirection in the architecture, so a future chain via
+# `app.core` or `app.schemas` SHOULD trip this contract. Only the
+# `routes -> models` rule above turns this flag on, because repositories /
+# schemas are the sanctioned indirect bridge to ORM types.
 
 # Placeholder contract (M3.5 — T-054 / T-055):
 #
@@ -178,6 +182,7 @@ allow_indirect_imports = true
 # `test_oauth_scope_source_is_centralized` test in `tests/arch/test_layering.py`,
 # which activates automatically the moment `app/auth/scopes.py` exists.
 #
-# When T-054 lands, leave this comment block in place as breadcrumbs and add
-# any genuinely import-direction rules that emerge (e.g. `app.api.routes.*`
-# must not import `app.mcp.*`, or vice versa).
+# When T-054 lands, replace this comment block with the actual contract(s)
+# you need — OR keep this comment alongside a sibling `[[tool.importlinter.contracts]]`
+# block, but leave the breadcrumb in either case so the next implementer
+# knows the scope-source story.

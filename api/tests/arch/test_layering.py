@@ -27,12 +27,16 @@ row S3.5-1 tracks the cleanup.
 
 from __future__ import annotations
 
+import ast
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+# `tests/arch/test_layering.py` lives two levels under `api/`; pin the
+# index in case anyone moves the file so the resolution failure surfaces
+# loudly instead of silently scanning the wrong tree.
 API_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = API_ROOT / "app"
 PYPROJECT = API_ROOT / "pyproject.toml"
@@ -100,6 +104,32 @@ def test_layering_contracts_hold() -> None:
     )
 
 
+def _docstring_node_ids(tree: ast.Module) -> set[int]:
+    """Return the `id()` of every string-Constant node that occupies the
+    docstring slot of a module, function, async function, or class body.
+
+    A naive substring scan over source text trips on docstrings that
+    legitimately mention scope names (e.g. a function docstring saying
+    "requires the character:read scope"). Filtering by ast position keeps
+    the check precise: only string literals used as real code values
+    surface as offenders.
+    """
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            body = getattr(node, "body", None)
+            if not body:
+                continue
+            first = body[0]
+            if (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)
+            ):
+                ids.add(id(first.value))
+    return ids
+
+
 def test_oauth_scope_source_is_centralized() -> None:
     """Once `app/auth/scopes.py` exists (T-054), every other `.py` under
     `app/` must reference OAuth scope literals via import rather than
@@ -116,19 +146,33 @@ def test_oauth_scope_source_is_centralized() -> None:
             "planning/harness/roadmap.md §1 A2 and planning/auth/."
         )
 
-    offenders: list[tuple[Path, str]] = []
+    offenders: list[tuple[Path, str, int]] = []
     canonical = CANONICAL_SCOPE_MODULE.resolve()
+    scope_set = set(OAUTH_SCOPE_LITERALS)
     for py in APP_ROOT.rglob("*.py"):
         if py.resolve() == canonical:
             continue
-        text = py.read_text(encoding="utf-8")
-        for scope in OAUTH_SCOPE_LITERALS:
-            if f'"{scope}"' in text or f"'{scope}'" in text:
-                offenders.append((py.relative_to(API_ROOT), scope))
+        source = py.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(source, filename=str(py))
+        except SyntaxError:
+            # A syntactically broken file is someone else's problem; the
+            # rest of the test suite will surface it. Don't mask it as a
+            # scope-source violation.
+            continue
+        docstring_ids = _docstring_node_ids(tree)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value in scope_set
+                and id(node) not in docstring_ids
+            ):
+                offenders.append((py.relative_to(API_ROOT), node.value, node.lineno))
 
     assert not offenders, (
         "Hard-coded OAuth scope literals found outside `app.auth.scopes`:\n"
-        + "\n".join(f"  • {path}: literal {scope!r}" for path, scope in offenders)
+        + "\n".join(f"  • {path}:{lineno}: literal {scope!r}" for path, scope, lineno in offenders)
         + "\n\nFix: import the constant from `app.auth.scopes` instead of "
         "redefining the string. Centralizing scopes is the whole point of the "
         "shared scope source rule — drift here means `app.mcp` and `app.auth` "
