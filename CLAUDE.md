@@ -32,6 +32,7 @@
 | `planning/devops/` | DevOps Agent | 部署、環境、infra |
 | `planning/agent-interface/` | Agent Interface Agent | MCP server、agent-native surface（M3.5）|
 | `planning/auth/` | Auth Agent | OAuth 2.1、JWT migration、MCP auth integration（M3.5）|
+| `planning/harness/` | Harness Agent | Coding-agent 腳手架：guides / sensors / lifecycle / steering loop（對照 Fowler harness-engineering）|
 
 ## 如何切換 Agent 視角
 開新 session 時，告訴 Claude：
