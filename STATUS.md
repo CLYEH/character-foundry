@@ -145,6 +145,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | T-064 | Provider-drift issue dedup by failure signature（T-058 round-3 defer；T-066 後 priority 下調）| TODO |
 | T-065 | PR CI guard — `[tool.mutmut]` change must bump `.harness/mutation-baseline.json`（T-060 enforcement upgrade）| TODO |
 | T-066 | Provider contract replay 改 manual-only（停 nightly cron，~$10/月成本砍）| TODO |
+| T-067 | Harden docker-compose secret interpolation + minimal container posture（T-052 PR #85 Codex P1 + security review batch defer）| TODO |
 
 #### Sprint 3.5b / 3.5c — 未開單（3.5a ship 完再開）
 
