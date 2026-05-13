@@ -25,6 +25,17 @@ jobs:
   security:
     name: security (gitleaks + bandit + semgrep)
     runs-on: ubuntu-latest
+    # gitleaks-action calls `GET /repos/{owner}/{repo}/pulls/{N}/commits`
+    # to enumerate the PR's commit range. On repos where the default
+    # `GITHUB_TOKEN` is scoped to `contents: read` only (the GitHub-side
+    # "Read repository contents and packages" preset), that call returns
+    # 403 "Resource not accessible by integration" and the step fails
+    # before any scanning happens. Granting `pull-requests: read` at job
+    # level (not workflow level) keeps the elevated permission scoped to
+    # the security scan and out of the other jobs.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
