@@ -830,6 +830,39 @@ def test_oauth_jwks_endpoint_unreachable_returns_provider_unavailable(
         reset_jwks_cache_for_test()
 
 
+def test_oauth_jwks_payload_wrong_shape_returns_provider_unavailable(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _oauth_env: None,
+    make_oauth_token: Any,
+) -> None:
+    """Codex round-3 P2: a JWKS endpoint that returns valid JSON with the
+    wrong top-level shape (array, null, scalar) must surface as
+    AUTH_OAUTH_PROVIDER_UNAVAILABLE, not bubble as an AttributeError 500.
+    Misconfigured reverse-proxies sometimes return `[]` or wrapping objects;
+    the verifier shouldn't take auth down because of it.
+    """
+    reset_jwks_cache_for_test()
+    try:
+        with respx.mock(assert_all_called=False) as router:
+            # Top-level array — typical "we accidentally returned a list of
+            # other things" misconfiguration.
+            router.get(_TEST_JWKS_URI).mock(return_value=httpx.Response(200, json=[]))
+            token = make_oauth_token(
+                scopes=["character:read"],
+                client_id="claude-code",
+                email=seeded_user["email"],
+            )
+            resp = scoped_client.get(
+                "/v1/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 503, resp.text
+            _assert_agent_error(resp.json(), "AUTH_OAUTH_PROVIDER_UNAVAILABLE")
+    finally:
+        reset_jwks_cache_for_test()
+
+
 def test_oauth_misconfigured_jwks_uri_returns_provider_unavailable(
     scoped_client: TestClient,
     seeded_user: dict[str, str],

@@ -183,8 +183,28 @@ class JWKSCache:
             resp = await client.get(self._jwks_uri)
             resp.raise_for_status()
             data = resp.json()
+        # Validate top-level shape before reaching into it. A misconfigured
+        # proxy or wrong endpoint can deliver valid JSON whose top is a list,
+        # null, or string — calling `.get(...)` on those raises AttributeError
+        # which would bypass `verify_oauth_token`'s (httpx.HTTPError, ValueError)
+        # filter and 500. Raise ValueError instead so the caller maps it to a
+        # controlled AUTH_OAUTH_PROVIDER_UNAVAILABLE.
+        if not isinstance(data, dict):
+            raise ValueError(f"JWKS endpoint returned non-object JSON ({type(data).__name__})")
+        raw_keys = data.get("keys", [])
+        if not isinstance(raw_keys, list):
+            raise ValueError(f"JWKS endpoint returned non-array 'keys' ({type(raw_keys).__name__})")
         keys: dict[str, PyJWK] = {}
-        for key_data in data.get("keys", []):
+        for key_data in raw_keys:
+            if not isinstance(key_data, dict):
+                # Individual entries must be objects too; skip non-dict entries
+                # instead of failing the whole refresh, mirroring the malformed-
+                # key behaviour below.
+                _logger.warning(
+                    "jwks_skipped_non_object_key_entry",
+                    extra={"type": type(key_data).__name__},
+                )
+                continue
             kid = key_data.get("kid")
             if not kid:
                 continue
