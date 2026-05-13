@@ -1,0 +1,49 @@
+# T-057 e2e overlay — merge with docker-compose.yml when running OAuth e2e:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+#
+# Adds two things on top of the base stack:
+#   1. Mounts `infra/authentik/blueprints/` into authentik-server + worker
+#      so Authentik applies the cf-e2e-bootstrap.yaml on startup. Authentik
+#      scans /blueprints/ at boot, evaluates each entry idempotently, and
+#      logs the result through the worker. The blueprint seeds the SPA
+#      provider, scope mappings, test users, and group binding the e2e
+#      specs depend on — see the blueprint header for what it does + does
+#      not seed.
+#   2. Sets AUTHENTIK_BOOTSTRAP_* so akadmin exists from the first boot
+#      without the recovery-URL flow used in dev (planning/devops/
+#      authentik-stack.md §5.1). These creds are CI-only — the production
+#      runbook still uses the recovery flow per T-052 §Notes.
+#
+# NOT used for local dev: docker-compose.override.yml runs automatically
+# without `-f`; this file does NOT, so dev operators have to opt-in. That
+# keeps the recovery-flow admin setup (which exercises the same code path
+# prod will use) the dev default.
+
+services:
+  authentik-server:
+    environment:
+      # Idempotent admin user. Authentik creates this on cold start when
+      # no admin yet exists; subsequent boots are no-ops. Token + email
+      # are required for blueprint application to log audit entries.
+      AUTHENTIK_BOOTSTRAP_PASSWORD: cf_e2e_admin_pw
+      AUTHENTIK_BOOTSTRAP_EMAIL: akadmin@example.com
+      AUTHENTIK_BOOTSTRAP_TOKEN: cf_e2e_bootstrap_token_not_for_prod
+      # Tighten log noise so the "stack failed to come up" dump in CI is
+      # readable (the docker-compose.override.yml `debug` is dev-only and
+      # not merged here).
+      AUTHENTIK_LOG_LEVEL: info
+    volumes:
+      # Read-only mount: Authentik only reads blueprints from /blueprints/,
+      # never writes back. Keeping :ro prevents an Authentik bug or a
+      # rogue blueprint from rewriting the host file.
+      - ./infra/authentik/blueprints:/blueprints/cf:ro
+
+  authentik-worker:
+    environment:
+      AUTHENTIK_BOOTSTRAP_PASSWORD: cf_e2e_admin_pw
+      AUTHENTIK_BOOTSTRAP_EMAIL: akadmin@example.com
+      AUTHENTIK_BOOTSTRAP_TOKEN: cf_e2e_bootstrap_token_not_for_prod
+      AUTHENTIK_LOG_LEVEL: info
+    volumes:
+      - ./infra/authentik/blueprints:/blueprints/cf:ro

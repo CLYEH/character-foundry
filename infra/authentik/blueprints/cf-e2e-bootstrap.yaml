@@ -1,0 +1,199 @@
+# Authentik blueprint for T-057 e2e bootstrap.
+#
+# When this file is mounted at /blueprints/cf/cf-e2e-bootstrap.yaml inside
+# authentik-server (via docker-compose.test.yml), Authentik picks it up on
+# startup and applies the entries idempotently. Blueprints replace the
+# admin-UI runbook in planning/devops/authentik-stack.md §5 for the e2e
+# environment only — production still follows the runbook (T-053 §Notes).
+#
+# What this seeds, mirroring T-053 §5.3–§5.5 minus Google upstream:
+#   1. 5 canonical scope mappings (character:read/write, task:read/cancel,
+#      usage:read) — names must match app/auth/mcp_clients.py CANONICAL_SCOPES.
+#   2. A test user `test+alice@example.com` whose email lines up with the
+#      `seed-e2e` CLI (api/app/cli.py E2E_USERS) so `get_current_user`'s
+#      email-based User lookup succeeds for the OAuth path.
+#   3. A second test user `test+oauthonly@example.com` for jwt-coexistence
+#      isolation — see web/tests/e2e/oauth-login.spec.ts comment.
+#   4. Group `cf-agent-default` bound to the SPA application so policy
+#      evaluation lets the user through.
+#   5. OAuth2 provider + application `character-foundry-spa` configured as
+#      PUBLIC PKCE with implicit consent (the explicit-consent flow used in
+#      prod would require an extra Playwright click per spec).
+#
+# What this deliberately does NOT seed:
+#   • Google OAuth Source (test env skips upstream IdP; Authentik's default
+#     identification + password stages do the auth).
+#   • cf-test-agent / claude-code / vs-code / cursor providers (not exercised
+#     by these two specs — followups in 3.5b for MCP).
+#   • cf-test-agent-full group (same reason).
+#
+# Bootstrap admin credentials come from AUTHENTIK_BOOTSTRAP_* env vars set
+# in docker-compose.test.yml — separate from .env so dev / prod operators
+# never accidentally inherit them.
+
+version: 1
+metadata:
+  name: cf-e2e-bootstrap
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  # ── Canonical scope mappings (5) ───────────────────────────────────
+  # `scope_name` is what ends up in the JWT `scope` claim; `app.auth.scopes`
+  # `require_scope("character:write")` compares against this string. Drift
+  # here breaks T-054 with a silent 403 — keep aligned with
+  # api/app/auth/mcp_clients.py::CANONICAL_SCOPES.
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-character-read
+    attrs:
+      name: cf-scope-character-read
+      scope_name: character:read
+      description: Read characters, bases, aliases, motions, checkpoints
+      expression: |
+        return {}
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-character-write
+    attrs:
+      name: cf-scope-character-write
+      scope_name: character:write
+      description: Create / mutate characters, bases, aliases, motions
+      expression: |
+        return {}
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-task-read
+    attrs:
+      name: cf-scope-task-read
+      scope_name: task:read
+      description: Read async task status
+      expression: |
+        return {}
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-task-cancel
+    attrs:
+      name: cf-scope-task-cancel
+      scope_name: task:cancel
+      description: Cancel a running async task
+      expression: |
+        return {}
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-usage-read
+    attrs:
+      name: cf-scope-usage-read
+      scope_name: usage:read
+      description: Read team usage / quota stats
+      expression: |
+        return {}
+
+  # ── Test users ─────────────────────────────────────────────────────
+  # Emails MUST match app.cli.E2E_USERS — `get_current_user` resolves an
+  # Authentik-issued token to a backend User row by email (api/app/api/
+  # deps.py:108). Without this alignment the OAuth path 401s with
+  # `auth_invalid_token` even though the JWT verifies fine.
+  - model: authentik_core.user
+    identifiers:
+      username: cf-e2e-alice
+    attrs:
+      name: Alice
+      email: test+alice@example.com
+      is_active: true
+      path: users
+      password: TestPassword123!
+  - model: authentik_core.user
+    identifiers:
+      username: cf-e2e-bob
+    attrs:
+      name: Bob
+      email: test+bob@example.com
+      is_active: true
+      path: users
+      password: TestPassword123!
+
+  # ── Group + membership ─────────────────────────────────────────────
+  - model: authentik_core.group
+    identifiers:
+      name: cf-agent-default
+    attrs:
+      users_obj:
+        - !Find [authentik_core.user, [username, cf-e2e-alice]]
+        - !Find [authentik_core.user, [username, cf-e2e-bob]]
+
+  # ── SPA OAuth2 provider (PKCE, implicit consent) ───────────────────
+  # `authorization_flow`: implicit-consent skips the "Allow Access" click so
+  # Playwright doesn't need to handle a consent screen. Prod uses explicit
+  # consent (T-053 §5.4) — the trade is e2e simplicity vs. accidental
+  # divergence from the prod consent step. The frontend code path
+  # (LoginPage / AuthCallbackPage) is identical either way; only the
+  # browser-side flow length differs.
+  #
+  # `client_type: public` + empty `client_secret` = PKCE-only, matching
+  # T-053 §5.4 "character-foundry-spa" row.
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: character-foundry-spa
+    attrs:
+      client_type: public
+      client_id: character-foundry-spa
+      client_secret: ""
+      access_code_validity: minutes=1
+      access_token_validity: hours=1
+      refresh_token_validity: days=30
+      include_claims_in_id_token: true
+      sub_mode: hashed_user_id
+      issuer_mode: per_provider
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, authentik Self-signed Certificate],
+        ]
+      authentication_flow:
+        !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-implicit-consent],
+        ]
+      # Redirect URIs: e2e runs against `http://localhost` (nginx in compose
+      # publishes :80 only). Dev `pnpm dev` outside docker would be
+      # http://localhost:5173/auth/callback — keep both so blueprints work
+      # in either mode without bespoke overrides.
+      redirect_uris: |-
+        http://localhost/auth/callback
+        http://localhost:5173/auth/callback
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, offline_access]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:read]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:write]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, task:read]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, task:cancel]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, usage:read]]
+
+  # ── SPA application ────────────────────────────────────────────────
+  - model: authentik_core.application
+    identifiers:
+      slug: character-foundry-spa
+    attrs:
+      name: Character Foundry SPA
+      provider:
+        !Find [authentik_providers_oauth2.oauth2provider, [name, character-foundry-spa]]
+      policy_engine_mode: any
+      open_in_new_tab: false
+
+  # ── Bind group → application (lets users in `cf-agent-default` use SPA) ─
+  - model: authentik_core.policybinding
+    identifiers:
+      target:
+        !Find [authentik_core.application, [slug, character-foundry-spa]]
+      group:
+        !Find [authentik_core.group, [name, cf-agent-default]]
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
