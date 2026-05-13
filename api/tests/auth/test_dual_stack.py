@@ -20,6 +20,7 @@ Covers all eight acceptance criteria from the ticket:
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -228,7 +229,19 @@ def _ensure_test_routes_registered() -> None:
     once. Subsequent calls are no-ops. We can't do this at module import
     time because that would trigger `app.main` import before the conftest
     sets `JWT_SECRET` / `AUTHENTIK_*` env vars.
+
+    Refuses to register outside a pytest run as a belt-and-braces guard —
+    even though only the `scoped_client` fixture should call this helper,
+    mutating the real FastAPI app object from a production import path is a
+    smell worth blocking structurally.
     """
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        raise RuntimeError(
+            "_ensure_test_routes_registered called outside a pytest run. "
+            "This helper mutates the production FastAPI app object and must "
+            "never execute in deployed code."
+        )
+
     from app.main import app
 
     sentinel = "_t054_test_routes_registered"
@@ -454,6 +467,54 @@ def test_oauth_unknown_client_id_rejected(
 # ---------------------------------------------------------------------------
 
 
+def test_oauth_m2m_with_valid_scope_on_v1_returns_wrong_surface(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _preload_jwks_cache: JWKSCache,
+    make_oauth_token: Any,
+) -> None:
+    """A valid M2M token (passes signature, allowlist, scope-cap) hitting
+    `/v1/*` must report the dedicated wrong-surface code so on-call debugging
+    sees a specific signal instead of the generic AUTH_INVALID_TOKEN whose
+    fix message suggests `/v1/auth/login`."""
+    token = make_oauth_token(
+        scopes=sorted(ALLOWED_CLIENTS["cf-test-agent"]["scopes"] or []),
+        client_id="cf-test-agent",
+        email=None,
+        sub="cf-test-agent",
+    )
+    resp = scoped_client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403, resp.text
+    _assert_agent_error(resp.json(), "AUTH_M2M_WRONG_SURFACE")
+
+
+def test_oauth_token_with_divergent_azp_and_client_id_rejected(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _preload_jwks_cache: JWKSCache,
+    make_oauth_token: Any,
+) -> None:
+    """OIDC tokens MUST agree on azp == client_id when both are present.
+    Divergence is a confusion signal — either a misconfigured provider
+    mapping or an attempt to claim two identities — and the verifier
+    rejects rather than picking one."""
+    token = make_oauth_token(
+        scopes=["character:read"],
+        client_id="claude-code",
+        email=seeded_user["email"],
+        extra={"client_id": "cf-test-agent"},  # divergent from azp
+    )
+    resp = scoped_client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 401, resp.text
+    _assert_agent_error(resp.json(), "AUTH_INVALID_TOKEN")
+
+
 def test_oauth_m2m_scope_exceeds_allowlist_rejected(
     scoped_client: TestClient,
     seeded_user: dict[str, str],
@@ -462,12 +523,12 @@ def test_oauth_m2m_scope_exceeds_allowlist_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     capped: ClientPolicy = {"scopes": ["character:read"]}
-    # Inject a narrow-cap M2M entry. `setdefault` on a fixed dict can't help
-    # — we mutate ALLOWED_CLIENTS directly and the monkeypatch teardown
-    # restores it. Reaching into the constant is acceptable here because the
-    # scope-exceeds path is structurally unreachable without an allowlist
-    # entry that caps below CANONICAL_SCOPES, and `cf-test-agent` carries
-    # the full set on purpose (CI coverage).
+    # Inject a narrow-cap M2M entry. monkeypatch.setitem restores the dict
+    # on teardown. Acceptable because (a) this is the only test that needs
+    # a narrow-capped client, (b) pytest currently runs serially. If
+    # `pytest-xdist` is ever enabled this test must move to a proper DI
+    # seam (e.g. `get_allowed_clients()` factory) since other workers may
+    # read ALLOWED_CLIENTS concurrently.
     monkeypatch.setitem(ALLOWED_CLIENTS, "narrow-m2m-agent", capped)
 
     # M2M shape: no email, sub == client_id, scope widened beyond the cap.
@@ -607,6 +668,35 @@ def test_token_with_unknown_issuer_falls_through_to_invalid_token(
 # cache singleton can be constructed without monkeypatching. Catches
 # accidental drift where someone removes the env var read in oauth.py.
 # ---------------------------------------------------------------------------
+
+
+def test_jwks_uri_scheme_validation_rejects_non_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`AUTHENTIK_JWKS_URL` must be http(s). A `file://` or `gopher://`
+    misconfiguration would otherwise let httpx execute arbitrary fetcher
+    behaviour — a cheap SSRF guard sitting between misconfig and httpx."""
+    from app.auth.oauth import _validate_jwks_uri
+
+    for hostile in ("file:///etc/passwd", "gopher://attacker/", "ftp://x/"):
+        with pytest.raises(RuntimeError, match="scheme"):
+            _validate_jwks_uri(hostile)
+
+    # Sanity: real schemes must pass.
+    _validate_jwks_uri("https://auth.example/jwks/")
+    _validate_jwks_uri("http://authentik-server:9000/jwks/")
+
+
+def test_test_seam_refuses_outside_pytest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Belt-and-braces: `set_jwks_cache_for_test` and friends must refuse to
+    run when `PYTEST_CURRENT_TEST` isn't set — otherwise a misuse in a
+    production import path could pin attacker-controlled signing keys for
+    one TTL window."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    with pytest.raises(RuntimeError, match="outside a pytest run"):
+        reset_jwks_cache_for_test()
 
 
 def test_get_jwks_cache_reads_env_var(_oauth_env: None) -> None:

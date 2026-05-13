@@ -27,10 +27,12 @@ acceptance.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from dataclasses import dataclass
 from typing import Any, Final
+from urllib.parse import urlparse
 
 import httpx
 import jwt
@@ -43,6 +45,10 @@ from app.core.errors import (
     auth_invalid_token,
     auth_scope_exceeds_allowlist,
 )
+
+_logger = logging.getLogger(__name__)
+
+_ALLOWED_JWKS_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
 
 _JWKS_TTL_SECONDS: Final[int] = 3600  # 1h, per ticket §"JWKS cache TTL" rationale
 _JWKS_FETCH_TIMEOUT_SECONDS: Final[float] = 5.0
@@ -124,13 +130,22 @@ class JWKSCache:
         """Test-only seam: install a fully-populated entry without going
         through HTTP. Resets `fetch_count` to zero so subsequent assertions
         on cache-miss behaviour start from a known baseline. Production
-        callers MUST use `get_key` instead.
+        callers MUST use `get_key` instead — the runtime guard makes that
+        explicit.
         """
+        _assert_test_seam_allowed("JWKSCache.seed_keys_for_test")
         self._entry = _JWKSEntry(keys=dict(keys), expires_at=time.time() + ttl_seconds)
         self._fetch_count = 0
 
     async def _refresh(self) -> None:
-        async with httpx.AsyncClient(timeout=_JWKS_FETCH_TIMEOUT_SECONDS) as client:
+        # `follow_redirects=False` is explicit (it's also the httpx default)
+        # so a future copy-paste can't flip it and let a hostile JWKS server
+        # 302 us to its own JWKS document. Scheme validation happens in
+        # `_validate_jwks_uri` at construction / first-fetch time.
+        async with httpx.AsyncClient(
+            timeout=_JWKS_FETCH_TIMEOUT_SECONDS,
+            follow_redirects=False,
+        ) as client:
             resp = await client.get(self._jwks_uri)
             resp.raise_for_status()
             data = resp.json()
@@ -141,10 +156,17 @@ class JWKSCache:
                 continue
             try:
                 keys[kid] = PyJWK(key_data)
-            except jwt.InvalidKeyError:
+            except jwt.InvalidKeyError as exc:
                 # Skip malformed entries rather than failing the whole cache —
                 # Authentik occasionally publishes keys with algorithms we
-                # don't recognise and we shouldn't lock out the rest.
+                # don't recognise and we shouldn't lock out the rest. WARN
+                # so operators see the signal when a rotated key has a
+                # format pyjwt can't parse and every fresh-signed token
+                # then 401s with no obvious cause.
+                _logger.warning(
+                    "jwks_skipped_invalid_key",
+                    extra={"kid": kid, "reason": str(exc)},
+                )
                 continue
         self._fetch_count += 1
         self._entry = _JWKSEntry(keys=keys, expires_at=time.time() + self._ttl)
@@ -159,6 +181,22 @@ class JWKSCache:
 
 
 _default_cache: JWKSCache | None = None
+
+
+def _validate_jwks_uri(uri: str) -> None:
+    """Reject obviously-hostile JWKS URIs at config time. Only `http` and
+    `https` schemes are permitted — without this guard a misconfigured
+    `AUTHENTIK_JWKS_URL=file:///etc/passwd` or `gopher://...` would still
+    be passed to httpx, where the SSRF blast radius depends on whatever
+    fetchers httpx links against. Host-level allowlisting (block loopback /
+    RFC1918 in prod) is the harden-compose follow-up (T-067 scope).
+    """
+    parsed = urlparse(uri)
+    if parsed.scheme not in _ALLOWED_JWKS_SCHEMES:
+        raise RuntimeError(
+            f"{_JWKS_URI_ENV} scheme {parsed.scheme!r} is not in the allowlist "
+            f"{sorted(_ALLOWED_JWKS_SCHEMES)}; refusing to fetch."
+        )
 
 
 def get_jwks_cache() -> JWKSCache:
@@ -176,16 +214,33 @@ def get_jwks_cache() -> JWKSCache:
             # via `AUTHENTIK_JWKS_URL` when the deployment topology differs
             # (e.g. nginx sub-path rewrite).
             jwks_uri = issuer.rstrip("/") + "/jwks/"
+        _validate_jwks_uri(jwks_uri)
         _default_cache = JWKSCache(jwks_uri)
     return _default_cache
 
 
+def _assert_test_seam_allowed(name: str) -> None:
+    """Refuse `*_for_test` calls outside a pytest run. The seams have to be
+    public so test fixtures can swap the cache, but a non-test caller
+    swapping it would let an attacker pin attacker-controlled signing keys
+    for a TTL window. The pytest contextvar is set the whole time tests
+    are executing.
+    """
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        raise RuntimeError(
+            f"{name} called outside a pytest run. This is a test-only seam "
+            "and must never run in production — see app/auth/oauth.py docstring."
+        )
+
+
 def set_jwks_cache_for_test(cache: JWKSCache) -> None:
+    _assert_test_seam_allowed("set_jwks_cache_for_test")
     global _default_cache
     _default_cache = cache
 
 
 def reset_jwks_cache_for_test() -> None:
+    _assert_test_seam_allowed("reset_jwks_cache_for_test")
     global _default_cache
     _default_cache = None
 
@@ -216,9 +271,16 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
     issuer = os.environ.get(_ISSUER_ENV)
     audience = os.environ.get(_AUDIENCE_ENV)
     if not issuer or not audience:
-        # Misconfiguration — surface as invalid_token so callers don't get
-        # a misleading "expired" or "client not allowed". Operators see
-        # the 401 and check env in tandem with the audit log.
+        # Misconfiguration. Log loud so operators see why every OAuth
+        # request 401s; surface as invalid_token to clients so we don't
+        # leak which env var is missing.
+        _logger.error(
+            "oauth_misconfigured",
+            extra={
+                "missing_issuer": not issuer,
+                "missing_audience": not audience,
+            },
+        )
         raise auth_invalid_token()
 
     jwks_cache = cache if cache is not None else get_jwks_cache()
@@ -236,6 +298,11 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
         raise auth_invalid_token()
 
     try:
+        # `algorithms=["RS256"]` is load-bearing for cross-stack security: it
+        # blocks the classic RS256↔HS256 algorithm-confusion attack (a token
+        # signed with the public key as an HMAC secret would otherwise verify
+        # if the algorithm pin were missing or widened). Do NOT loosen this
+        # without revisiting the dual-stack threat model.
         payload: dict[str, Any] = jwt.decode(
             token,
             signing_key.key,
@@ -251,8 +318,19 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
     # `azp` (authorized party) is the OIDC-standard claim for the originating
     # client; Authentik emits both `azp` and `client_id` for client_credentials
     # tokens and `azp` only for auth-code tokens. Prefer `azp` so we treat
-    # both grant types uniformly.
-    raw_client_id = payload.get("azp") or payload.get("client_id")
+    # both grant types uniformly. If both are present they MUST agree — a
+    # token splitting identity across the two claims is either a provider
+    # misconfiguration or an attempt to confuse the allowlist check, so
+    # reject rather than picking one.
+    azp_claim = payload.get("azp")
+    client_id_claim = payload.get("client_id")
+    if (
+        isinstance(azp_claim, str)
+        and isinstance(client_id_claim, str)
+        and azp_claim != client_id_claim
+    ):
+        raise auth_invalid_token()
+    raw_client_id = azp_claim or client_id_claim
     if not isinstance(raw_client_id, str) or not raw_client_id:
         raise auth_invalid_token()
     client_id: str = raw_client_id
@@ -277,7 +355,13 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
     if email is not None and not isinstance(email, str):
         email = None
 
-    is_m2m = email is None and sub == client_id
+    # M2M vs delegated is a property of the allowlist entry, not the token —
+    # `get_allowed_scopes` returns `None` for delegated clients (consent-time
+    # scope) and a frozenset for capped M2M clients. Reading allowlist policy
+    # is strictly more reliable than inferring from `email is None and
+    # sub == client_id`, which Authentik can break with a custom email
+    # mapping on a service user.
+    is_m2m = cap is not None
 
     return OAuthClaims(
         sub=sub,

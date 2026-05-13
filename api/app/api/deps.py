@@ -20,6 +20,7 @@ from app.auth.scopes import CANONICAL_SCOPES
 from app.core.errors import (
     auth_expired,
     auth_invalid_token,
+    auth_m2m_wrong_surface,
     auth_missing_token,
 )
 from app.core.redis_client import get_redis
@@ -77,21 +78,26 @@ async def _resolve_oauth(
 ) -> uuid.UUID:
     """Authentik OAuth path. Verifies token, writes scopes to request.state,
     resolves the matching User by email (delegated tokens only). M2M tokens
-    do not carry a user — they reach the MCP server surface in T-3.5b, not
-    `/v1/*` endpoints — so they fall back to `AUTH_INVALID_TOKEN` here once
-    every other check passed cleanly.
+    raise `AUTH_M2M_WRONG_SURFACE` — they reach the MCP server in T-3.5b,
+    never `/v1/*`.
     """
     claims: OAuthClaims = await verify_oauth_token(token)
+
+    if claims.is_m2m:
+        # Sanctioned token, wrong endpoint surface. Don't pollute
+        # request.state before raising — the request never reaches
+        # downstream deps that would read it.
+        raise auth_m2m_wrong_surface()
+
+    if not claims.email:
+        # Delegated token with no email claim is a misconfiguration on the
+        # Authentik provider mapping side; we can't resolve a User without
+        # it. Generic invalid_token (don't leak which claim was missing).
+        raise auth_invalid_token()
+
     request.state.token_scopes = claims.scopes
     request.state.oauth_client_id = claims.client_id
     request.state.is_m2m = claims.is_m2m
-
-    if claims.is_m2m or not claims.email:
-        # M2M token hit a `/v1/*` endpoint. Allowlist + scope-exceeds checks
-        # already fired in verify_oauth_token; reaching here means the token
-        # is genuinely OK but the caller is headless and `/v1/*` is the
-        # wrong surface. The MCP server (T-3.5b) handles M2M.
-        raise auth_invalid_token()
 
     result = await db.execute(select(User).where(User.email == claims.email))
     user = result.scalar_one_or_none()
@@ -119,6 +125,13 @@ def _resolve_jwt(
     except JWTInvalid as exc:
         raise auth_invalid_token() from exc
 
+    # Legacy JWTs get the full canonical scope set (per Q4 simplified
+    # dual-stack — pre-OAuth sessions are grandfathered through any
+    # require_scope gate). This is **only** safe because `/v1/*` is the
+    # human-user surface; when `/mcp/*` ships in T-3.5b it MUST guard
+    # against `oauth_client_id is None` so legacy JWTs can't reach
+    # M2M-only tools. The `oauth_client_id` / `is_m2m` writes below are
+    # the contract surface for that future check.
     request.state.token_scopes = CANONICAL_SCOPES
     request.state.oauth_client_id = None
     request.state.is_m2m = False

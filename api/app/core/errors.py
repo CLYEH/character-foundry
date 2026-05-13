@@ -245,6 +245,25 @@ def auth_scope_exceeds_allowlist() -> AgentErrorException:
     )
 
 
+def auth_m2m_wrong_surface() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="AUTH_M2M_WRONG_SURFACE",
+            message="此用戶端必須改用 MCP server 介面",
+            problem="M2M (client_credentials) access token reached a `/v1/*` endpoint. "
+            "`/v1/*` is the human-user surface; M2M clients must use `/mcp/*`.",
+            cause="Headless agent presented a valid client_credentials token to an endpoint "
+            "outside the MCP server's surface. Token verification + allowlist + scope cap "
+            "all passed cleanly — the request is sanctioned, just routed to the wrong place.",
+            fix="Switch the request to the `/mcp/*` MCP server surface. If a user identity is "
+            "required for this operation, use a delegated Auth Code + PKCE flow instead of "
+            "client_credentials.",
+            retryable=False,
+        ),
+        status_code=403,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Character + creation_session errors. NOT_FOUND_CHARACTER doubles as the
 # response for soft-deleted-past-window restore attempts so callers don't

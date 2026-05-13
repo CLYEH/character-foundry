@@ -90,9 +90,17 @@ def require_scope(
         )
     required = frozenset(required_scopes)
 
-    # Lazy import breaks the `app.auth.scopes -> app.api.deps -> app.auth.oauth
-    # -> app.auth.scopes` cycle. By the time a route decorator calls
-    # `require_scope(...)`, `app.api.deps` is fully loaded.
+    # Lazy import is REQUIRED to break a real import cycle: `app.api.deps`
+    # imports `CANONICAL_SCOPES` from this module, and we need
+    # `get_current_user` from there. A top-level `from app.api.deps import ...`
+    # in this file would partially-load scopes.py mid-loading-deps.py and
+    # `from app.auth.scopes import CANONICAL_SCOPES` over there would
+    # AttributeError because `CANONICAL_SCOPES` hasn't been assigned yet.
+    #
+    # The lazy import resolves at `require_scope(...)` invocation time
+    # (i.e. when FastAPI decorators evaluate `Depends(require_scope(...))`),
+    # which is always *after* both `scopes.py` and `deps.py` finish their
+    # top-level execution. Safe by construction, not by accident.
     from app.api.deps import get_current_user
 
     async def dependency(
