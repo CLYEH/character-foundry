@@ -1,13 +1,28 @@
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, func, text
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+
+class RefreshTokenSource(str, enum.Enum):
+    """Which auth path minted this refresh token.
+
+    `JWT` = legacy email+password login (T-006). `OAUTH` = Authentik
+    Authorization Code + PKCE delegated flow (T-3.5b). The split exists so
+    the refresh endpoint can route correctly without re-deriving source from
+    token shape. T-055 adds the column; the read path that branches on it
+    lands later.
+    """
+
+    JWT = "jwt"
+    OAUTH = "oauth"
 
 
 class RefreshToken(Base):
@@ -38,4 +53,14 @@ class RefreshToken(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+    token_source: Mapped[RefreshTokenSource] = mapped_column(
+        Enum(
+            RefreshTokenSource,
+            name="refresh_token_source",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+            create_type=False,
+        ),
+        nullable=False,
+        default=RefreshTokenSource.JWT,
     )

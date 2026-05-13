@@ -7,7 +7,7 @@ from .generation_log import GenerationLog
 from .mask import Mask
 from .motion import Motion
 from .reference_image import ReferenceImage
-from .refresh_token import RefreshToken
+from .refresh_token import RefreshToken, RefreshTokenSource
 from .task import Task
 from .team import Team
 from .user import User
@@ -23,6 +23,7 @@ __all__ = [
     "Motion",
     "ReferenceImage",
     "RefreshToken",
+    "RefreshTokenSource",
     "Task",
     "Team",
     "User",

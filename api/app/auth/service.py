@@ -26,7 +26,7 @@ from app.core.errors import (
     auth_refresh_expired,
     auth_refresh_revoked,
 )
-from app.models.refresh_token import RefreshToken
+from app.models.refresh_token import RefreshToken, RefreshTokenSource
 from app.models.user import User
 
 _REFRESH_TTL_ENV = "JWT_REFRESH_TTL_SECONDS"
@@ -48,6 +48,28 @@ def refresh_ttl_seconds() -> int:
 
 def hash_refresh_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def create_refresh_token(
+    *,
+    user_id: uuid.UUID,
+    token_source: RefreshTokenSource = RefreshTokenSource.JWT,
+) -> tuple[RefreshToken, str]:
+    """Mint a (row, raw_token) pair. Caller is responsible for `db.add` + commit.
+
+    The raw token is returned exactly once — the row keeps only its sha256
+    so a DB leak yields no replayable tokens. `token_source` defaults to
+    `JWT` so the legacy login path is unchanged; the OAuth refresh path
+    (T-3.5b) will pass `OAUTH` explicitly.
+    """
+    raw = uuid.uuid4().hex
+    row = RefreshToken(
+        user_id=user_id,
+        token_hash=hash_refresh_token(raw),
+        expires_at=datetime.now(UTC) + timedelta(seconds=refresh_ttl_seconds()),
+        token_source=token_source,
+    )
+    return row, raw
 
 
 @dataclass(frozen=True)
@@ -74,17 +96,9 @@ async def login(db: AsyncSession, *, email: str, password: str) -> LoginResult:
 
     access_token, expires_in = sign_access_token(user_id=user.id, team_id=user.team_id)
 
-    raw_refresh = uuid.uuid4().hex
-    token_hash = hash_refresh_token(raw_refresh)
-    now = datetime.now(UTC)
-    db.add(
-        RefreshToken(
-            user_id=user.id,
-            token_hash=token_hash,
-            expires_at=now + timedelta(seconds=refresh_ttl_seconds()),
-        )
-    )
-    user.last_login_at = now
+    row, raw_refresh = create_refresh_token(user_id=user.id)
+    db.add(row)
+    user.last_login_at = datetime.now(UTC)
     await db.commit()
 
     return LoginResult(
