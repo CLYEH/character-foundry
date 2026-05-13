@@ -38,9 +38,7 @@ export async function oauthLoginViaUi(
   // use getByRole('textbox') which reads the ARIA name from the
   // accessibility tree. The textbox aria-label is "Email or Username" in
   // the default flow.
-  const uidInput = page
-    .getByRole('textbox', { name: /email or username|email|username/i })
-    .first()
+  const uidInput = page.getByRole('textbox', { name: /email or username|email|username/i }).first()
   await uidInput.waitFor({ state: 'visible', timeout: 15_000 })
   await uidInput.fill(user.email)
   await page.getByRole('button', { name: /log in|continue|next/i }).click()
