@@ -416,12 +416,20 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
         # Authentik applications (multi-app support per T-053 §5.4) — at least
         # one entry in `aud` must match an entry in `audiences`, and `iss`
         # must match one entry in `issuers`.
+        #
+        # `options.require` is critical defense-in-depth: PyJWT only validates
+        # `exp` / `iss` / `aud` *if those claims are present*, so a token
+        # missing `exp` would be eternally valid. Requiring the 5 claims we
+        # actually use ensures every token carries an expiration, an issuer
+        # we accepted, an audience we accepted, and a subject we can map to
+        # a User row / client. Codex round-5 P1.
         payload: dict[str, Any] = jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
             audience=audiences,
             issuer=issuers,
+            options={"require": ["exp", "iat", "iss", "aud", "sub"]},
         )
     except jwt.ExpiredSignatureError as exc:
         raise auth_expired() from exc

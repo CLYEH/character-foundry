@@ -594,6 +594,40 @@ def test_jwks_cache_second_request_no_refetch(
 # ---------------------------------------------------------------------------
 
 
+def test_oauth_token_missing_exp_claim_is_rejected(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _preload_jwks_cache: JWKSCache,
+    _private_key_pem: bytes,
+) -> None:
+    """Codex round-5 P1: a token without `exp` would otherwise be eternally
+    valid because PyJWT only validates `exp` when it's present. The decode
+    must require the claim and reject the token at the AUTH_INVALID_TOKEN
+    layer.
+
+    We bypass `make_oauth_token` (which always sets exp) and hand-craft the
+    payload to omit it.
+    """
+    now = int(time.time())
+    payload = {
+        "iss": _TEST_ISSUER,
+        "aud": _TEST_AUDIENCE,
+        "iat": now,
+        # `exp` deliberately omitted.
+        "azp": "claude-code",
+        "sub": seeded_user["email"],
+        "email": seeded_user["email"],
+        "scope": "character:read",
+    }
+    token = pyjwt.encode(payload, _private_key_pem, algorithm="RS256", headers={"kid": _TEST_KID})
+    resp = scoped_client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 401, resp.text
+    _assert_agent_error(resp.json(), "AUTH_INVALID_TOKEN")
+
+
 def test_expired_oauth_token_returns_auth_expired_envelope(
     scoped_client: TestClient,
     seeded_user: dict[str, str],
