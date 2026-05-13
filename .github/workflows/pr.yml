@@ -308,10 +308,14 @@ jobs:
       - name: Wait for Authentik health
         # Two-stage wait so the failure mode is unambiguous. Stage 1: just
         # `/-/health/ready/` which flips on after gunicorn + the worker
-        # acquire the DB lock and complete django migrations. Observed on
-        # GitHub-hosted runner: ~90s cold boot. Ceiling 150s.
+        # acquire the DB lock, complete django migrations, and finish app
+        # module loading. On the GitHub-hosted runner cold boot has been
+        # observed at 90s (first run with warm postgres init) and 180s
+        # (cold image pull + slow disk). 240s ceiling gives 4x headroom
+        # over the fast case without burning runner minutes on a genuinely
+        # dead Authentik.
         run: |
-          for i in $(seq 1 75); do
+          for i in $(seq 1 120); do
             if curl -sf http://localhost/oauth/-/health/ready/ > /dev/null; then
               echo "authentik healthy after ${i} attempts"
               exit 0
