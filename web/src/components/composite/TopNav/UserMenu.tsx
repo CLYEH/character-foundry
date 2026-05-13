@@ -1,7 +1,6 @@
 import { ChevronDown, LogOut, Settings } from 'lucide-react'
 import { Link } from 'react-router'
 
-import { logout as logoutEndpoint } from '@/api/endpoints/auth'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -12,7 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { useAuthStore } from '@/stores/authStore'
+import { signOutServer, useAuthStore } from '@/stores/authStore'
 
 function displayInitial(name: string): string {
   const trimmed = name.trim()
@@ -25,14 +24,7 @@ export function UserMenu() {
   if (!user) return null
 
   const handleLogout = async () => {
-    const refreshToken = useAuthStore.getState().refreshToken
-    if (refreshToken) {
-      try {
-        await logoutEndpoint(refreshToken)
-      } catch {
-        // Best-effort server-side revoke; clear local state regardless.
-      }
-    }
+    await signOutServer()
     useAuthStore.getState().logout()
   }
 

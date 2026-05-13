@@ -1,7 +1,7 @@
 import { ALICE, expect, loginAs, test } from './fixtures'
 
 test.describe('auth flow', () => {
-  test('login with valid credentials lands on dashboard with TopNav', async ({ page }) => {
+  test('login lands on dashboard with TopNav', async ({ page }) => {
     await loginAs(page, ALICE)
 
     await expect(page).toHaveURL('/')
@@ -12,14 +12,11 @@ test.describe('auth flow', () => {
     await expect(userMenu).toContainText(ALICE.name)
   })
 
-  test('login with wrong password shows inline error and stays on /login', async ({ page }) => {
+  test('login page renders only the Google sign-in button', async ({ page }) => {
     await page.goto('/login')
-    await page.getByLabel('Email').fill(ALICE.email)
-    await page.getByLabel('密碼').fill('WrongPassword!')
-    await page.getByRole('button', { name: '登入' }).click()
-
-    await expect(page.getByText('Email 或密碼錯誤')).toBeVisible()
-    await expect(page).toHaveURL(/\/login/)
+    await expect(page.getByRole('button', { name: '使用 Google 登入' })).toBeVisible()
+    await expect(page.getByLabel('Email')).toHaveCount(0)
+    await expect(page.getByLabel('密碼')).toHaveCount(0)
   })
 
   test('logout clears the session and protected routes redirect to /login', async ({

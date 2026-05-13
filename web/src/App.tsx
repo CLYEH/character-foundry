@@ -4,6 +4,7 @@ import AppLayout from '@/components/layout/AppLayout'
 import AuthLayout from '@/components/layout/AuthLayout'
 import DashboardPage from '@/routes/dashboard/DashboardPage'
 import LoginPage from '@/routes/login'
+import AuthCallbackPage from '@/routes/auth-callback'
 import NewCharacterPage from '@/routes/characters/new/NewCharacterPage'
 import CreationSessionPage from '@/routes/characters/new/session/CreationSessionPage'
 import CharacterDetailPage from '@/routes/characters/detail/CharacterDetailPage'
@@ -14,7 +15,10 @@ import { queryClient } from '@/api/queryClient'
 const router = createBrowserRouter([
   {
     element: <AuthLayout />,
-    children: [{ path: '/login', element: <LoginPage /> }],
+    children: [
+      { path: '/login', element: <LoginPage /> },
+      { path: '/auth/callback', element: <AuthCallbackPage /> },
+    ],
   },
   {
     element: <AppLayout />,
