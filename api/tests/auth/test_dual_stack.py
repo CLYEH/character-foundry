@@ -699,6 +699,169 @@ def test_test_seam_refuses_outside_pytest(
         reset_jwks_cache_for_test()
 
 
+def test_jwks_cache_refreshes_on_unknown_kid(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _oauth_env: None,
+    _jwks_document: dict[str, Any],
+    make_oauth_token: Any,
+) -> None:
+    """Codex P1: when a token presents a `kid` the fresh cache doesn't know
+    (Authentik just rotated signing keys), the cache must refresh once before
+    rejecting the token. Without this, valid new-kid tokens 401 for the full
+    1h TTL after every key rotation.
+    """
+    reset_jwks_cache_for_test()
+    try:
+        # Seed the cache with the keys we know, then construct a token whose
+        # kid is intentionally unknown — refresh-on-miss must fetch the same
+        # JWKS doc and notice the kid is still missing (so we still 401), but
+        # critically must have *attempted* the refresh.
+        cache = JWKSCache(_TEST_JWKS_URI)
+        cache.seed_keys_for_test(
+            {key_data["kid"]: pyjwt.PyJWK(key_data) for key_data in _jwks_document["keys"]}
+        )
+        set_jwks_cache_for_test(cache)
+
+        before = cache.fetch_count
+
+        token = make_oauth_token(
+            scopes=["character:read"],
+            client_id="claude-code",
+            email=seeded_user["email"],
+            kid="rotated-key-not-in-cache",
+        )
+
+        with respx.mock(assert_all_called=False) as router:
+            # Authentik post-rotation still doesn't have this kid in our test
+            # double; return the old JWKS so refresh succeeds but `kid` lookup
+            # still misses.
+            router.get(_TEST_JWKS_URI).mock(return_value=httpx.Response(200, json=_jwks_document))
+
+            resp = scoped_client.get(
+                "/v1/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 401, resp.text
+            _assert_agent_error(resp.json(), "AUTH_INVALID_TOKEN")
+
+            after = cache.fetch_count
+            assert after == before + 1, (
+                f"Expected exactly one refresh-on-kid-miss; fetch_count went {before} → {after}"
+            )
+    finally:
+        reset_jwks_cache_for_test()
+
+
+def test_jwks_cache_kid_miss_refresh_is_rate_limited(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _oauth_env: None,
+    _jwks_document: dict[str, Any],
+    make_oauth_token: Any,
+) -> None:
+    """An attacker probing with random kids must not be able to induce one
+    JWKS fetch per request — the refresh-on-miss path is gated by a window.
+    Two back-to-back requests with unknown kids → exactly one refresh.
+    """
+    reset_jwks_cache_for_test()
+    try:
+        cache = JWKSCache(_TEST_JWKS_URI)
+        cache.seed_keys_for_test(
+            {key_data["kid"]: pyjwt.PyJWK(key_data) for key_data in _jwks_document["keys"]}
+        )
+        set_jwks_cache_for_test(cache)
+        before = cache.fetch_count
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get(_TEST_JWKS_URI).mock(return_value=httpx.Response(200, json=_jwks_document))
+            for kid in ("attacker-probe-1", "attacker-probe-2"):
+                token = make_oauth_token(
+                    scopes=["character:read"],
+                    client_id="claude-code",
+                    email=seeded_user["email"],
+                    kid=kid,
+                )
+                resp = scoped_client.get(
+                    "/v1/auth/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                assert resp.status_code == 401, resp.text
+
+        after = cache.fetch_count
+        assert after == before + 1, (
+            f"Expected rate limit to cap refresh-on-miss at 1; fetch_count went {before} → {after}"
+        )
+    finally:
+        reset_jwks_cache_for_test()
+
+
+def test_oauth_jwks_endpoint_unreachable_returns_provider_unavailable(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _oauth_env: None,
+    make_oauth_token: Any,
+) -> None:
+    """Codex P2: when the JWKS endpoint is unreachable (transport error /
+    non-JSON / 5xx), surface AUTH_OAUTH_PROVIDER_UNAVAILABLE (503, retryable)
+    instead of letting the httpx error bubble as a 500. A brief Authentik
+    outage must not take auth-protected endpoints down.
+    """
+    reset_jwks_cache_for_test()
+    try:
+        with respx.mock(assert_all_called=False) as router:
+            router.get(_TEST_JWKS_URI).mock(
+                return_value=httpx.Response(500, text="Internal Server Error")
+            )
+            token = make_oauth_token(
+                scopes=["character:read"],
+                client_id="claude-code",
+                email=seeded_user["email"],
+            )
+            resp = scoped_client.get(
+                "/v1/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 503, resp.text
+            body = resp.json()
+            _assert_agent_error(body, "AUTH_OAUTH_PROVIDER_UNAVAILABLE")
+            assert body["error"]["retryable"] is True
+    finally:
+        reset_jwks_cache_for_test()
+
+
+def test_oauth_misconfigured_jwks_uri_returns_provider_unavailable(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    make_oauth_token: Any,
+    _private_key_pem: bytes,
+) -> None:
+    """Codex P2: deploy-time misconfig (e.g. `AUTHENTIK_JWKS_URL` with a
+    disallowed scheme) must surface as a controlled provider-unavailable
+    error, not propagate the RuntimeError from `_validate_jwks_uri` as 500.
+    """
+    reset_jwks_cache_for_test()
+    try:
+        monkeypatch.setenv("AUTHENTIK_ISSUER_URL", _TEST_ISSUER)
+        monkeypatch.setenv("AUTHENTIK_AUDIENCE", _TEST_AUDIENCE)
+        monkeypatch.setenv("AUTHENTIK_JWKS_URL", "file:///etc/passwd")  # rejected by scheme check
+
+        token = make_oauth_token(
+            scopes=["character:read"],
+            client_id="claude-code",
+            email=seeded_user["email"],
+        )
+        resp = scoped_client.get(
+            "/v1/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 503, resp.text
+        _assert_agent_error(resp.json(), "AUTH_OAUTH_PROVIDER_UNAVAILABLE")
+    finally:
+        reset_jwks_cache_for_test()
+
+
 def test_get_jwks_cache_reads_env_var(_oauth_env: None) -> None:
     from app.auth.oauth import get_jwks_cache
 

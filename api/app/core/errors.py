@@ -264,6 +264,26 @@ def auth_m2m_wrong_surface() -> AgentErrorException:
     )
 
 
+def auth_oauth_provider_unavailable() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="AUTH_OAUTH_PROVIDER_UNAVAILABLE",
+            message="認證服務暫時無法連線，請稍候再試",
+            problem="OAuth verification failed because the Authentik provider is unreachable "
+            "or returned an unexpected response.",
+            cause="Either a transient network failure between this server and Authentik, "
+            "Authentik's JWKS endpoint returned non-JSON, or `AUTHENTIK_JWKS_URL` / "
+            "`AUTHENTIK_ISSUER_URL` is misconfigured (e.g. disallowed URL scheme). "
+            "Distinct from invalid-token: the token itself may be fine; the server "
+            "couldn't verify it.",
+            fix="Retry the request after a short backoff. If the failure persists, "
+            "operators should check Authentik availability + `AUTHENTIK_*` env config.",
+            retryable=True,
+        ),
+        status_code=503,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Character + creation_session errors. NOT_FOUND_CHARACTER doubles as the
 # response for soft-deleted-past-window restore attempts so callers don't

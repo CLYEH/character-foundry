@@ -43,6 +43,7 @@ from app.core.errors import (
     auth_client_not_allowed,
     auth_expired,
     auth_invalid_token,
+    auth_oauth_provider_unavailable,
     auth_scope_exceeds_allowlist,
 )
 
@@ -52,6 +53,12 @@ _ALLOWED_JWKS_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
 
 _JWKS_TTL_SECONDS: Final[int] = 3600  # 1h, per ticket §"JWKS cache TTL" rationale
 _JWKS_FETCH_TIMEOUT_SECONDS: Final[float] = 5.0
+# Rate-limit refresh-on-unknown-kid (Codex P1): when a token presents a kid
+# the fresh cache doesn't know, we refresh once to pick up an Authentik key
+# rotation, but only if we haven't already refreshed for this reason within
+# this window. Without this gate, an attacker probing with random kids would
+# trigger one JWKS fetch per request.
+_JWKS_MISS_REFRESH_INTERVAL_SECONDS: Final[float] = 60.0
 _ISSUER_ENV: Final[str] = "AUTHENTIK_ISSUER_URL"
 _AUDIENCE_ENV: Final[str] = "AUTHENTIK_AUDIENCE"
 _JWKS_URI_ENV: Final[str] = "AUTHENTIK_JWKS_URL"
@@ -99,6 +106,10 @@ class JWKSCache:
         self._entry: _JWKSEntry | None = None
         self._lock = asyncio.Lock()
         self._fetch_count = 0
+        # Gate refresh-on-unknown-kid attempts (separate from TTL-based
+        # refresh) so a request flood with bad kids can't induce arbitrary
+        # outbound JWKS traffic.
+        self._last_miss_refresh: float = 0.0
 
     @property
     def fetch_count(self) -> int:
@@ -112,7 +123,30 @@ class JWKSCache:
         # Cheap pre-check outside the lock so warm-cache reads don't serialize.
         if self._is_fresh():
             assert self._entry is not None
+            key = self._entry.keys.get(kid)
+            if key is not None:
+                return key
+            # Fresh cache but kid not present — likely Authentik just rotated
+            # signing keys. Refresh once (rate-limited) to pick up the new
+            # key set; without this, valid tokens signed with the new kid
+            # would 401 for the entire 1h TTL window. Codex P1 (T-054 round 2).
+            now = time.time()
+            if now - self._last_miss_refresh < _JWKS_MISS_REFRESH_INTERVAL_SECONDS:
+                return None
+            async with self._lock:
+                # Re-check under the lock — another coroutine may have just
+                # refreshed and populated the kid we want.
+                assert self._entry is not None
+                key = self._entry.keys.get(kid)
+                if key is not None:
+                    return key
+                if time.time() - self._last_miss_refresh < _JWKS_MISS_REFRESH_INTERVAL_SECONDS:
+                    return None
+                await self._refresh()
+                self._last_miss_refresh = time.time()
+            assert self._entry is not None
             return self._entry.keys.get(kid)
+        # Stale (TTL elapsed) or cold cache — full refresh under the lock.
         async with self._lock:
             if not self._is_fresh():
                 await self._refresh()
@@ -283,7 +317,15 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
         )
         raise auth_invalid_token()
 
-    jwks_cache = cache if cache is not None else get_jwks_cache()
+    # Cache init can raise RuntimeError when AUTHENTIK_JWKS_URL has a
+    # disallowed scheme — that's a deploy-time misconfig, not a token
+    # problem, so map it to provider-unavailable (retryable for ops to
+    # fix) rather than letting it bubble as a 500.
+    try:
+        jwks_cache = cache if cache is not None else get_jwks_cache()
+    except RuntimeError as exc:
+        _logger.error("oauth_jwks_cache_init_failed", extra={"error": str(exc)})
+        raise auth_oauth_provider_unavailable() from exc
 
     try:
         header = jwt.get_unverified_header(token)
@@ -293,7 +335,15 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
     if not isinstance(kid, str) or not kid:
         raise auth_invalid_token()
 
-    signing_key = await jwks_cache.get_key(kid)
+    # JWKS fetch can fail mid-flight (Authentik down, returning HTML behind
+    # an error page, etc.) — catch httpx transport errors + JSON decode
+    # errors and surface as provider-unavailable. Without this guard the
+    # request 500s and every authenticated endpoint goes down with it.
+    try:
+        signing_key = await jwks_cache.get_key(kid)
+    except (httpx.HTTPError, ValueError) as exc:
+        _logger.error("oauth_jwks_fetch_failed", extra={"error": str(exc)})
+        raise auth_oauth_provider_unavailable() from exc
     if signing_key is None:
         raise auth_invalid_token()
 
