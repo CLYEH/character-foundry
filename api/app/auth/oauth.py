@@ -423,12 +423,20 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
         # actually use ensures every token carries an expiration, an issuer
         # we accepted, an audience we accepted, and a subject we can map to
         # a User row / client. Codex round-5 P1.
+        # `leeway` of 30s covers both `exp` slack (a token that just expired
+        # by a second on a clock-drifting API node still passes) and `iat`
+        # slack (a token minted a second ahead by Authentik isn't rejected
+        # as "from the future"). NTP-synced containers normally drift well
+        # under this; the trade-off is accepting tokens for at most 30s past
+        # their declared expiry, which is acceptable for Phase 1's 1h TTL.
+        # Codex round-6 P2 raised this once `iat` joined the require list.
         payload: dict[str, Any] = jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
             audience=audiences,
             issuer=issuers,
+            leeway=30,
             options={"require": ["exp", "iat", "iss", "aud", "sub"]},
         )
     except jwt.ExpiredSignatureError as exc:

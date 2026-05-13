@@ -594,6 +594,37 @@ def test_jwks_cache_second_request_no_refetch(
 # ---------------------------------------------------------------------------
 
 
+def test_oauth_token_with_small_iat_clock_skew_is_accepted(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _preload_jwks_cache: JWKSCache,
+    _private_key_pem: bytes,
+) -> None:
+    """Codex round-6 P2: NTP-bounded clock drift between Authentik and the
+    API worker (Authentik's clock slightly ahead → token `iat` in our
+    future) must NOT 401. The decode `leeway` admits up to 30s of skew on
+    both `iat` and `exp` boundaries.
+    """
+    now = int(time.time())
+    skewed_iat = now + 5  # Authentik clock 5s ahead — well within leeway
+    payload = {
+        "iss": _TEST_ISSUER,
+        "aud": _TEST_AUDIENCE,
+        "iat": skewed_iat,
+        "exp": skewed_iat + 3600,
+        "azp": "claude-code",
+        "sub": seeded_user["email"],
+        "email": seeded_user["email"],
+        "scope": "character:read",
+    }
+    token = pyjwt.encode(payload, _private_key_pem, algorithm="RS256", headers={"kid": _TEST_KID})
+    resp = scoped_client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
 def test_oauth_token_missing_exp_claim_is_rejected(
     scoped_client: TestClient,
     seeded_user: dict[str, str],
