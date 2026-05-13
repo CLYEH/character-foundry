@@ -239,6 +239,12 @@ jobs:
           REDIS_PASSWORD=cf_test_redis
           JWT_SECRET=ci_jwt_secret_not_for_prod_0123456789abcdef0123456789abcdef
           STORAGE_SIGNED_URL_SECRET=ci_storage_secret_not_for_prod_0123456789abcdef
+          # T-052: docker-compose.yml interpolates these for the Authentik
+          # services. Empty values trip authentik-postgres init (refuses to
+          # start without POSTGRES_PASSWORD) which fans out to authentik-
+          # server / nginx via the dependency chain — the whole `up -d` fails.
+          AUTHENTIK_POSTGRES_PASSWORD=cf_test_authentik_pw
+          AUTHENTIK_SECRET_KEY=ci_authentik_secret_not_for_prod_0123456789abcdef0123456789abcdef
           OPENAI_API_KEY=
           SEEDANCE_API_KEY=
           ANTHROPIC_API_KEY=

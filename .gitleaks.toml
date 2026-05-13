@@ -49,4 +49,5 @@ regexes = [
     # rule otherwise.
     '''ci_jwt_secret_not_for_prod_[0-9a-f]{32,}''',
     '''ci_storage_secret_not_for_prod_[0-9a-f]{16,}''',
+    '''ci_authentik_secret_not_for_prod_[0-9a-f]{32,}''',
 ]
