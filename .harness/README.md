@@ -26,11 +26,11 @@ when the kill rate drops more than `drift_threshold_pp`. Update only when
 
 ### `skip-review.log` *(gitignored, T-063)*
 
-Append-only JSONL audit log of `CF_SKIP_REVIEW=1` pre-push bypasses. Each
-line is one bypass event:
+Append-only JSONL audit log of `CF_SKIP_REVIEW=1` pre-push bypasses. One
+line per bypass event:
 
 ```json
-{"ts":"2026-05-13T18:42:11Z","branch":"docs/fix-typo","range":"origin/docs/fix-typo..HEAD","reason":"docs-only","source":"terminal-hook"}
+{"ts":"2026-05-13T18:42:11Z","branch":"docs/fix-typo","range":"origin/docs/fix-typo..HEAD","reason":"docs-only"}
 ```
 
 Fields:
@@ -41,11 +41,24 @@ Fields:
 | `branch` | Branch HEAD was on (empty if detached) |
 | `range` | Commit range being pushed (`<upstream>..HEAD`, falls back to `origin/main..HEAD`) |
 | `reason` | Optional free-text from `CF_SKIP_REVIEW_REASON` env var |
-| `source` | `claude-hook` (Claude `PreToolUse` fired) or `terminal-hook` (`.githooks/pre-push` fired) |
 
-Both hooks write through the same `append_skip_log` shell function, so the
-schemas stay in lockstep. Failure to write the log is non-fatal — the push
-itself is what matters; the log is observability.
+**Single-writer design.** Only `.githooks/pre-push` writes to the log — the
+Claude `PreToolUse` hook at `.claude/hooks/pre-push-review.sh` does NOT,
+even though it also sees the bypass. When Claude invokes `git push` via
+the Bash tool, the actual `git push` still triggers `.githooks/pre-push`,
+so the terminal hook covers both terminal-direct and Claude-driven pushes
+without double-counting. Earlier revisions wrote from both hooks with a
+`source` discriminator; Codex review on PR #82 caught that retro-time
+count recipes (`jq -r '.ts[:7]' | uniq -c`) would inflate Claude-driven
+push counts ~2×, so the Claude hook was demoted to bypass-allow-only.
+
+Failure to write the log is non-fatal (`>> "$log" 2>/dev/null || true`) —
+the push is what matters; the log is observability.
+
+**Pre-condition.** This logging only runs when `core.hooksPath = .githooks`
+is configured (the one-time setup documented in `CONTRIBUTING.md` §7.1).
+Same precondition as the review gate itself — if hooks aren't installed,
+neither the gate nor the audit log are active.
 
 **Why this exists.** `CONTRIBUTING.md` §7.1 lists when bypass is legitimate
 (hotfix, docs-only, post-review re-push). The risk is *drift*: bypass

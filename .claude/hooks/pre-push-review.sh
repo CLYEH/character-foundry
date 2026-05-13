@@ -16,47 +16,15 @@
 
 set -u
 
-# T-063: bypass audit log. Append one JSONL line to `.harness/skip-review.log`
-# every time CF_SKIP_REVIEW=1 is honored, so quarterly retros can spot drift
-# (bypass rate climbing, reason field consistently empty, etc.). File is
-# gitignored — local accumulation only, never sync'd.
-#
-# KEEP IN SYNC with the mirror hook at `.githooks/pre-push`. The two hooks
-# fire from different runtime contexts (Claude PreToolUse JSON vs git
-# pre-push stdin), so the helper is duplicated rather than sourced; only the
-# `source` field differs.
-append_skip_log() {
-  local repo_root ts branch upstream range reason esc_branch esc_range esc_reason log
-  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
-  log="$repo_root/.harness/skip-review.log"
-  [ -d "$repo_root/.harness" ] || return 0
-  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
-  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "")
-  if [ -n "$upstream" ]; then
-    range="${upstream}..HEAD"
-  else
-    range="origin/main..HEAD"
-  fi
-  reason="${CF_SKIP_REVIEW_REASON:-}"
-  # Minimal JSON-string escape: backslash → \\, double quote → \", then strip
-  # raw newlines / tabs from `reason` so each entry stays on one line.
-  esc_branch="${branch//\\/\\\\}"; esc_branch="${esc_branch//\"/\\\"}"
-  esc_range="${range//\\/\\\\}"; esc_range="${esc_range//\"/\\\"}"
-  esc_reason="${reason//\\/\\\\}"; esc_reason="${esc_reason//\"/\\\"}"
-  # Flatten all control chars to space — JSON requires C0 controls
-  # (U+0000..U+001F) escaped (RFC 8259 §7), and a stray CRLF / `\r` from a
-  # Windows clipboard would otherwise yield a line that fails `jq` / json.loads.
-  # `[[:cntrl:]]` is the portable POSIX class (covers C0 + DEL); we avoid the
-  # explicit `[$'\x00'-$'\x1f']` form because bash silently mis-matches when
-  # NUL is in the range (verified locally on bash 5.2.37 msys).
-  esc_reason="${esc_reason//[[:cntrl:]]/ }"
-  printf '{"ts":"%s","branch":"%s","range":"%s","reason":"%s","source":"claude-hook"}\n' \
-    "$ts" "$esc_branch" "$esc_range" "$esc_reason" >> "$log" 2>/dev/null || true
-}
-
+# T-063 audit log:  this hook intentionally does NOT write to
+# `.harness/skip-review.log`. When Claude invokes `git push` via the Bash
+# tool, BOTH this PreToolUse hook and the terminal git pre-push hook
+# (`.githooks/pre-push`) fire on the same push — double-writing would
+# inflate every retro count for Claude-driven pushes. The terminal hook is
+# the single writer and covers both terminal-direct and Claude-driven
+# pushes (Bash → git → pre-push hook). See `.harness/README.md` for the
+# dedupe rationale (PR #82 / Codex P2 round 1).
 if [ "${CF_SKIP_REVIEW:-0}" = "1" ]; then
-  append_skip_log
   cat <<'JSON'
 {"permissionDecision":"allow","additionalContext":"Pre-push review bypass active (CF_SKIP_REVIEW=1)."}
 JSON
