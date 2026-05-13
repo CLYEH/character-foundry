@@ -8,6 +8,10 @@
 # engineering-code-reviewer subagent first. Bypass with CF_SKIP_REVIEW=1
 # (hotfix, docs-only, or re-pushing after review has been done).
 #
+# T-062: if the current branch's ticket file matches security-sensitive or
+# schema-migration keywords, additionally direct Claude to chain
+# `security-engineer` / `db-optimizer` on the same diff.
+#
 # Activated via `git config core.hooksPath .githooks` (run once per
 # clone — see CONTRIBUTING.md).
 #
@@ -21,6 +25,31 @@ if [ "${CF_SKIP_REVIEW:-0}" = "1" ]; then
 fi
 
 remote="${1:-?}"
+
+# ── Ticket detection (same regex as .claude/hooks/pre-push-review.sh) ──
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+TICKET=$(printf '%s' "${BRANCH:-}" | grep -oiE 'T-[0-9]+' | head -1 || true)
+TICKET=$(printf '%s' "${TICKET:-}" | tr '[:lower:]' '[:upper:]')
+
+SEC_CHAIN=0
+DB_CHAIN=0
+
+if [ -n "${TICKET:-}" ]; then
+  # Anchor to repo root so subdir / worktree invocations still resolve.
+  REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
+  for f in "$REPO_ROOT"/tickets/${TICKET}-*.md "$REPO_ROOT"/tickets/DONE/${TICKET}-*.md; do
+    [ -f "$f" ] || continue
+    # `-i` makes the OAuth-template-header strip robust to casing drift in
+    # tickets/_TEMPLATE.md (see CONTRIBUTING §4.4).
+    body=$(grep -vi '^## OAuth scope' "$f")
+    if printf '%s\n' "$body" | grep -qiE 'security-sensitive|oauth|\bjwt\b|\bpkce\b|bearer token|authentik|client_secret|refresh[._ ]token|scope decorator|secret scan|sast' ; then
+      SEC_CHAIN=1
+    fi
+    if printf '%s\n' "$body" | grep -qiE 'alembic|alter table|add column|drop column|schema migration|migration script|\bbackfill\b|new index|enum column' ; then
+      DB_CHAIN=1
+    fi
+  done
+fi
 
 print_header() {
   echo ""
@@ -78,6 +107,19 @@ cat <<'EOF'
   Review the diff with the `engineering-code-reviewer`
   subagent in Claude Code before pushing.
 
+EOF
+
+if [ "$SEC_CHAIN" = "1" ]; then
+  printf '  ADDITIONAL: ticket %s is security-sensitive — also run\n' "$TICKET"
+  printf '  subagent_type=security-engineer on the same diff.\n\n'
+fi
+
+if [ "$DB_CHAIN" = "1" ]; then
+  printf '  ADDITIONAL: ticket %s touches schema / migrations — also\n' "$TICKET"
+  printf '  run subagent_type=db-optimizer on the same diff.\n\n'
+fi
+
+cat <<'EOF'
   After the review:
     • Clean → re-run with the bypass flag:
         CF_SKIP_REVIEW=1 git push <args>
