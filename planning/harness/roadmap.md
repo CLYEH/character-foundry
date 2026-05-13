@@ -26,22 +26,23 @@
 
 > 預期總工時：~1.5 天
 
-### A1. Nightly 真 provider contract replay
+### A1. 真 provider contract replay（manual-only since T-066）
 
 **做什麼：**
 - 加 pytest marker `@pytest.mark.real_provider`
 - 對 gpt-image-2 / gpt-5-mini / Veo 3.1 各一個最便宜的真 call
 - **只斷言 response shape**，不斷言內容
-- GitHub Actions schedule（nightly UTC 00:00），不掛在 PR CI 上省 credit
+- GitHub Actions `workflow_dispatch`，**不掛 cron**（T-066 變更：原 nightly UTC 00:00 cron 對單人專案 ~$10/月不划算；trigger 模型 push-based → pull-based）
 - 失敗時自動開 ticket（label `provider-drift`）
+- 觸發時機：動到 `app/ai/*` client 或 `_parse_*` 函式時，PR open 後手動 `gh workflow run provider-contract.yml`
 
 **為什麼前移：**
 - T-042 / T-045 / T-051 都是同模式（stub 跟真 provider 漂移）連踩三次
 - M3.5 之後 MCP tool 會 1:1 wrap 這幾條，shape 漂移會同時打 REST + MCP 兩面
 
-**預估工時：** 4-6h（含 GH Actions schedule + secret 設定）
+**預估工時：** 4-6h（含 GH Actions workflow + secret 設定）
 
-**Owner trigger：** 開 T-058（暫定編號）
+**Owner trigger：** T-058 land 2026-05-12；T-066 改 manual-only 2026-05-13
 
 ---
 
@@ -239,7 +240,7 @@
 ## 4. 時程建議
 
 ```
-T-058 (A1 nightly real-provider replay)  ─┐
+T-058 (A1 real-provider replay, manual-only post-T-066) ─┐
 T-059 (A2 layering arch test)             │  M3.5 動工前一週
 T-060 (A3 cov gate + mutmut)              │  ←
 T-062 (A5 subagent stack)                 │

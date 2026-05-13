@@ -94,7 +94,7 @@ Harness 包含**所有非 model 的東西**，分兩條主軸：
 |---|---|---|
 | **Maintainability** | **中**（T-060 後升）| linter / format / type / test 都有；**coverage gate 已鎖**（`fail_under = 75` in `api/pyproject.toml` [tool.coverage.report]，2026-05-12 baseline 77 %，留 2 pp 緩衝）；**mutation testing baseline 已建**（`app/core/errors.py` + `app/ai/circuit.py`，nightly via `.github/workflows/mutation.yml`）。仍缺：dead-code / duplication、複雜度門檻、`app/auth/*` mutation（見 §2.5 附表的 known gap） |
 | **Architecture fitness** | **部分**（T-059 後）| `api/tests/arch/test_layering.py` + `[tool.importlinter]` 兩條 forbidden contract：(a) `app.api.*` 不直接 import `app.models.*`、(b) `app.ai.*` 不 import `app.api.*`；既有 14 條 violation 列在 ignore_imports（含 sanctioned User-as-auth-context 10 條 + 真 leak 4 條，後者由 STATUS.md backlog row S3.5-1 追蹤）。M3.5 placeholder：`test_oauth_scope_source_is_centralized` 預先寫好、`pytest.skip` 等 `app/auth/scopes.py` 由 T-054 建立後自動 activate。仍缺：perf SLO、observability convention check |
-| **Behaviour** | 中 | unit + e2e + stub mode + circuit breaker + 一條 outgoing-body contract test；無 prompt assembly snapshot、無真 provider replay、無 LLM-as-judge |
+| **Behaviour** | 中 | unit + e2e + stub mode + circuit breaker + 一條 outgoing-body contract test + on-demand 真 provider contract replay（T-058 / T-066 後改 manual-only）；無 prompt assembly snapshot、無 LLM-as-judge |
 
 #### Coverage + mutation baseline（T-060，2026-05-12 snapshot）
 
@@ -128,7 +128,7 @@ ticket T-060 原規劃含 `app/auth/*`，實作時撞牆：`tests/auth/` 透過 
 | **pre-push** | engineering-code-reviewer subagent（可 `CF_SKIP_REVIEW=1` bypass）| 無 bypass log |
 | **PR CI** | backend lint+type+test、**coverage gate `fail_under = 75`**（T-060）、frontend lint+type+test、e2e on docker compose、arch fitness test（T-059）| 無 SAST、無 secret scan |
 | **PR 開後** | Codex App auto-review + auto-loop merge gate | —— |
-| **post-integration / nightly** | **provider-contract.yml**（T-058）+ **mutation.yml**（T-060）| 無 scheduled CSO audit、無 LLM-as-judge、無 SLO 回灌 |
+| **post-integration / nightly** | **mutation.yml**（T-060，nightly）+ **provider-contract.yml**（T-058，manual-only since T-066）| 無 scheduled CSO audit、無 LLM-as-judge、無 SLO 回灌；provider contract drift 改 push-based → pull-based 觸發 |
 
 ### 2.7 Harnessability（強項）
 
@@ -163,9 +163,9 @@ ticket T-060 原規劃含 `app/auth/*`，實作時撞牆：`tests/auth/` 透過 
 按嚴重度排序：
 
 1. ~~**Architecture fitness 幾乎零**——M3.5 加 OAuth middleware + MCP server 兩個新 layer，沒 arch test 會偷偷穿層。~~ ✅ T-059 補上 baseline arch test（2026-05-12）；T-054 落地後 `test_oauth_scope_source_is_centralized` 自動 activate。
-2. ~~**真 provider drift sensor 缺**——T-042 / T-045 / T-051 同模式三次。~~ ✅ T-058 補上 nightly real-provider replay（2026-05-12）。
+2. ~~**真 provider drift sensor 缺**——T-042 / T-045 / T-051 同模式三次。~~ ✅ T-058 補上 real-provider replay（2026-05-12）；T-066（2026-05-13）改為 manual-only：cron 每日成本 ~$10 對單人專案不值，trigger 模型從 push-based 變 pull-based（動到 ai client 時手動跑），drift 偵測 lag 從 1 天變 ≤ 1 週但能接受。
 3. **OAuth 落地前該有的 sensor 還沒裝完**——secret scan / SAST 仍缺（T-061）。**T-060 補上 coverage gate + mutation baseline（errors + circuit）**，但 `app/auth/*` mutation 因 pgvector × mutmut 衝突 defer，見 §2.5 known gap。
-4. ~~**Post-integration 那層幾乎空的**——nightly job 沒有 cron 設好。~~ ✅ T-058 + T-060 兩條 nightly workflow 已 land（provider-contract、mutation）。
+4. ~~**Post-integration 那層幾乎空的**——nightly job 沒有 cron 設好。~~ ✅ T-060 mutation.yml 維持 nightly；T-058 provider-contract.yml 改 manual-only（T-066）。Layer 不再空，但 cadence 分兩條：cheap auto-sensor 每晚，expensive real-call sensor 按需。
 5. **Inferential sensor stack 只有一個 subagent**——security-engineer / db-optimizer 對 M3.5 sprint 馬上要用。
 6. **CF_SKIP_REVIEW=1 沒 audit log**——觀察不到 bypass-rate 趨勢。
 7. **沒 scaffold codemod**——新 endpoint / 新 AI client / 新 MCP tool 都靠手刻。
