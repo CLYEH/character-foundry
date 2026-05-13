@@ -16,6 +16,14 @@
 
 set -u
 
+# T-063 audit log:  this hook intentionally does NOT write to
+# `.harness/skip-review.log`. When Claude invokes `git push` via the Bash
+# tool, BOTH this PreToolUse hook and the terminal git pre-push hook
+# (`.githooks/pre-push`) fire on the same push — double-writing would
+# inflate every retro count for Claude-driven pushes. The terminal hook is
+# the single writer and covers both terminal-direct and Claude-driven
+# pushes (Bash → git → pre-push hook). See `.harness/README.md` for the
+# dedupe rationale (PR #82 / Codex P2 round 1).
 if [ "${CF_SKIP_REVIEW:-0}" = "1" ]; then
   cat <<'JSON'
 {"permissionDecision":"allow","additionalContext":"Pre-push review bypass active (CF_SKIP_REVIEW=1)."}

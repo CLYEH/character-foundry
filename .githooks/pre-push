@@ -20,7 +20,55 @@
 
 set -u
 
+# T-063: bypass audit log. SOLE WRITER — appends one JSONL line to
+# `.harness/skip-review.log` every time CF_SKIP_REVIEW=1 is honored. The
+# Claude PreToolUse hook intentionally does NOT write (would double-count
+# Claude-driven pushes since `git push` from Bash still fires THIS hook).
+# File is gitignored; local accumulation only. See `.harness/README.md`.
+append_skip_log() {
+  local repo_root ts branch upstream range reason esc_branch esc_range esc_reason log
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  log="$repo_root/.harness/skip-review.log"
+  [ -d "$repo_root/.harness" ] || return 0
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "")
+  if [ -n "$upstream" ]; then
+    range="${upstream}..HEAD"
+  else
+    range="origin/main..HEAD"
+  fi
+  reason="${CF_SKIP_REVIEW_REASON:-}"
+  esc_branch="${branch//\\/\\\\}"; esc_branch="${esc_branch//\"/\\\"}"
+  esc_range="${range//\\/\\\\}"; esc_range="${esc_range//\"/\\\"}"
+  esc_reason="${reason//\\/\\\\}"; esc_reason="${esc_reason//\"/\\\"}"
+  # Flatten all control chars to space — JSON requires C0 controls
+  # (U+0000..U+001F) escaped (RFC 8259 §7), and a stray CRLF / `\r` from a
+  # Windows clipboard would otherwise yield a line that fails `jq` / json.loads.
+  # `[[:cntrl:]]` is the portable POSIX class (covers C0 + DEL); we avoid the
+  # explicit `[$'\x00'-$'\x1f']` form because bash silently mis-matches when
+  # NUL is in the range (verified locally on bash 5.2.37 msys).
+  esc_reason="${esc_reason//[[:cntrl:]]/ }"
+  printf '{"ts":"%s","branch":"%s","range":"%s","reason":"%s"}\n' \
+    "$ts" "$esc_branch" "$esc_range" "$esc_reason" >> "$log" 2>/dev/null || true
+}
+
 if [ "${CF_SKIP_REVIEW:-0}" = "1" ]; then
+  # Drain pre-push stdin to determine whether any substantive ref update is
+  # actually being pushed. Git fires this hook even on no-op pushes
+  # ("Everything up-to-date") and on pure branch deletions; logging
+  # unconditionally would create false-positive bypass events and inflate
+  # the retro metrics. Mirrors the `printed_any` gate in the deny path
+  # below. PR #82 / Codex P2 round 2.
+  bypass_zero_sha="0000000000000000000000000000000000000000"
+  bypass_has_update=0
+  while IFS=' ' read -r bypass_local_ref bypass_local_sha bypass_remote_ref bypass_remote_sha; do
+    [ "${bypass_local_sha:-}" = "$bypass_zero_sha" ] && continue
+    bypass_has_update=1
+  done
+  if [ "$bypass_has_update" = "1" ]; then
+    append_skip_log
+  fi
   exit 0
 fi
 
