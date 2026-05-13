@@ -151,17 +151,84 @@ def model_quota_exceeded(model: str, *, detail: str | None = None) -> AgentError
     )
 
 
-def model_invalid_request(model: str, *, detail: str | None = None) -> AgentErrorException:
+def model_invalid_request(
+    model: str,
+    *,
+    detail: str | None = None,
+    http_status: int | None = None,
+) -> AgentErrorException:
+    """Provider's response indicates the request payload is unusable.
+
+    Two callsites, distinguished by `http_status`:
+
+    - **Real HTTP 4xx** — `map_response_to_agent_error` passes the status
+      code so the problem text names it explicitly. This is the canonical
+      "provider rejected our payload" path.
+    - **Detail-only** — provider clients (e.g. Veo) for terminal responses
+      whose shape we cannot consume (missing fields, malformed JSON,
+      bounded redirect loops). `http_status=None` and the problem text
+      says "unexpected response" rather than implying a 4xx that never
+      happened (T-051: previously every detail-only path falsely claimed
+      `returned 4xx`, misleading on-call triage).
+    """
+    if http_status is not None:
+        problem = f"{model} returned HTTP {http_status} for the request payload."
+    else:
+        problem = f"{model} returned an unexpected response."
+    if detail:
+        problem += f" Detail: {detail}"
     return AgentErrorException(
         AgentError(
             code="MODEL_INVALID_REQUEST",
             message="模型輸入不合法，請重新嘗試",
-            problem=f"{model} returned 4xx for the request payload."
-            + (f" Detail: {detail}" if detail else ""),
+            problem=problem,
             cause="Client-side payload mismatched the provider's schema "
             "(unsupported size, malformed image, etc).",
             fix="Inspect the request payload; this is a bug if the input looked valid.",
             retryable=False,
+        ),
+        status_code=502,
+    )
+
+
+def model_content_filtered(model: str, *, detail: str | None = None) -> AgentErrorException:
+    """Provider's safety filter dropped the generated output despite a
+    successful completion (T-051).
+
+    Distinct from `prompt_content_policy`:
+
+    - `prompt_content_policy` is non-retryable — the prompt itself was
+      rejected up-front by an OpenAI-style 400 with `content_policy_*`,
+      and the same prompt will keep being rejected until edited.
+    - `model_content_filtered` is retryable — the operation completed
+      successfully but a post-generation safety filter (e.g. Veo's RAI
+      filter, `googleapis/js-genai#1272`) dropped the output. Same
+      prompt+image often clears within 1–2 retries.
+
+    `status_code=502` is both consistent with the provider-issue family
+    (`model_invalid_request` / `model_unavailable` / `model_quota_exceeded`)
+    AND semantically correct: the *request* was valid (Veo accepted it,
+    ran it, generated output), only the upstream-returned *response* is
+    unusable. 422 (Unprocessable Entity) would say the client submitted
+    something semantically invalid, which is not the case here.
+
+    User-facing `message` does not promise an automatic retry — by the
+    time this AgentError reaches the user, the system has already
+    exhausted its RAI retry budget (or `VEO_RAI_MAX_RETRIES=0` skipped
+    retries entirely). Surfacing "正在自動重試" at that moment would be
+    misleading and divergent from the user's actual options.
+    """
+    return AgentErrorException(
+        AgentError(
+            code="MODEL_CONTENT_FILTERED",
+            message="目前無法生成此動作影片，請稍後再試或調整描述",
+            problem=f"{model} completed the request but its safety filter "
+            "dropped the generated media." + (f" Detail: {detail}" if detail else ""),
+            cause="Upstream RAI / safety filter rejected the output. "
+            "Known to be flaky for Veo 3.1 (googleapis/js-genai#1272).",
+            fix="Retry the same request; if the issue persists across multiple "
+            "attempts ask the user to rephrase or alter the source image.",
+            retryable=True,
         ),
         status_code=502,
     )
@@ -264,7 +331,7 @@ def map_response_to_agent_error(
 
     if 400 <= status < 500:
         detail = _extract_message(payload)
-        return model_invalid_request(model, detail=detail)
+        return model_invalid_request(model, detail=detail, http_status=status)
 
     # 5xx → unavailable. The breaker counts these toward OPEN, so callers
     # that retry will eventually short-circuit before bombarding the

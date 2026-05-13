@@ -172,6 +172,23 @@ def veo_max_poll_attempts() -> int:
     return _int_env("VEO_MAX_POLL_ATTEMPTS", default=60, min_value=1)
 
 
+def veo_rai_max_retries() -> int:
+    """Post-submit retries when Veo's RAI filter drops generated media (T-051).
+
+    Each retry costs a full Veo submission — the operation completed
+    successfully before the filter fired, so we've already paid for one
+    generation per attempt. Per `googleapis/js-genai#1272` ~90 % of RAI
+    false positives clear within 1–2 retries; default 2 captures that
+    band without burning budget when the prompt+image genuinely keeps
+    tripping the filter.
+
+    Allows `0` so operators can disable RAI retries during incidents to
+    stop bleeding budget (matches the broader `min_value=0` pattern of
+    other retry knobs).
+    """
+    return _int_env("VEO_RAI_MAX_RETRIES", default=2, min_value=0)
+
+
 # Circuit-breaker tuning. Values default to ai-integration.md §3.4 numbers.
 def circuit_failure_threshold() -> int:
     return _int_env("AI_CIRCUIT_FAILURE_THRESHOLD", default=5)

@@ -52,6 +52,7 @@ from app.ai.circuit import CircuitBreaker
 from app.ai.errors import (
     map_exception_to_agent_error,
     map_response_to_agent_error,
+    model_content_filtered,
     model_invalid_request,
     model_quota_exceeded,
     model_timeout,
@@ -104,6 +105,7 @@ class Veo31Client:
         max_retries: int | None = None,
         poll_interval_seconds: float | None = None,
         max_poll_attempts: int | None = None,
+        rai_max_retries: int | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.redis = redis
@@ -121,6 +123,9 @@ class Veo31Client:
         )
         self.max_poll_attempts = (
             max_poll_attempts if max_poll_attempts is not None else config.veo_max_poll_attempts()
+        )
+        self.rai_max_retries = (
+            rai_max_retries if rai_max_retries is not None else config.veo_rai_max_retries()
         )
         self._http_client = http_client
         self._owns_client = http_client is None
@@ -142,13 +147,26 @@ class Veo31Client:
     ) -> VeoResult:
         """Run a Veo i2v generation: retry submission, then poll + download once.
 
-        Retry only protects the *submit* step. Once Veo accepts the long-
-        running operation it's already started consuming provider budget
-        (planning §4.4: "影片重試很貴"); resubmitting after a poll-time
-        transient would throw away an in-flight generation and pay for a
-        new one. Post-submit failures propagate directly to the caller and
-        still feed the breaker if retryable, so upstream health continues
-        to be tracked.
+        Two retry envelopes layer here:
+
+        - **Submit retry** (`_submit_with_retry`): protects the *submit* step
+          only. Once Veo accepts the long-running operation it's already
+          started consuming provider budget (planning §4.4: "影片重試很貴");
+          resubmitting after a poll-time transient would throw away an
+          in-flight generation and pay for a new one.
+        - **RAI retry** (this method, T-051): a *narrow* post-submit retry
+          band for `MODEL_CONTENT_FILTERED` — Veo's RAI filter has documented
+          false positives (`googleapis/js-genai#1272`) that often clear on
+          a fresh submission with the same input. Each retry costs a full
+          generation so the budget is small (`VEO_RAI_MAX_RETRIES`,
+          default 2) and operator-tunable.
+
+        Post-submit failures other than RAI propagate directly and still
+        feed the breaker if retryable, so upstream health remains
+        observable. RAI failures specifically do NOT feed the breaker:
+        the operation completed (Veo is healthy), and counting RAI false
+        positives toward OPEN would surface `MODEL_UNAVAILABLE` to
+        unrelated callers.
         """
         await self._breaker.raise_if_open()
 
@@ -158,22 +176,68 @@ class Veo31Client:
             _clamp_duration_seconds(duration_seconds) if duration_seconds is not None else None
         )
 
-        operation_name = await self._submit_with_retry(
-            image_bytes=image_bytes,
-            prompt=prompt,
-            duration_seconds=clamped_duration,
-        )
+        rai_attempts = self.rai_max_retries + 1
+        last_rai_error: AgentErrorException | None = None
+        operation: dict[str, Any] | None = None
+        operation_name: str | None = None
+        video_bytes: bytes | None = None
 
-        try:
-            operation = await self._poll_until_done(operation_name)
-            video_bytes = await self._fetch_video_bytes(operation)
-        except AgentErrorException as exc:
-            # Retryable post-submit failures still tell us upstream is sick;
-            # non-retryable ones (INVALID_ARGUMENT, RESOURCE_EXHAUSTED) are
-            # request / quota issues and must not count toward OPEN.
-            if exc.error.retryable:
-                await self._breaker.record_failure()
-            raise
+        for rai_attempt in range(rai_attempts):
+            operation_name = await self._submit_with_retry(
+                image_bytes=image_bytes,
+                prompt=prompt,
+                duration_seconds=clamped_duration,
+            )
+
+            try:
+                operation = await self._poll_until_done(operation_name)
+                video_bytes = await self._fetch_video_bytes(operation)
+            except AgentErrorException as exc:
+                if exc.error.code == "MODEL_CONTENT_FILTERED":
+                    # Veo RAI false positive (T-051). Don't feed the breaker —
+                    # the operation completed, so this isn't a Veo-availability
+                    # signal. Log every attempt so ops can tune the budget
+                    # from observed false-positive rate (without this we'd be
+                    # blind-tuning VEO_RAI_MAX_RETRIES).
+                    last_rai_error = exc
+                    _logger.warning(
+                        "veo_rai_filter_retry",
+                        extra={
+                            "model": self.model,
+                            "operation_name": operation_name,
+                            "attempt": rai_attempt + 1,
+                            "max_attempts": rai_attempts,
+                            "detail": exc.error.problem,
+                        },
+                    )
+                    continue
+                # Retryable non-RAI failures still tell us upstream is sick;
+                # non-retryable ones (INVALID_ARGUMENT, RESOURCE_EXHAUSTED)
+                # are request / quota issues and must not count toward OPEN.
+                if exc.error.retryable:
+                    await self._breaker.record_failure()
+                raise
+            # Successful submit→poll→download — exit the RAI retry loop.
+            break
+        else:
+            # RAI budget exhausted across every attempt; surface to the caller
+            # (worker turns MODEL_CONTENT_FILTERED into a user-facing task
+            # failure). Still no breaker pressure — Veo itself is fine.
+            assert last_rai_error is not None
+            _logger.error(
+                "veo_rai_filter_retry_exhausted",
+                extra={
+                    "model": self.model,
+                    "attempts": rai_attempts,
+                    "detail": last_rai_error.error.problem,
+                },
+            )
+            raise last_rai_error
+
+        # mypy-narrowing — the success path of the for/else assigns all three.
+        assert operation is not None
+        assert operation_name is not None
+        assert video_bytes is not None
 
         await self._breaker.record_success()
 
@@ -306,6 +370,19 @@ class Veo31Client:
                 error = payload.get("error")
                 if isinstance(error, dict):
                     raise _map_operation_error(self.model, error)
+                # Veo can return `done: true` + a non-empty RAI filter signal
+                # WITHOUT setting `error`, which previously fell through to
+                # `_fetch_video_bytes` and surfaced as a misleading
+                # MODEL_INVALID_REQUEST "returned 4xx" message (T-051).
+                # Centralise the "terminal envelope interpretation" here so
+                # `_fetch_video_bytes` only deals with payloads we know carry
+                # video items.
+                rai_count, rai_reasons = _extract_rai_filter_signal(payload)
+                if rai_count > 0 or rai_reasons:
+                    raise model_content_filtered(
+                        self.model,
+                        detail=_format_rai_detail(rai_count, rai_reasons),
+                    )
                 return payload
 
             await asyncio.sleep(self.poll_interval_seconds)
@@ -566,6 +643,62 @@ def _extract_videos(operation: dict[str, Any]) -> list[_VideoItem]:
                     items.append(_video_item_from(video, uri_keys=("uri", "videoUri")))
 
     return items
+
+
+def _extract_rai_filter_signal(operation: dict[str, Any]) -> tuple[int, list[str]]:
+    """Return `(raiMediaFilteredCount, raiMediaFilteredReasons)` if present.
+
+    Two shapes observed for the RAI-filtered terminal envelope, mirroring
+    the two video-payload shapes `_extract_videos` already handles:
+
+    1. **Top-level under `response`** — `response.raiMediaFilteredCount`
+       and `response.raiMediaFilteredReasons`.
+    2. **Nested under `generateVideoResponse`** — same field names but
+       under `response.generateVideoResponse.*`. This is the shape
+       observed on the failing real-provider task that motivated T-051.
+
+    Tolerate both so a future shape rotation by Google doesn't slip past
+    detection and re-surface the original misleading "returned 4xx"
+    classification.
+    """
+    response = operation.get("response")
+    if not isinstance(response, dict):
+        return 0, []
+
+    candidates: list[dict[str, Any]] = [response]
+    nested = response.get("generateVideoResponse")
+    if isinstance(nested, dict):
+        candidates.append(nested)
+
+    count = 0
+    reasons: list[str] = []
+    for node in candidates:
+        raw_count = node.get("raiMediaFilteredCount")
+        if isinstance(raw_count, int) and not isinstance(raw_count, bool) and raw_count > 0:
+            # `bool` is a subclass of `int` in Python so `isinstance(True, int)`
+            # is True — explicit guard so a stray `True` doesn't masquerade as
+            # count=1.
+            count = max(count, raw_count)
+        raw_reasons = node.get("raiMediaFilteredReasons")
+        if isinstance(raw_reasons, list):
+            for entry in raw_reasons:
+                if isinstance(entry, str) and entry.strip():
+                    reasons.append(entry)
+    return count, reasons
+
+
+def _format_rai_detail(count: int, reasons: list[str]) -> str:
+    """Compact one-line summary suitable for embedding in an AgentError
+    `problem` field and structured log records.
+
+    Reasons are joined with `; ` rather than echoed as a Python repr so the
+    string remains readable when surfaced through ops dashboards / log
+    aggregators.
+    """
+    summary = f"raiMediaFilteredCount={count}"
+    if reasons:
+        summary += f"; reasons={'; '.join(reasons)}"
+    return summary
 
 
 def _video_item_from(video: dict[str, Any], *, uri_keys: tuple[str, ...]) -> _VideoItem:

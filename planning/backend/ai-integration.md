@@ -307,6 +307,20 @@ Veo 3.1 官方支援的 duration 區間以實際 API spec 為準；超出範圍 
 - `INVALID_ARGUMENT` → 不 retry，回 `VALIDATION_ERROR`
 - `RESOURCE_EXHAUSTED`（quota）→ 回 `MODEL_QUOTA_EXCEEDED`，不 retry
 
+**RAI filter 例外（T-051）**
+
+Submit-only retry 是預設原則（submit 失敗代表還沒開算錢；submit 成功後 Veo 已扣費），但 Veo 3.1 的 RAI（Responsible AI）filter 是已知的 flaky 反例：operation 順利 `done: true` 但 `response.generateVideoResponse` 出現 `raiMediaFilteredCount > 0` / `raiMediaFilteredReasons` 非空，影片被擋下沒回傳。Google 自己承認 false positive 多（`googleapis/js-genai#1272`），同 prompt+image 重試 1-2 次通常會過。
+
+針對這條訊號專屬一條 **post-submit RAI retry budget**：
+
+- 偵測點：`_poll_until_done` 在 `done: true` 那刻，並列 `payload.error` 檢查；命中 RAI 訊號 → 丟 `MODEL_CONTENT_FILTERED`（retryable=True，distinct from `PROMPT_CONTENT_POLICY` 的非 retryable）
+- Retry budget：`VEO_RAI_MAX_RETRIES`（default 2），每次 retry 走完整 submit→poll→download（重 submit 才有意義）
+- Budget 耗盡才把 `MODEL_CONTENT_FILTERED` surface 給 worker / user
+- RAI 失敗**不**回饋 breaker：operation 完成代表 Veo 健康，不該因為 RAI 把無關 caller 推進 `MODEL_UNAVAILABLE`
+- 每次 retry 寫一筆結構化 logger 行（`veo_rai_filter_retry` / `veo_rai_filter_retry_exhausted`），含 attempt 編號 + RAI reasons，讓 ops 看得到 false-positive rate 才能調 budget
+
+User-facing 訊息走「目前無法生成此動作影片，系統正在自動重試」，**不**回傳 `raiMediaFilteredReasons` 字串（那是給 developer 看的，記到 `generation_log.raw_response` 即可）。
+
 ---
 
 ## 5. OpenAIReconcilerClient（Prompt Reconciler 用）
