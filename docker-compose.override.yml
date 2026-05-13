@@ -52,3 +52,14 @@ services:
       - /app/node_modules
     ports:
       - "5173:5173"
+
+  # T-052: expose authentik admin UI to host during initial setup
+  # (akadmin first-login token flow needs direct :9000 access).
+  # Phase 1 / prod 走 nginx /oauth/ 反代，不對外開 9000/9443
+  # (per planning/devops/authentik-stack.md §3.1 + ticket §Notes).
+  authentik-server:
+    environment:
+      AUTHENTIK_LOG_LEVEL: debug
+    ports:
+      - "9000:9000"
+      - "9443:9443"

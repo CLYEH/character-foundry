@@ -77,9 +77,95 @@ services:
     depends_on:
       - api
       - web
+      - authentik-server
+    restart: unless-stopped
+
+  # ── Authentik OAuth provider (T-052) ─────────────────────────────────
+  # Dedicated postgres + redis per planning/devops/authentik-stack.md §3
+  # (do not share with the app's `postgres`/`redis` — namespace collision +
+  # blast-radius isolation). Named volumes (not bind-mounts) per §2.1 so
+  # worktrees don't cross-pollute state (STATUS.md S3-3).
+  authentik-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
+    volumes:
+      - authentik_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik -d authentik"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  authentik-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - authentik_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2024.12
+    command: server
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
+      AUTHENTIK_REDIS__HOST: authentik-redis
+    volumes:
+      - authentik_media:/media
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      start_period: 60s
+      interval: 30s
+      retries: 3
+      timeout: 30s
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2024.12
+    command: worker
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
+      AUTHENTIK_REDIS__HOST: authentik-redis
+    volumes:
+      - authentik_media:/media
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      start_period: 60s
+      interval: 30s
+      retries: 3
+      timeout: 30s
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   pg_data:
   redis_data:
   storage_data:
+  authentik_postgres_data:
+  authentik_redis_data:
+  authentik_media:
