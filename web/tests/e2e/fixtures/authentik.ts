@@ -43,11 +43,14 @@ export async function oauthLoginViaUi(
   await uidInput.fill(user.email)
   await page.getByRole('button', { name: /log in|continue|next/i }).click()
 
-  // Password stage. Password inputs aren't role="textbox" — they expose
-  // role="generic" with the aria-label set. Use getByRole('textbox') with
-  // include-hidden disabled won't work; getByLabel works here because the
-  // password stage uses a proper <label> wired to the input.
-  const passwordInput = page.getByLabel(/password/i).first()
+  // Password stage. Same label-as-sibling-<generic> pattern as the
+  // identification stage — getByLabel misses. The textbox accessible
+  // name is "Please enter your password" (placeholder lifted into the
+  // ARIA name by ak-stage-password). Submit button on this stage is
+  // "Continue", already covered by the button regex above.
+  const passwordInput = page
+    .getByRole('textbox', { name: /password|please enter your password/i })
+    .first()
   await passwordInput.waitFor({ state: 'visible', timeout: 15_000 })
   await passwordInput.fill(user.password)
   await page.getByRole('button', { name: /log in|continue|sign in/i }).click()
