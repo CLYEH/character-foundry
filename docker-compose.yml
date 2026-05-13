@@ -133,6 +133,12 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
       AUTHENTIK_REDIS__HOST: authentik-redis
+      # Sub-path hosting under nginx `/oauth/` — Authentik then emits all
+      # redirect / absolute URLs with the `/oauth/` prefix instead of `/`.
+      # Required leading + trailing slash per goauthentik.io configuration
+      # docs. Without this, the OAuth authorize / callback redirects bounce
+      # to root paths and break login flows once T-053 wires the IdP.
+      AUTHENTIK_WEB__PATH: /oauth/
     # `/certs` holds OIDC/SAML signing key material — must persist across
     # container recreate or every restart rotates the keys and invalidates
     # tokens already issued. AC #4 (Authentik 設定持續 across down/up)
@@ -163,6 +169,7 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
       AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_WEB__PATH: /oauth/
     # Mirror server: worker also reads /certs for OIDC/SAML signing.
     # No docker.sock mount — we don't use Authentik outposts (which would
     # auto-deploy outpost containers via the docker API). Outpost feature
