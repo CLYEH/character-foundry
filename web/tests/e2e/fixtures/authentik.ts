@@ -17,10 +17,14 @@ import { ALICE } from './index'
  *   5. AuthCallbackPage exchanges the code, stores the token with
  *      `tokenSource: 'oauth'`, and routes to `/`.
  *
- * Selectors are pinned to Authentik's stable form field names (`uid_field`,
- * `password`) rather than label text — Authentik's flow UI is themable and
- * label text is i18n-driven, but the underlying input names have stayed
- * fixed across the 2024.x line.
+ * Authentik 2024.x renders the flow UI as Lit web components (`ak-stage-
+ * identification`, `ak-stage-password`) and the underlying `<input>` lives
+ * inside an open shadow root — attribute selectors (`input[name=...]`)
+ * don't reliably pierce it. The accessibility tree, on the other hand,
+ * exposes the inputs with stable English labels because we run Authentik
+ * with default (en) locale in CI. If a future change adds i18n to the e2e
+ * env, swap these `getByLabel` calls back to attribute selectors with the
+ * shadow-piercing `>>>` combinator.
  */
 export async function oauthLoginViaUi(
   page: Page,
@@ -29,21 +33,18 @@ export async function oauthLoginViaUi(
   await page.goto('/login')
   await page.getByRole('button', { name: '使用 Google 登入' }).click()
 
-  // Authentik bounces through /oauth/application/o/authorize/ → its flow UI.
-  // The flow page is rendered client-side after the JS bundle loads, so
-  // wait for the identification input rather than racing the URL.
-  const uidInput = page.locator('input[name="uid_field"]')
+  // Identification stage. Authentik labels the same field "Email or
+  // Username" or just "Email" depending on the source set — match both.
+  const uidInput = page.getByLabel(/email or username|email|username/i).first()
   await uidInput.waitFor({ state: 'visible', timeout: 15_000 })
   await uidInput.fill(user.email)
-  // The flow's "next" button submits the identification stage; it can be
-  // <button type=submit> or rendered by ak-stage-identification — match
-  // by role to stay theme-agnostic.
-  await page.locator('input[name="uid_field"]').press('Enter')
+  await page.getByRole('button', { name: /log in|continue|next/i }).click()
 
-  const passwordInput = page.locator('input[name="password"]')
+  // Password stage.
+  const passwordInput = page.getByLabel(/password/i).first()
   await passwordInput.waitFor({ state: 'visible', timeout: 15_000 })
   await passwordInput.fill(user.password)
-  await passwordInput.press('Enter')
+  await page.getByRole('button', { name: /log in|continue|sign in/i }).click()
 
   // Implicit-consent flow → redirect lands on /auth/callback first, then
   // AuthCallbackPage navigates to '/' after the token exchange. Anchor the
