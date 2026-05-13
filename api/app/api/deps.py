@@ -63,9 +63,15 @@ def _peek_unverified_payload(token: str) -> dict[str, Any]:
     Used only to read the `iss` claim so the right verifier can be picked
     (legacy HS256 vs Authentik RS256). Every subsequent step re-verifies the
     claim cryptographically — this peek is a routing decision, not a trust
-    decision.
+    decision. The `verify_signature=False` flag is the correct, intentional
+    choice at this layer; rejecting on unverified-iss would force us to pick
+    one verifier blindly before we know which keypair the token was signed
+    with.
     """
     try:
+        # Routing-only peek; signature is re-verified one call later in
+        # _resolve_oauth / _resolve_jwt against the correct key (see docstring).
+        # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
         return pyjwt.decode(token, options={"verify_signature": False})
     except pyjwt.InvalidTokenError as exc:
         raise auth_invalid_token() from exc
