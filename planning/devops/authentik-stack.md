@@ -129,7 +129,7 @@ Authentik server 暴露在 nginx `/oauth/` 路徑（或 subdomain `auth.characte
 1. Admin → **Directory → Federation & Social login → Create** → Type: **OAuth Source**
 2. 填：
    - **Name**: `Google Workspace`
-   - **Slug**: `google`（影響 callback URL 路徑 = `/source/oauth/callback/google/`，要和 Google Cloud Console 設的 redirect URI 一致）
+   - **Slug**: `google`（影響 Authentik 內部 callback 路徑 = `/source/oauth/callback/google/`；nginx 反代 `/oauth/` → Authentik 後，**外部** callback URL 為 `https://<authentik-host>/oauth/source/oauth/callback/google/`，必須**逐字**等於 Google Cloud Console 那邊填的 Authorized redirect URI — 漏掉 `/oauth/` 前綴會在 IdP flow 第一跳就 `redirect_uri_mismatch`）
    - **Provider type**: `Google`（內建 preset 會自動填 authorization / token / profile endpoint）
    - **Consumer key**: `${GOOGLE_OAUTH_CLIENT_ID}` from `.env`
    - **Consumer secret**: `${GOOGLE_OAUTH_CLIENT_SECRET}` from `.env`

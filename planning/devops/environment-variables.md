@@ -114,7 +114,7 @@
 | `GOOGLE_OAUTH_CLIENT_ID` | ✓ (M3.5+) | Google Cloud Console 上 Authentik 用的 OAuth 2.0 Client ID（web application 類型）| |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | ✓ (M3.5+) | 對應的 client secret | 🔒 |
 
-> 取得流程：公司 Workspace admin 在 [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials → Create credentials → OAuth client ID → Application type **Web application** → Authorized redirect URIs 填 `https://<authentik-host>/source/oauth/callback/google/`（dev 是 `http://localhost/oauth/source/oauth/callback/google/`）。建立後把 client_id / client_secret 填入 `.env`，再到 Authentik admin UI 設定 OAuth Source（見 `authentik-stack.md` §5）。
+> 取得流程：公司 Workspace admin 在 [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials → Create credentials → OAuth client ID → Application type **Web application** → Authorized redirect URIs 填 `https://<authentik-host>/oauth/source/oauth/callback/google/`（dev = `http://localhost/oauth/source/oauth/callback/google/`）。**必含 `/oauth/` 前綴** — nginx 把 Authentik 反代在 `/oauth/` 底下（見 `infra/nginx/nginx.conf` 的 `location /oauth/` block），所以瀏覽器與 Google Cloud Console 看到的外部 callback URL 必含 `/oauth/` 前綴；漏掉會 Google `redirect_uri_mismatch` 擋住整個 IdP flow。建立後把 client_id / client_secret 填入 `.env`，再到 Authentik admin UI 設定 OAuth Source（見 `authentik-stack.md` §5）。
 >
 > ⚠ 這兩個 env var 是**操作者的 secret stash**，不是 docker-compose 自動注入給 Authentik 的 runtime config。Authentik 的 Google OAuth Source 是在 admin UI（或 blueprint）配置後存進 Authentik 自己的 postgres，**不**從 `AUTHENTIK_*` 環境變數讀。把它們放在 `.env` 一處集中是為了：(a) `gitleaks` 不會把它們跟其他 secret 分散看漏；(b) Authentik DB 倒掉重建時操作者有單一來源可以重設。如果你寧願把這兩條只放在密碼管理器、不進 `.env`，那是 fine — 移除 `.env.example` 兩條就好，runbook 仍可運作。
 >
