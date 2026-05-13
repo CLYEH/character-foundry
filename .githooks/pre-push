@@ -54,7 +54,21 @@ append_skip_log() {
 }
 
 if [ "${CF_SKIP_REVIEW:-0}" = "1" ]; then
-  append_skip_log
+  # Drain pre-push stdin to determine whether any substantive ref update is
+  # actually being pushed. Git fires this hook even on no-op pushes
+  # ("Everything up-to-date") and on pure branch deletions; logging
+  # unconditionally would create false-positive bypass events and inflate
+  # the retro metrics. Mirrors the `printed_any` gate in the deny path
+  # below. PR #82 / Codex P2 round 2.
+  bypass_zero_sha="0000000000000000000000000000000000000000"
+  bypass_has_update=0
+  while IFS=' ' read -r bypass_local_ref bypass_local_sha bypass_remote_ref bypass_remote_sha; do
+    [ "${bypass_local_sha:-}" = "$bypass_zero_sha" ] && continue
+    bypass_has_update=1
+  done
+  if [ "$bypass_has_update" = "1" ]; then
+    append_skip_log
+  fi
   exit 0
 fi
 
