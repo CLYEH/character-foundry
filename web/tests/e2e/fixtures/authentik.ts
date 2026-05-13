@@ -33,14 +33,22 @@ export async function oauthLoginViaUi(
   await page.goto('/login')
   await page.getByRole('button', { name: '使用 Google 登入' }).click()
 
-  // Identification stage. Authentik labels the same field "Email or
-  // Username" or just "Email" depending on the source set — match both.
-  const uidInput = page.getByLabel(/email or username|email|username/i).first()
+  // Identification stage. Authentik's ak-stage-identification renders the
+  // label as a sibling <span> (not <label for>), so getByLabel misses —
+  // use getByRole('textbox') which reads the ARIA name from the
+  // accessibility tree. The textbox aria-label is "Email or Username" in
+  // the default flow.
+  const uidInput = page
+    .getByRole('textbox', { name: /email or username|email|username/i })
+    .first()
   await uidInput.waitFor({ state: 'visible', timeout: 15_000 })
   await uidInput.fill(user.email)
   await page.getByRole('button', { name: /log in|continue|next/i }).click()
 
-  // Password stage.
+  // Password stage. Password inputs aren't role="textbox" — they expose
+  // role="generic" with the aria-label set. Use getByRole('textbox') with
+  // include-hidden disabled won't work; getByLabel works here because the
+  // password stage uses a proper <label> wired to the input.
   const passwordInput = page.getByLabel(/password/i).first()
   await passwordInput.waitFor({ state: 'visible', timeout: 15_000 })
   await passwordInput.fill(user.password)
