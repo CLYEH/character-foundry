@@ -14,7 +14,16 @@ dependencies = [
     # pgvector column types are declared in ORM metadata so alembic
     # autogenerate doesn't see DB-only vector columns and emit DROP-COLUMN diffs.
     "pgvector>=0.3",
-    "pyjwt>=2.9",
+    # `pyjwt[crypto]` pulls in `cryptography` for RS256 verification of
+    # Authentik-issued OAuth access tokens (T-054). The legacy internal-JWT
+    # path uses HS256 and would not need the extra, but Phase 1's dual-stack
+    # middleware exercises both algorithms in the same process.
+    "pyjwt[crypto]>=2.9",
+    # httpx for outbound HTTP — AI clients (gpt-image-2, Veo, reconciler)
+    # and the Authentik JWKS fetch in `app.auth.oauth`. Was previously
+    # implicit (dev install + transitively via fastapi.testclient); T-054
+    # surfaces it explicitly because oauth.py is the first non-dev consumer.
+    "httpx>=0.27",
     "argon2-cffi>=23.1",
     # Used by pydantic EmailStr validation in app.auth.schemas.
     "email-validator>=2.2",
@@ -39,7 +48,13 @@ dev = [
     "ruff>=0.7",
     "mypy>=1.11",
     # Required by fastapi.testclient (starlette.TestClient uses httpx).
+    # Already in production deps as of T-054; retained here for clarity in
+    # case the production list drops it later.
     "httpx>=0.27",
+    # respx mocks httpx requests at the transport layer — used by
+    # `tests/auth/test_dual_stack.py` (T-054) to intercept Authentik JWKS
+    # fetches and assert the in-process cache TTL works.
+    "respx>=0.21",
     # In-memory Redis for unit tests of arq queue + pubsub paths.
     "fakeredis>=2.20",
     # Architecture fitness tests (T-059, Harness A2).
@@ -217,20 +232,15 @@ forbidden_modules = ["app.api"]
 # `routes -> models` rule above turns this flag on, because repositories /
 # schemas are the sanctioned indirect bridge to ORM types.
 
-# Placeholder contract (M3.5 — T-054 / T-055):
+# Scope-source centralization (T-054, M3.5):
 #
-# Once `app.mcp/` ships, both `app.mcp.*` and `app.auth.*` must source the
-# five OAuth scope literals (`character:read`, `character:write`,
-# `task:read`, `task:cancel`, `usage:read`) from one canonical module
-# (`app.auth.scopes`) rather than each redefining them. import-linter alone
-# cannot express "must import X" cleanly, so the actual enforcement is the
-# `test_oauth_scope_source_is_centralized` test in `tests/arch/test_layering.py`,
-# which activates automatically the moment `app/auth/scopes.py` exists.
-#
-# When T-054 lands, replace this comment block with the actual contract(s)
-# you need — OR keep this comment alongside a sibling `[[tool.importlinter.contracts]]`
-# block, but leave the breadcrumb in either case so the next implementer
-# knows the scope-source story.
+# `app.auth.scopes` is the sole runtime source of the five OAuth scope
+# literals. import-linter can't express "every other module must *import*
+# this constant" cleanly, so the actual enforcement is
+# `test_oauth_scope_source_is_centralized` in `tests/arch/test_layering.py`
+# (active since `app/auth/scopes.py` shipped in T-054). When `app.mcp/`
+# arrives in a later M3.5 ticket the same test automatically covers it —
+# no contract edit needed here.
 
 # ---------------------------------------------------------------------------
 # Mutation testing — mutmut config (T-060, Harness A3).
