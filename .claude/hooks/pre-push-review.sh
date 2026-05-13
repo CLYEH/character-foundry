@@ -20,6 +20,11 @@ set -u
 # every time CF_SKIP_REVIEW=1 is honored, so quarterly retros can spot drift
 # (bypass rate climbing, reason field consistently empty, etc.). File is
 # gitignored — local accumulation only, never sync'd.
+#
+# KEEP IN SYNC with the mirror hook at `.githooks/pre-push`. The two hooks
+# fire from different runtime contexts (Claude PreToolUse JSON vs git
+# pre-push stdin), so the helper is duplicated rather than sourced; only the
+# `source` field differs.
 append_skip_log() {
   local repo_root ts branch upstream range reason esc_branch esc_range esc_reason log
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
@@ -39,7 +44,13 @@ append_skip_log() {
   esc_branch="${branch//\\/\\\\}"; esc_branch="${esc_branch//\"/\\\"}"
   esc_range="${range//\\/\\\\}"; esc_range="${esc_range//\"/\\\"}"
   esc_reason="${reason//\\/\\\\}"; esc_reason="${esc_reason//\"/\\\"}"
-  esc_reason="${esc_reason//$'\n'/ }"; esc_reason="${esc_reason//$'\t'/ }"
+  # Flatten all control chars to space — JSON requires C0 controls
+  # (U+0000..U+001F) escaped (RFC 8259 §7), and a stray CRLF / `\r` from a
+  # Windows clipboard would otherwise yield a line that fails `jq` / json.loads.
+  # `[[:cntrl:]]` is the portable POSIX class (covers C0 + DEL); we avoid the
+  # explicit `[$'\x00'-$'\x1f']` form because bash silently mis-matches when
+  # NUL is in the range (verified locally on bash 5.2.37 msys).
+  esc_reason="${esc_reason//[[:cntrl:]]/ }"
   printf '{"ts":"%s","branch":"%s","range":"%s","reason":"%s","source":"claude-hook"}\n' \
     "$ts" "$esc_branch" "$esc_range" "$esc_reason" >> "$log" 2>/dev/null || true
 }
