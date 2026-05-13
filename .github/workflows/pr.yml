@@ -367,8 +367,15 @@ jobs:
           echo "── BlueprintInstance cf-e2e-bootstrap ──"
           curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/managed/blueprints/?name=cf-e2e-bootstrap" || true
           echo
-          echo "── authentik-worker logs (cf-e2e + blueprint errors, no tail limit) ──"
-          docker compose -f docker-compose.yml -f docker-compose.test.yml logs authentik-worker 2>&1 | grep -iE "cf-e2e|character-foundry-spa|Failed to apply|ValidationError|blueprint.*error|errored" || true
+          echo "── SystemTask records for apply_blueprint (carries error message) ──"
+          # Authentik captures blueprint apply failures via SystemTask, not
+          # via stdout. The `error` / `messages` fields of an errored task
+          # row contain the actual ValidationError text — the worker logs
+          # only show the wrapper Task started/finished events.
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/events/system_tasks/" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps([t for t in d.get('results',[]) if t.get('name')=='apply_blueprint' or 'blueprint' in (t.get('uid') or '')], indent=2))" || true
+          echo
+          echo "── authentik-server + worker raw logs (no filter) ──"
+          docker compose -f docker-compose.yml -f docker-compose.test.yml logs authentik-server authentik-worker 2>&1 | tail -400
           exit 1
 
       - name: Apply migrations
