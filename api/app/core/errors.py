@@ -185,6 +185,67 @@ def auth_insufficient_permission() -> AgentErrorException:
 
 
 # ---------------------------------------------------------------------------
+# OAuth dual-stack errors (T-054). Distinct from AUTH_INSUFFICIENT_PERMISSION
+# above: that one is resource-level ownership; these three are token-shape
+# and scope-shape failures discovered at the auth dependency layer, before
+# any resource is even resolved.
+# ---------------------------------------------------------------------------
+
+
+def auth_insufficient_scope() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="AUTH_INSUFFICIENT_SCOPE",
+            message="權限不足，請使用具備所需 scope 的存取權杖",
+            problem="Access token is missing one or more scopes required by this endpoint.",
+            cause="The token was minted with a narrower scope set than this endpoint declares "
+            "via `require_scope(...)`.",
+            fix="Request a new token whose `scope` claim includes the missing scopes. For "
+            "human users this means re-running the OAuth consent flow; for M2M clients "
+            "this means updating the client's allowlist entry in `app/auth/mcp_clients.py` "
+            "and re-issuing.",
+            retryable=False,
+        ),
+        status_code=403,
+    )
+
+
+def auth_client_not_allowed() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="AUTH_CLIENT_NOT_ALLOWED",
+            message="未授權的 OAuth 用戶端",
+            problem="OAuth access token's `client_id` is not in the MCP client allowlist.",
+            cause="The Authentik-issued token came from a `client_id` not pre-registered in "
+            "`app/auth/mcp_clients.py`. Dynamic Client Registration is off by design "
+            "(per agent-interface Q7 sub-7c).",
+            fix="Add the `client_id` to `ALLOWED_CLIENTS` in `app/auth/mcp_clients.py` and "
+            "redeploy. Note this is a deliberate review step, not a self-serve flow.",
+            retryable=False,
+        ),
+        status_code=403,
+    )
+
+
+def auth_scope_exceeds_allowlist() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="AUTH_SCOPE_EXCEEDS_ALLOWLIST",
+            message="存取權杖 scope 超出用戶端允許範圍",
+            problem="OAuth access token carries scopes beyond what the client's allowlist "
+            "entry permits.",
+            cause="An M2M client whose allowlist entry caps its scopes (`policy.scopes is not "
+            "None`) presented a token whose `scope` claim is not a subset. Likely an "
+            "Authentik provider misconfiguration that widened the issued scope set.",
+            fix="Either narrow the Authentik provider's scope set to match the allowlist, or "
+            "widen the allowlist entry in `app/auth/mcp_clients.py`. Both sides must agree.",
+            retryable=False,
+        ),
+        status_code=403,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Character + creation_session errors. NOT_FOUND_CHARACTER doubles as the
 # response for soft-deleted-past-window restore attempts so callers don't
 # leak deletion-state metadata via distinct codes.

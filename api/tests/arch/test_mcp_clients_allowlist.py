@@ -1,35 +1,26 @@
 """Static integrity checks for `app.auth.mcp_clients` (T-053).
 
-Pre-T-054 the OAuth scope strings live in two places: `OAUTH_SCOPE_LITERALS`
-in `tests/arch/test_layering.py` and `CANONICAL_SCOPES` / `ALLOWED_CLIENTS`
-values in `app.auth.mcp_clients`. This test cross-checks the module against
-the test-side pin (`test_layering.OAUTH_SCOPE_LITERALS`), so editing the
-5 strings still requires deliberate edits in both places, but we avoid
-introducing a third source of truth in this file.
+Post-T-054 the canonical scope strings live in `app.auth.scopes` and this
+test imports them from there. `test_oauth_scope_source_is_centralized` in
+`test_layering.py` activates the moment `app/auth/scopes.py` exists and
+guards the broader "no other `app/*.py` redefines these literals" invariant.
 
-Once T-054 introduces `app.auth.scopes` as the runtime canonical source,
-`test_oauth_scope_source_is_centralized` in `test_layering.py` will activate
-and force `mcp_clients` to import the constants. At that point this test's
-drift-lock job is taken over by the activated `test_layering` check, and
-this file can be either deleted or rewritten to import from `app.auth.scopes`.
+The cross-pin against `tests.arch.test_layering.OAUTH_SCOPE_LITERALS` is
+preserved as a deliberate redundancy: the test-side tuple is the answer-key
+the production constants must equal, so a change to either side without the
+matching change to the other surfaces as a single concrete assertion failure.
 """
 
 from __future__ import annotations
 
-from app.auth.mcp_clients import (
-    ALLOWED_CLIENTS,
-    CANONICAL_SCOPES,
-    M2M_DEFAULT_SCOPES,
-)
-
-# TODO(T-054): once `app.auth.scopes` exists, replace this cross-test import
-# with `from app.auth.scopes import CANONICAL_SCOPES` and delete the
-# drift-lock test below.
+from app.auth.mcp_clients import ALLOWED_CLIENTS
+from app.auth.scopes import CANONICAL_SCOPES, M2M_DEFAULT_SCOPES
 from tests.arch.test_layering import OAUTH_SCOPE_LITERALS
 
 
 def test_canonical_scopes_match_phase1_decision() -> None:
-    # Both pins (module + test_layering) must agree on the Phase 1 5-scope
+    # `scopes.py` (production) and `test_layering.OAUTH_SCOPE_LITERALS`
+    # (test-side answer-key) must both agree on the Phase 1 five-scope
     # decision row in `planning/auth/open-questions.md` Q3.
     assert CANONICAL_SCOPES == frozenset(OAUTH_SCOPE_LITERALS)
 
@@ -49,9 +40,9 @@ def test_m2m_default_is_narrow() -> None:
 
 def test_allowed_clients_have_phase1_membership() -> None:
     # The four pre-registered Phase 1 clients per Q7 sub-7c. SPA is
-    # intentionally absent (it hits /v1/*, not /mcp/*; see module docstring).
-    # Adding or removing a client should be a deliberate two-line edit here
-    # + in `app.auth.mcp_clients` and reviewable in the diff.
+    # intentionally absent (it hits /v1/*, not /mcp/*; see mcp_clients
+    # module docstring). Adding or removing a client should be a deliberate
+    # edit reviewable in the diff.
     assert set(ALLOWED_CLIENTS) == {"claude-code", "vs-code", "cursor", "cf-test-agent"}
 
 

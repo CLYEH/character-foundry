@@ -13,10 +13,10 @@ Rules currently wired:
    ORM rows directly.
 2. `app.ai.*` must not import `app.api.*` — single direction: the HTTP
    layer uses AI clients, AI clients never reach up into the HTTP layer.
-3. (placeholder, T-054) Once `app/auth/scopes.py` exists, OAuth scope
-   literals must live only in that one module. `test_oauth_scope_source_is_centralized`
-   scans for hard-coded scope strings outside the canonical source and
-   auto-enables the moment T-054 creates the file.
+3. OAuth scope literals live only in `app.auth.scopes`. T-054 created the
+   module; `test_oauth_scope_source_is_centralized` is now active and fails
+   the build if any sibling `app/**/*.py` hard-codes one of the canonical
+   strings as an `ast.Constant` (docstrings are exempt).
 
 Both `app.api -> app.models` and `app.api.routes.characters -> app.models.character`
 style violations are already present in the codebase; they're listed in
@@ -131,19 +131,18 @@ def _docstring_node_ids(tree: ast.Module) -> set[int]:
 
 
 def test_oauth_scope_source_is_centralized() -> None:
-    """Once `app/auth/scopes.py` exists (T-054), every other `.py` under
-    `app/` must reference OAuth scope literals via import rather than
-    redefining the strings inline.
+    """Every `.py` under `app/` other than `app/auth/scopes.py` must reference
+    OAuth scope literals via import rather than redefining the strings inline.
 
-    Skipped today: `app.auth.scopes` doesn't exist, so there is nothing to
-    enforce. T-054 creates the module; the moment it does, this test starts
-    guarding drift in `app.mcp` (T-055) and the rest of `app.auth`.
+    Active since T-054. The skip-gate below is retained as a backstop in case
+    the module is ever renamed or deleted — without the canonical file the
+    test has no reference point and would false-pass on every site otherwise.
     """
     if not CANONICAL_SCOPE_MODULE.exists():
         pytest.skip(
-            "T-054 placeholder: activates when `app/auth/scopes.py` ships "
-            "as the canonical OAuth scope source. See "
-            "planning/harness/roadmap.md §1 A2 and planning/auth/."
+            "`app/auth/scopes.py` is missing — the canonical OAuth scope "
+            "source module disappeared. Restore it or update "
+            "`CANONICAL_SCOPE_MODULE` in this file."
         )
 
     offenders: list[tuple[Path, str, int]] = []

@@ -6,13 +6,17 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import Depends, Header
+import jwt as pyjwt
+from fastapi import Depends, Header, Request
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import JWTExpired, JWTInvalid, verify_access_token
+from app.auth.oauth import OAuthClaims, is_authentik_token, verify_oauth_token
+from app.auth.scopes import CANONICAL_SCOPES
 from app.core.errors import (
     auth_expired,
     auth_invalid_token,
@@ -52,20 +56,72 @@ def _extract_bearer(authorization: str | None) -> str:
     return parts[1].strip()
 
 
-def _user_id_from_authorization(authorization: str | None) -> uuid.UUID:
-    """Extract + verify a JWT and return its `sub` UUID. No DB.
+def _peek_unverified_payload(token: str) -> dict[str, Any]:
+    """Decode the JWT body WITHOUT verifying signature/exp/aud/iss.
 
-    Shared between `get_current_user` (yield-dep DB session) and
-    `get_current_user_no_pin` (short-lived session) so the token-side
-    failure modes stay identical between the two surfaces.
+    Used only to read the `iss` claim so the right verifier can be picked
+    (legacy HS256 vs Authentik RS256). Every subsequent step re-verifies the
+    claim cryptographically — this peek is a routing decision, not a trust
+    decision.
     """
-    token = _extract_bearer(authorization)
+    try:
+        return pyjwt.decode(token, options={"verify_signature": False})
+    except pyjwt.InvalidTokenError as exc:
+        raise auth_invalid_token() from exc
+
+
+async def _resolve_oauth(
+    request: Request,
+    db: AsyncSession,
+    token: str,
+) -> uuid.UUID:
+    """Authentik OAuth path. Verifies token, writes scopes to request.state,
+    resolves the matching User by email (delegated tokens only). M2M tokens
+    do not carry a user — they reach the MCP server surface in T-3.5b, not
+    `/v1/*` endpoints — so they fall back to `AUTH_INVALID_TOKEN` here once
+    every other check passed cleanly.
+    """
+    claims: OAuthClaims = await verify_oauth_token(token)
+    request.state.token_scopes = claims.scopes
+    request.state.oauth_client_id = claims.client_id
+    request.state.is_m2m = claims.is_m2m
+
+    if claims.is_m2m or not claims.email:
+        # M2M token hit a `/v1/*` endpoint. Allowlist + scope-exceeds checks
+        # already fired in verify_oauth_token; reaching here means the token
+        # is genuinely OK but the caller is headless and `/v1/*` is the
+        # wrong surface. The MCP server (T-3.5b) handles M2M.
+        raise auth_invalid_token()
+
+    result = await db.execute(select(User).where(User.email == claims.email))
+    user = result.scalar_one_or_none()
+    if user is None:
+        # Authentik knows the email but we don't have a CF User row — either
+        # the user hasn't completed first-login provisioning yet or the email
+        # was deleted on our side. Treat as invalid so we don't leak existence.
+        raise auth_invalid_token()
+    return user.id
+
+
+def _resolve_jwt(
+    request: Request,
+    token: str,
+) -> uuid.UUID:
+    """Legacy HS256 JWT path. Verifies the token and writes the full canonical
+    scope set into `request.state.token_scopes` — pre-OAuth sessions weren't
+    scope-aware, and treating them as "full access" preserves dual-stack
+    regression behavior while we migrate (per `planning/auth/open-questions.md`
+    Q4 simplified dual-stack)."""
     try:
         payload = verify_access_token(token)
     except JWTExpired as exc:
         raise auth_expired() from exc
     except JWTInvalid as exc:
         raise auth_invalid_token() from exc
+
+    request.state.token_scopes = CANONICAL_SCOPES
+    request.state.oauth_client_id = None
+    request.state.is_m2m = False
 
     try:
         return uuid.UUID(str(payload["sub"]))
@@ -74,14 +130,27 @@ def _user_id_from_authorization(authorization: str | None) -> uuid.UUID:
 
 
 async def get_current_user(
+    request: Request,
     db: Annotated[AsyncSession, Depends(db_session)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> User:
-    user_id = _user_id_from_authorization(authorization)
+    """Dual-stack: dispatch by `iss` claim, verify, populate `request.state`,
+    resolve User. Both paths leave `token_scopes` / `oauth_client_id` /
+    `is_m2m` on `request.state` so `app.auth.scopes.require_scope` and any
+    future audit middleware can read them uniformly.
+    """
+    token = _extract_bearer(authorization)
+    unverified = _peek_unverified_payload(token)
+
+    if is_authentik_token(unverified):
+        user_id = await _resolve_oauth(request, db, token)
+    else:
+        user_id = _resolve_jwt(request, token)
+
     user = await db.get(User, user_id)
     if user is None:
-        # Token is cryptographically valid but the user is gone — treat as
-        # invalid rather than revealing account existence state.
+        # Token verified but the user is gone — treat as invalid rather than
+        # revealing account existence state.
         raise auth_invalid_token()
     return user
 
@@ -97,6 +166,7 @@ async def get_prompt_reconciler_dep(
 
 
 async def get_current_user_no_pin(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
 ) -> User:
     """Same auth contract as `get_current_user` but does NOT depend on
@@ -109,9 +179,15 @@ async def get_current_user_no_pin(
     """
     from app.db.session import async_session_factory
 
-    user_id = _user_id_from_authorization(authorization)
+    token = _extract_bearer(authorization)
+    unverified = _peek_unverified_payload(token)
+
     factory = async_session_factory()
     async with factory() as db:
+        if is_authentik_token(unverified):
+            user_id = await _resolve_oauth(request, db, token)
+        else:
+            user_id = _resolve_jwt(request, token)
         user = await db.get(User, user_id)
         if user is None:
             raise auth_invalid_token()
