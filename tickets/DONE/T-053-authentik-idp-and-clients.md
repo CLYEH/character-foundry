@@ -1,6 +1,6 @@
 # T-053: Authentik 設定 Google upstream IdP + client 註冊
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 3.5a
 **Est:** M
 **Depends on:** T-052（Authentik service 必須先起來）, T-061（Secret scan + SAST 必須先 land，否則 `client_secret` 進 repo 歷史就晚了；見 `planning/harness/roadmap.md` §1 A4）
@@ -97,7 +97,7 @@
 
 ## Notes
 
-- **Google Workspace 端**：需要 Workspace admin 在 Google Cloud Console 開一個 OAuth client 給 Authentik 用，redirect URI 指向 Authentik 的 `/source/oauth/callback/google/`。這步可能要請公司 IT；本單列為先決條件
+- **Google Workspace 端**：需要 Workspace admin 在 Google Cloud Console 開一個 OAuth client 給 Authentik 用，redirect URI 指向 nginx-proxied 路徑 `https://<authentik-host>/oauth/source/oauth/callback/google/`（含 `/oauth/` 前綴；nginx 反代後內部對應 Authentik slug-derived `/source/oauth/callback/google/`）。這步可能要請公司 IT；本單列為先決條件
 - **scope naming 對齊**：Authentik 內定義的 scope 字串必須跟 backend `require_scope("character:write")` 用的字串完全一致。建議在 `planning/auth/open-questions.md` 決策紀錄 Q3 補上 canonical 字串清單，本單照抄
 - **Token introspection vs JWT verify**：T-054 會走 JWT verify（Authentik 用 RS256 簽），不走 introspection（省一次 API call）。本單不直接涉及，但 Authentik 設定要確保 access token 是 JWT 格式（非 opaque）
 - **`scopes=None` 的語意**：delegated client 不在 backend allowlist 限制 scope；scope 由 user 在 consent 時決定。Backend `require_scope` 純驗 token 上有沒有對的 scope，allowlist 只負責「client_id 是否認識」
