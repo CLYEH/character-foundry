@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 
-class RefreshTokenSource(str, enum.Enum):
+class RefreshTokenSource(enum.StrEnum):
     """Which auth path minted this refresh token.
 
     `JWT` = legacy email+password login (T-006). `OAUTH` = Authentik
