@@ -68,6 +68,21 @@ _AUDIENCE_ENV: Final[str] = "AUTHENTIK_AUDIENCE"
 _JWKS_URI_ENV: Final[str] = "AUTHENTIK_JWKS_URL"
 
 
+def _parse_csv_env(name: str) -> list[str]:
+    """Return env var split on commas with whitespace trimmed.
+
+    Both `AUTHENTIK_ISSUER_URL` and `AUTHENTIK_AUDIENCE` accept comma-separated
+    lists because Authentik issues per-application providers — five apps means
+    five distinct `iss` URLs and five `aud` client_ids (T-053 §5.4). Operators
+    listing one value get back a one-element list; this stays compatible with
+    the single-app deployment but unblocks multi-app use without restructuring
+    the env contract. Empty / unset env returns the empty list — the caller
+    decides whether that's a misconfiguration to reject.
+    """
+    raw = os.environ.get(name, "")
+    return [v for v in (chunk.strip() for chunk in raw.split(",")) if v]
+
+
 # ---------------------------------------------------------------------------
 # Public claims object — what `verify_oauth_token` returns. Kept distinct from
 # the raw JWT payload dict so callers can't accidentally index by claim name
@@ -278,16 +293,19 @@ def get_jwks_cache() -> JWKSCache:
     if _default_cache is None:
         jwks_uri = os.environ.get(_JWKS_URI_ENV)
         if not jwks_uri:
-            issuer = os.environ.get(_ISSUER_ENV)
-            if not issuer:
+            issuers = _parse_csv_env(_ISSUER_ENV)
+            if not issuers:
                 raise RuntimeError(
                     f"{_JWKS_URI_ENV} or {_ISSUER_ENV} must be set to verify "
                     "Authentik-issued OAuth tokens"
                 )
-            # Authentik convention: `<issuer>jwks/`. Operators can override
-            # via `AUTHENTIK_JWKS_URL` when the deployment topology differs
-            # (e.g. nginx sub-path rewrite).
-            jwks_uri = issuer.rstrip("/") + "/jwks/"
+            # Authentik convention: `<issuer>jwks/`. All applications in
+            # one Authentik instance share the same JWKS endpoint, so any
+            # listed issuer's host works for derivation. Pick the first to
+            # keep behaviour deterministic when multiple issuers are set.
+            # Operators can override via `AUTHENTIK_JWKS_URL` when the
+            # deployment topology differs (e.g. nginx sub-path rewrite).
+            jwks_uri = issuers[0].rstrip("/") + "/jwks/"
         _validate_jwks_uri(jwks_uri)
         _default_cache = JWKSCache(jwks_uri)
     return _default_cache
@@ -342,17 +360,17 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
       5. For capped clients, scope claim ⊆ cap → else
          `AUTH_SCOPE_EXCEEDS_ALLOWLIST`.
     """
-    issuer = os.environ.get(_ISSUER_ENV)
-    audience = os.environ.get(_AUDIENCE_ENV)
-    if not issuer or not audience:
+    issuers = _parse_csv_env(_ISSUER_ENV)
+    audiences = _parse_csv_env(_AUDIENCE_ENV)
+    if not issuers or not audiences:
         # Misconfiguration. Log loud so operators see why every OAuth
         # request 401s; surface as invalid_token to clients so we don't
         # leak which env var is missing.
         _logger.error(
             "oauth_misconfigured",
             extra={
-                "missing_issuer": not issuer,
-                "missing_audience": not audience,
+                "missing_issuer": not issuers,
+                "missing_audience": not audiences,
             },
         )
         raise auth_invalid_token()
@@ -393,12 +411,17 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
         # signed with the public key as an HMAC secret would otherwise verify
         # if the algorithm pin were missing or widened). Do NOT loosen this
         # without revisiting the dual-stack threat model.
+        # PyJWT accepts both `audience` and `issuer` as a single value OR a
+        # list. Lists let one process verify tokens from any of the registered
+        # Authentik applications (multi-app support per T-053 §5.4) — at least
+        # one entry in `aud` must match an entry in `audiences`, and `iss`
+        # must match one entry in `issuers`.
         payload: dict[str, Any] = jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
-            audience=audience,
-            issuer=issuer,
+            audience=audiences,
+            issuer=issuers,
         )
     except jwt.ExpiredSignatureError as exc:
         raise auth_expired() from exc
@@ -473,7 +496,11 @@ def is_authentik_token(unverified_payload: dict[str, Any]) -> bool:
     """Cheap issuer-claim check used to route a bearer token to the right
     verifier. Reads `iss` from the *unverified* payload — the verify step
     re-checks it cryptographically, so this is a routing hint only, not a
-    trust decision."""
+    trust decision. Matches against the comma-separated set in
+    `AUTHENTIK_ISSUER_URL` so any registered Authentik application's tokens
+    route to `_resolve_oauth`."""
     iss = unverified_payload.get("iss")
-    expected = os.environ.get(_ISSUER_ENV)
-    return bool(expected) and iss == expected
+    if not isinstance(iss, str):
+        return False
+    accepted = _parse_csv_env(_ISSUER_ENV)
+    return bool(accepted) and iss in accepted

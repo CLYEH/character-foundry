@@ -39,11 +39,23 @@ def test_m2m_default_is_narrow() -> None:
 
 
 def test_allowed_clients_have_phase1_membership() -> None:
-    # The four pre-registered Phase 1 clients per Q7 sub-7c. SPA is
-    # intentionally absent (it hits /v1/*, not /mcp/*; see mcp_clients
-    # module docstring). Adding or removing a client should be a deliberate
-    # edit reviewable in the diff.
-    assert set(ALLOWED_CLIENTS) == {"claude-code", "vs-code", "cursor", "cf-test-agent"}
+    # The five pre-registered Phase 1 clients per Q7 sub-7c + T-054 round-4
+    # SPA inclusion. Adding or removing a client should be a deliberate edit
+    # reviewable in the diff.
+    assert set(ALLOWED_CLIENTS) == {
+        "character-foundry-spa",
+        "claude-code",
+        "vs-code",
+        "cursor",
+        "cf-test-agent",
+    }
+
+
+def test_spa_is_allowlisted_as_delegated() -> None:
+    # SPA must be present (T-054 round-4 fix) and must have `scopes=None`
+    # — the SPA serves human OAuth login; scope set is consent-driven, not
+    # capped here.
+    assert ALLOWED_CLIENTS["character-foundry-spa"]["scopes"] is None
 
 
 def test_allowed_clients_scope_values_are_canonical() -> None:
@@ -65,7 +77,7 @@ def test_cf_test_agent_gets_full_scope_set() -> None:
 
 
 def test_delegated_clients_use_none_scope() -> None:
-    for client_id in ("claude-code", "vs-code", "cursor"):
+    for client_id in ("character-foundry-spa", "claude-code", "vs-code", "cursor"):
         assert ALLOWED_CLIENTS[client_id]["scopes"] is None, (
             f"{client_id} is a delegated (Auth Code + PKCE) client; its scope set "
             "is decided at consent time, not in the allowlist."

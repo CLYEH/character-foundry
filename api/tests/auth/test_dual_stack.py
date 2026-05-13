@@ -889,6 +889,93 @@ def test_oauth_jwks_endpoint_unreachable_returns_provider_unavailable(
         reset_jwks_cache_for_test()
 
 
+def test_oauth_multi_issuer_csv_env_accepts_each_app(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    _jwks_document: dict[str, Any],
+    make_oauth_token: Any,
+) -> None:
+    """Codex round-4 P1: AUTHENTIK_ISSUER_URL / AUTHENTIK_AUDIENCE must
+    accept comma-separated lists so tokens from any registered Authentik
+    application verify. Configure 3 issuers / 3 audiences; mint a token
+    issued by the *second* entry and verify it passes."""
+    issuer_a = "https://auth.test.example/application/o/spa/"
+    issuer_b = "https://auth.test.example/application/o/claude-code/"
+    issuer_c = "https://auth.test.example/application/o/cursor/"
+
+    reset_jwks_cache_for_test()
+    try:
+        monkeypatch.setenv("AUTHENTIK_ISSUER_URL", ",".join([issuer_a, issuer_b, issuer_c]))
+        monkeypatch.setenv(
+            "AUTHENTIK_AUDIENCE",
+            ",".join(["character-foundry-spa", "claude-code", "cursor"]),
+        )
+        monkeypatch.setenv("AUTHENTIK_JWKS_URL", _TEST_JWKS_URI)
+
+        cache = JWKSCache(_TEST_JWKS_URI)
+        cache.seed_keys_for_test(
+            {key_data["kid"]: pyjwt.PyJWK(key_data) for key_data in _jwks_document["keys"]}
+        )
+        set_jwks_cache_for_test(cache)
+
+        # Token from the second registered application — must verify.
+        token = make_oauth_token(
+            scopes=["character:read"],
+            client_id="claude-code",
+            email=seeded_user["email"],
+            issuer=issuer_b,
+            audience="claude-code",
+        )
+        resp = scoped_client.get(
+            "/v1/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        # And one with an issuer NOT in the list must still 401.
+        rogue = make_oauth_token(
+            scopes=["character:read"],
+            client_id="claude-code",
+            email=seeded_user["email"],
+            issuer="https://attacker.example/o/fake/",
+            audience="claude-code",
+        )
+        # Rogue iss won't match `is_authentik_token` → falls through to
+        # legacy JWT path → HS256 verify fails → AUTH_INVALID_TOKEN.
+        resp = scoped_client.get(
+            "/v1/auth/me",
+            headers={"Authorization": f"Bearer {rogue}"},
+        )
+        assert resp.status_code == 401, resp.text
+    finally:
+        reset_jwks_cache_for_test()
+
+
+def test_oauth_spa_client_is_accepted_on_v1(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _preload_jwks_cache: JWKSCache,
+    make_oauth_token: Any,
+) -> None:
+    """Codex round-4 P1: `character-foundry-spa` must be allowlisted so
+    T-056's SPA OAuth login doesn't 403 with AUTH_CLIENT_NOT_ALLOWED. The
+    original T-053 design scoped the allowlist to /mcp/* only; T-054
+    promoted it to universal client recognition once /v1/* started running
+    the OAuth path through the same verifier."""
+    token = make_oauth_token(
+        scopes=["character:read"],
+        client_id="character-foundry-spa",
+        email=seeded_user["email"],
+    )
+    resp = scoped_client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user"]["email"] == seeded_user["email"]
+
+
 def test_oauth_jwks_payload_wrong_shape_returns_provider_unavailable(
     scoped_client: TestClient,
     seeded_user: dict[str, str],

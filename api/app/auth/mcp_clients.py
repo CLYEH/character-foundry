@@ -1,10 +1,17 @@
-"""MCP server OAuth client allowlist (pre-registered, Figma mode).
+"""Universal OAuth client allowlist (pre-registered, Figma mode).
 
-Source of truth for which `client_id` values may obtain access tokens for the
-MCP server surface (`/mcp/*`). The allowlist exists because OAuth 2.1 lets us
-turn Dynamic Client Registration off; in Phase 1 we explicitly do not want
-arbitrary self-registration (per `planning/agent-interface/open-questions.md`
+Source of truth for which `client_id` values may present access tokens to
+either the human-user surface (`/v1/*`) or the MCP server surface
+(`/mcp/*`). The allowlist exists because OAuth 2.1 lets us turn Dynamic
+Client Registration off; in Phase 1 we explicitly do not want arbitrary
+self-registration (per `planning/agent-interface/open-questions.md`
 Q7 sub-7c — Round 2 decision).
+
+Initially T-053 scoped the allowlist to `/mcp/*` only — but T-054's
+`get_current_user` runs the same OAuth verifier on `/v1/*`, so the SPA
+client (`character-foundry-spa`) belongs in the allowlist too. Without
+it, T-056's "Sign in with Google" flow would 403 every request with
+`AUTH_CLIENT_NOT_ALLOWED` (Codex round-4 P1).
 
 This module holds the *client → scope policy* mapping. Canonical scope
 strings and the M2M narrow default themselves live in `app.auth.scopes`
@@ -47,6 +54,13 @@ _FULL_SCOPE_SET: Final[list[str]] = sorted(CANONICAL_SCOPES)
 
 
 ALLOWED_CLIENTS: Final[dict[str, ClientPolicy]] = {
+    # SPA — human-user OAuth login (T-056). `scopes=None` because the human
+    # consent flow decides the actual scope set; the allowlist's job here is
+    # to recognize the client_id, not to cap it. Added in T-054 round-4
+    # after Codex flagged that `/v1/*` OAuth login would otherwise 403 with
+    # AUTH_CLIENT_NOT_ALLOWED — the docstring originally over-narrowed the
+    # allowlist to `/mcp/*`.
+    "character-foundry-spa": {"scopes": None},
     # Delegated clients (Auth Code + PKCE). `scopes=None` means the access
     # token's scope set is decided at consent time by the human user — the
     # allowlist's job is only to recognize the `client_id`.
@@ -60,10 +74,6 @@ ALLOWED_CLIENTS: Final[dict[str, ClientPolicy]] = {
     # coverage without a second edit here.
     "cf-test-agent": {"scopes": _FULL_SCOPE_SET},
 }
-# `character-foundry-spa` is NOT in this dict by design. The allowlist gates
-# `/mcp/*` only (per Q7 sub-7c). The SPA is a human-driven web client that hits
-# `/v1/*` with delegated user tokens; it doesn't reach the MCP server. T-054
-# middleware on `/v1/*` does scope check against the token alone, no allowlist.
 
 
 def is_allowed_client(client_id: str) -> bool:
