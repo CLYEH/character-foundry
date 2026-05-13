@@ -364,11 +364,11 @@ jobs:
           echo "── Scope Mappings ──"
           curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/propertymappings/provider/scope/" | head -c 2000 || true
           echo
-          echo "── BlueprintInstance status ──"
-          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/managed/blueprints/" | head -c 4000 || true
+          echo "── BlueprintInstance cf-e2e-bootstrap ──"
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/managed/blueprints/?name=cf-e2e-bootstrap" || true
           echo
-          echo "── authentik-worker tail (cf-e2e/blueprint/error) ──"
-          docker compose -f docker-compose.yml -f docker-compose.test.yml logs authentik-worker --tail=400 | grep -iE "cf-e2e|character-foundry|blueprint|error|except" || true
+          echo "── authentik-worker logs (cf-e2e + blueprint errors, no tail limit) ──"
+          docker compose -f docker-compose.yml -f docker-compose.test.yml logs authentik-worker 2>&1 | grep -iE "cf-e2e|character-foundry-spa|Failed to apply|ValidationError|blueprint.*error|errored" || true
           exit 1
 
       - name: Apply migrations
