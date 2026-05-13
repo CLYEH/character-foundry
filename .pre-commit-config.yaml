@@ -4,11 +4,27 @@
 #   pip install pre-commit
 #   pre-commit install
 #
-# Hooks run against the project's own tools (pip env + web/node_modules),
+# Most hooks run against the project's own tools (pip env + web/node_modules),
 # so pinned versions in pyproject.toml / package.json are the single source
-# of truth — no second dependency pin lives here.
+# of truth — no second dependency pin lives there.
+#
+# Exception (gitleaks, T-061 / Harness A4): the secret scanner is a Go
+# binary, has no place in `pyproject.toml` or `package.json`, and CI runs
+# the same scan via `gitleaks-action`. We let pre-commit fetch its own
+# pinned binary so devs without Go installed still get the hook for free.
 
 repos:
+  # ---------------------------------------------------------------------
+  # Secret scan (T-061). Scans the staged diff against
+  # `gitleaks.toml` at the repo root. CI counterpart lives in the
+  # `security` job of `.github/workflows/pr.yml`; both must stay in
+  # sync — bump `rev` here and the workflow action version together.
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
   - repo: local
     hooks:
       # ---- Backend (api/) ----

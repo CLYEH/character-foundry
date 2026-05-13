@@ -49,6 +49,12 @@ dev = [
     # a full sweep over `app/core/errors.py` + `app/ai/circuit.py` +
     # `app/auth/*` takes 30+ min and would suffocate the PR loop.
     "mutmut>=3.0",
+    # Secret scan + SAST baseline (T-061, Harness A4). `bandit[toml]` so
+    # the `[tool.bandit]` config block below is honoured. `semgrep` runs
+    # the `p/owasp-top-ten` registry pack against `app/` in PR CI; rule
+    # set is fetched at scan time so no local rule files live in the repo.
+    "bandit[toml]>=1.7",
+    "semgrep>=1.50",
 ]
 
 [build-system]
@@ -137,6 +143,18 @@ exclude = ["alembic/"]
 [[tool.mypy.overrides]]
 module = ["pgvector.*", "alembic.*", "yaml.*"]
 ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Bandit SAST (T-061, Harness A4).
+#
+# Invoked from CI as `bandit -c pyproject.toml -r app/`. Tests stay out of
+# scope on purpose — B101 (`assert_used`) fires on every pytest assertion,
+# and `tests/conftest.py` deliberately spins up insecure fixtures (e.g.
+# fakeredis without TLS). Alembic auto-generated migrations are similarly
+# noisy and don't represent production attack surface.
+# ---------------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = ["tests", "alembic"]
 
 # ---------------------------------------------------------------------------
 # Architecture fitness — import-linter contracts (T-059, Harness A2).
