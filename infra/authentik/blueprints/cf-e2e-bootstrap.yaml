@@ -114,11 +114,14 @@ entries:
       password: TestPassword123!
 
   # ── Group + membership ─────────────────────────────────────────────
+  # `users` is the writable FK list; `users_obj` is a read-only
+  # SerializerMethodField (authentik/core/api/groups.py) and a blueprint
+  # entry that targets it silently errors the whole apply.
   - model: authentik_core.group
     identifiers:
       name: cf-agent-default
     attrs:
-      users_obj:
+      users:
         - !Find [authentik_core.user, [username, cf-e2e-alice]]
         - !Find [authentik_core.user, [username, cf-e2e-bob]]
 
@@ -157,6 +160,10 @@ entries:
           authentik_flows.flow,
           [slug, default-provider-authorization-implicit-consent],
         ]
+      # 2024.12 added `invalidation_flow` as a required field on
+      # OAuth2Provider create. Omitting it silently errors the entry.
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       # Redirect URIs: e2e runs against `http://localhost` (nginx in compose
       # publishes :80 only). Dev `pnpm dev` outside docker would be
       # http://localhost:5173/auth/callback — keep both so blueprints work
@@ -194,13 +201,18 @@ entries:
       open_in_new_tab: false
 
   # ── Bind group → application (lets users in `cf-agent-default` use SPA) ─
+  # PolicyBinding.unique_together = (policy, target, order). `group` is a
+  # separate FK field, NOT part of the composite key — putting it in
+  # `identifiers` makes the importer's lookup filter incoherent and errors
+  # the entry silently. Keep target+order in identifiers and the bound
+  # group in attrs.
   - model: authentik_policies.policybinding
     identifiers:
       target:
         !Find [authentik_core.application, [slug, character-foundry-spa]]
-      group:
-        !Find [authentik_core.group, [name, cf-agent-default]]
       order: 0
     attrs:
+      group:
+        !Find [authentik_core.group, [name, cf-agent-default]]
       enabled: true
       negate: false
