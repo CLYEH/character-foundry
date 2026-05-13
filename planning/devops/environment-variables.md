@@ -103,11 +103,24 @@
 | `AUTHENTIK_SECRET_KEY` | ✓ | Authentik server / worker 共用，`openssl rand -base64 32` 產 | 🔒 |
 | `AUTHENTIK_POSTGRES_PASSWORD` | ✓ | Authentik 專用 postgres instance 密碼（與主 app `POSTGRES_PASSWORD` 分開）| 🔒 |
 
-> Authentik 自身的 postgres / redis 是 docker-compose 內專屬 instance，hostname `authentik-postgres` / `authentik-redis`，user/db 固定 `authentik`。T-053 起再加 upstream Google IdP / client_secret 等 env。
+> Authentik 自身的 postgres / redis 是 docker-compose 內專屬 instance，hostname `authentik-postgres` / `authentik-redis`，user/db 固定 `authentik`。
 >
 > **`AUTHENTIK_SECRET_KEY` rotation footprint：** 轉這把 key 會 invalidate 所有 active session + pending recovery / invitation link（Django session signing + signer.Signer + JWE cookie 加密 全部走它）。**不會** rotate OIDC signing key（OIDC key 存在 Authentik 內部 cert store，`/certs` named volume 持久化，獨立輪換）。實務上等同「強制全 user 重登」，但不會 invalid 已發出的 access / refresh token。
 
-### 2.9 Frontend（VITE_ 前綴，**會 inline 到 bundle**）
+### 2.9 Google upstream IdP for Authentik (T-053)
+
+| 變數 | 必填 | 說明 | 敏感 |
+|---|---|---|---|
+| `GOOGLE_OAUTH_CLIENT_ID` | ✓ (M3.5+) | Google Cloud Console 上 Authentik 用的 OAuth 2.0 Client ID（web application 類型）| |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | ✓ (M3.5+) | 對應的 client secret | 🔒 |
+
+> 取得流程：公司 Workspace admin 在 [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials → Create credentials → OAuth client ID → Application type **Web application** → Authorized redirect URIs 填 `https://<authentik-host>/source/oauth/callback/google/`（dev 是 `http://localhost/oauth/source/oauth/callback/google/`）。建立後把 client_id / client_secret 填入 `.env`，再到 Authentik admin UI 設定 OAuth Source（見 `authentik-stack.md` §5）。
+>
+> ⚠ 這兩個 env var 是**操作者的 secret stash**，不是 docker-compose 自動注入給 Authentik 的 runtime config。Authentik 的 Google OAuth Source 是在 admin UI（或 blueprint）配置後存進 Authentik 自己的 postgres，**不**從 `AUTHENTIK_*` 環境變數讀。把它們放在 `.env` 一處集中是為了：(a) `gitleaks` 不會把它們跟其他 secret 分散看漏；(b) Authentik DB 倒掉重建時操作者有單一來源可以重設。如果你寧願把這兩條只放在密碼管理器、不進 `.env`，那是 fine — 移除 `.env.example` 兩條就好，runbook 仍可運作。
+>
+> backend `api` / `worker` **不直接**消費它們（backend 走 Authentik OIDC discovery + JWT verify，不接 Google API）。
+
+### 2.10 Frontend（VITE_ 前綴，**會 inline 到 bundle**）
 
 | 變數 | 必填 | 範例 | 說明 |
 |---|---|---|---|

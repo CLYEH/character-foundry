@@ -1,6 +1,6 @@
 # T-053: Authentik 設定 Google upstream IdP + client 註冊
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 3.5a
 **Est:** M
 **Depends on:** T-052（Authentik service 必須先起來）, T-061（Secret scan + SAST 必須先 land，否則 `client_secret` 進 repo 歷史就晚了；見 `planning/harness/roadmap.md` §1 A4）

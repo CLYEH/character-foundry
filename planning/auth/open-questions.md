@@ -138,3 +138,25 @@ per agent-interface 設計，MCP server 接 streamable HTTP transport，agent cl
 ## Step 2 完成（2026-05-07）
 
 8 條 open-questions 全部拍板（4 條真決定 + 4 條從上游 cascade）。下一步切換 backend agent 視角做 Step 3：endpoint scope decorator + MCP tool 條目該怎麼長進每張 ticket 模板。
+
+---
+
+## Q3 canonical scope 字串（T-053 lock）
+
+下面 5 條是 Phase 1 唯一允許出現在 access token `scope` claim 的字串。**逐字對齊**（含 colon、無 trailing space）：
+
+| Canonical string | HTTP verb / endpoint family |
+|---|---|
+| `character:read` | `GET /v1/characters/*` (含 base / alias / motion / checkpoint subresources)|
+| `character:write` | `POST` / `PATCH` / `DELETE` `/v1/characters/*` + `/aliases/*` + `/motions/*` |
+| `task:read` | `GET /v1/tasks/*` (含 SSE stream) |
+| `task:cancel` | `POST /v1/tasks/{id}/cancel` |
+| `usage:read` | `GET /v1/usage/*` |
+
+字串本身的權威來源：
+1. T-053 落地：`api/app/auth/mcp_clients.py` 的 `CANONICAL_SCOPES` frozenset
+2. T-053 落地：Authentik admin UI 內 5 條 Scope Mapping（per `planning/devops/authentik-stack.md` §5.3）
+3. T-054 落地後：`api/app/auth/scopes.py`（將取代上述 1 變成唯一 runtime source；`mcp_clients.py` 改成 import）
+
+**修改流程**：要動這 5 條（改名 / 加減 / 拆細）→ 不在 T-053 / T-054 範圍，要開新 ticket 並同步 Authentik UI + `mcp_clients.py` + `scopes.py`（T-054 之後）+ 本表。
+
