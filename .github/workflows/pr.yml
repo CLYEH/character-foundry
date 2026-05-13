@@ -9,6 +9,86 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # -------------------------------------------------------------------------
+  # Security scan (T-061, Harness A4).
+  #
+  # Three tools, all in one job so they share the checkout / Python setup
+  # cost. Runs in parallel with backend-lint-test and frontend-lint-test
+  # (no `needs:`) so the wallclock impact is roughly bandit + semgrep,
+  # not summed against the rest of CI. The 20%-of-existing-time budget in
+  # the ticket is comfortably met because of that parallelism.
+  #
+  # MUST run before any branch lands a real OAuth `client_secret`
+  # (T-053). Removing or disabling this job in service of "let me just
+  # merge this quick fix" is a regression — flag it in review.
+  # -------------------------------------------------------------------------
+  security:
+    name: security (gitleaks + bandit + semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks-action diffs the PR's commit range against the base
+          # branch, so the full history of the PR must be present.
+          # Shallow clones drop earlier commits and let secrets land via
+          # "looks fine in the latest commit" submissions.
+          fetch-depth: 0
+
+      - name: Gitleaks
+        # Scans the PR's commit range against `gitleaks.toml`. The action
+        # auto-detects `pull_request` events and uses `git log base..head`.
+        #
+        # `GITLEAKS_VERSION` pins the binary the action downloads so it
+        # matches the pre-commit hook's `rev:` in `.pre-commit-config.yaml`
+        # — otherwise the action floats with its own release cadence and
+        # pre-commit / CI can disagree on the rule set ("works on my
+        # machine, blocked in CI" or vice versa). Bump both together.
+        #
+        # `GITLEAKS_LICENSE` is **only required if this repo moves under
+        # a GitHub Organization account**. The repo currently lives under
+        # a user, so the action runs licence-free; if/when it migrates,
+        # set the secret here OR swap for a setup-go + binary install to
+        # keep CI green.
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.18.4"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/pyproject.toml
+
+      - name: Install api (dev extras)
+        # Reuses the same dev extras as backend-lint-test so bandit and
+        # semgrep versions track `api/pyproject.toml`. Slight duplication
+        # of the install step is the trade-off for keeping the job in
+        # parallel — pulling it into backend-lint-test would serialize
+        # ~2 min of semgrep behind the test suite.
+        working-directory: api
+        run: pip install -e ".[dev]"
+
+      - name: Bandit
+        working-directory: api
+        # `-c pyproject.toml` honours `[tool.bandit] exclude_dirs`.
+        # `-ll` raises the severity floor to MEDIUM so the baseline
+        # doesn't trip on every B404 (`subprocess` import) — bump back
+        # to default if real LOW-severity findings appear worth gating.
+        run: bandit -c pyproject.toml -r app/ -ll
+
+      - name: Semgrep
+        working-directory: api
+        env:
+          # Disable anonymous usage telemetry to the Semgrep registry —
+          # the rules are still fetched, only the metrics POST is gated.
+          SEMGREP_SEND_METRICS: "off"
+        # `--error` exits non-zero on findings; `--config p/owasp-top-ten`
+        # pulls the curated rule pack at scan time so we don't pin rule
+        # versions in-repo. Scope is the live application module only;
+        # tests / alembic / mutants are handled via `.semgrepignore`.
+        run: semgrep scan --config p/owasp-top-ten --error --metrics=off app/
+
   backend-lint-test:
     name: backend (lint + typecheck + test)
     runs-on: ubuntu-latest

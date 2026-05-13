@@ -1,0 +1,52 @@
+# semgrep ignore list — paths skipped during `semgrep scan`.
+#
+# Pinned in T-061 (Harness A4). Active scope is `api/app/` only (per
+# `.github/workflows/pr.yml` security job invocation); the directives
+# below mostly defend against developers running `semgrep` from the repo
+# root and getting drowned in vendored / generated-file noise.
+#
+# Adding an ignore here is permanent for that path — for individual rule
+# suppressions inside scanned code, prefer the inline `# nosemgrep:
+# <rule-id>  # reason` comment so the carve-out is co-located with the
+# code it justifies.
+
+# ── Generated / vendored ────────────────────────────────────────────────
+node_modules/
+.venv/
+venv/
+dist/
+build/
+.next/
+*.egg-info/
+
+# ── Test code ───────────────────────────────────────────────────────────
+# pytest fixtures intentionally exercise dangerous code paths (assert
+# everywhere, fakeredis with no auth, fake JWTs, etc.) — scanning them
+# produces noise that drowns out real findings in production paths. Same
+# rationale as `[tool.bandit] exclude_dirs = ["tests"]` in pyproject.toml.
+api/tests/
+web/tests/
+web/playwright-report/
+web/test-results/
+
+# ── Alembic auto-generated migrations ───────────────────────────────────
+# Autogen output mirrors ORM column types and frequently includes
+# string-concatenated SQL fragments that semgrep flags as injection
+# candidates. The patterns are SQLAlchemy-templated, not user-driven.
+api/alembic/versions/
+
+# ── Mutation testing sandbox (T-060) ────────────────────────────────────
+# `mutmut run` writes a per-mutant copy of the codebase here. Scanning
+# it would re-flag every finding once per mutant.
+api/mutants/
+
+# ── Stub fixtures (binary / image assets) ───────────────────────────────
+api/app/ai/_fixtures/
+
+# ── Frontend ────────────────────────────────────────────────────────────
+# NOT listed here on purpose. The CI invocation in `.github/workflows/pr.yml`
+# scopes semgrep to `api/app/`, so `web/` is already unreachable — listing
+# it would falsely imply "we scanned frontend then suppressed". Frontend
+# SAST is deferred per T-061 §"Not in scope"; when that ticket lands, the
+# scope expands by editing the CI command (and possibly adding directory
+# carve-outs here), not by dropping entries from this file.

@@ -1,0 +1,24 @@
+# gitleaks fingerprint-level ignore list.
+#
+# Format: one `<file>:<rule>:<line>:<finding>` fingerprint per line — copy
+# from the `Fingerprint:` line in a `gitleaks detect` finding when you
+# decide that hit is a real false positive.
+#
+# Rules of the road (T-061):
+#
+# 1. NEVER add a bare file path (e.g. `.env.example`) here. That whitelists
+#    the entire file forever — including real secrets accidentally pasted
+#    later. Use a narrow `regexes = [...]` allowlist entry in `gitleaks.toml`
+#    instead so we still catch new secret patterns in the same file.
+#
+# 2. Every entry below MUST carry a comment explaining WHY it is a false
+#    positive (test fixture, vendored snapshot, doc example, etc.). No bare
+#    fingerprints — code review will reject them.
+#
+# 3. Prefer fixing the underlying noise (e.g. swap a real-looking hex tail
+#    for `xxxxx...`) over ignoring it. Ignores are forever; nudging a
+#    fixture is a one-line edit.
+#
+# Baseline at T-061 land: empty (no false positives needed an ignore on the
+# 2026-05-13 sweep — the only borderline matches were carve-outs already
+# covered by `gitleaks.toml` allowlist regexes).

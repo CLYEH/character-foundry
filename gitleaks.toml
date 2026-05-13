@@ -1,0 +1,43 @@
+# gitleaks.toml — secret-scan configuration for Character Foundry.
+#
+# Pinned in T-061 (Harness A4) ahead of T-053, which will introduce
+# Authentik `client_secret` values. Letting `client_secret` slip into git
+# history is roughly 10x more expensive to clean up than blocking it at the
+# commit / PR boundary — that asymmetry is the entire reason this file
+# exists *before* the OAuth ticket.
+#
+# Activated in two places (both must stay in sync):
+#   1. `.pre-commit-config.yaml` — `gitleaks` upstream hook, scans staged diff
+#   2. `.github/workflows/pr.yml` — `security` job, scans the PR commit range
+#
+# Default ruleset (OpenAI / Anthropic / Google `AIza...` / private keys /
+# generic high-entropy strings) is pulled in via `useDefault = true` rather
+# than re-declared; bump gitleaks to inherit upstream additions.
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Project-wide allowlist.
+#
+# Per T-061 acceptance criterion, `.env.example` stays IN scope (no file-
+# level ignore in `.gitleaksignore`). Real placeholders that happen to
+# resemble secrets get whitelisted here as narrow regex patterns instead,
+# so an actual secret accidentally pasted into `.env.example` still trips
+# the scanner.
+# ---------------------------------------------------------------------------
+[allowlist]
+description = "Project-wide placeholder strings (NOT real secrets)"
+regexTarget = "match"
+regexes = [
+    # `.env.example` placeholders: `change_me`, `change_me_32_bytes_hex`, ...
+    '''change_me(_[a-z0-9]+)*''',
+
+    # CI throwaway secrets generated inline in `.github/workflows/pr.yml`
+    # for the e2e docker stack. The strings live in the workflow file
+    # itself (not exfiltrated, not reused outside CI) and are documented
+    # as such — but their 32–64 char hex tail trips the generic-api-key
+    # rule otherwise.
+    '''ci_jwt_secret_not_for_prod_[0-9a-f]{32,}''',
+    '''ci_storage_secret_not_for_prod_[0-9a-f]{16,}''',
+]
