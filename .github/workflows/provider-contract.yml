@@ -1,15 +1,23 @@
 name: Provider Contract Replay (T-058)
 
-# Nightly probe of gpt-image-2 / gpt-5-mini / Veo 3.1 response shapes.
+# On-demand probe of gpt-image-2 / gpt-5-mini / Veo 3.1 response shapes.
 # Runs detached from PR CI (`pr.yml`) so a real-provider 5xx or shape drift
 # never blocks a merge — the failure mode is an auto-filed `provider-drift`
 # issue that an operator triages against the SOP in
 # `planning/devops/operations.md`.
+#
+# Cadence: manual-only (T-066). The original T-058 nightly cron was disabled
+# because each fire costs ~$0.30 (Veo dominates) and a single-developer
+# project doesn't get enough value from daily probes to justify ~$10/month.
+# Trigger this workflow by hand when touching ai client code or when a
+# provider drift is suspected:
+#
+#   gh workflow run provider-contract.yml
+#
+# To restore nightly (or any other schedule), add the `schedule:` block
+# back here — the test code itself is unchanged.
 
 on:
-  schedule:
-    # 00:00 UTC nightly. Cron uses UTC regardless of repo timezone setting.
-    - cron: "0 0 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -64,7 +72,7 @@ jobs:
         env:
           # Dedicated test keys (NOT shared with dev / prod). Spending cap
           # on each provider account is documented in
-          # `planning/devops/operations.md` §8.
+          # `planning/devops/operations.md` §7.3.
           OPENAI_API_KEY: ${{ secrets.PROVIDER_CONTRACT_OPENAI_KEY }}
           VEO_API_KEY: ${{ secrets.PROVIDER_CONTRACT_VEO_KEY }}
           # Defensive: force stub mode off in case a future code path

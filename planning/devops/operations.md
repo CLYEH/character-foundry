@@ -400,13 +400,15 @@ echo "Restore OK: $DATE"
 
 ---
 
-## 7. Provider contract replay 維運 SOP（T-058）
+## 7. Provider contract replay 維運 SOP（T-058 / T-066）
 
-Nightly GitHub Actions job `.github/workflows/provider-contract.yml` 對三個 AI provider（gpt-image-2 / gpt-5-mini / Veo 3.1）跑最便宜的真 call，**只斷言 response shape**，shape drift 自動開 `provider-drift` issue。背景見 `planning/harness/roadmap.md` §1 A1；測試本體在 `api/tests/ai/test_real_provider_contract.py`。
+GitHub Actions job `.github/workflows/provider-contract.yml` 對三個 AI provider（gpt-image-2 / gpt-5-mini / Veo 3.1）跑最便宜的真 call，**只斷言 response shape**，shape drift 自動開 `provider-drift` issue。背景見 `planning/harness/roadmap.md` §1 A1；測試本體在 `api/tests/ai/test_real_provider_contract.py`。
+
+**Cadence：manual-only**（T-066，2026-05-13 改）。原本是 nightly cron `0 0 * * *`，每月成本 ~$10（Veo 占 ~$9），對單人內部專案不划算所以停掉。Trigger 模型從 push-based 改成 pull-based：動到 ai client 時手動 `gh workflow run provider-contract.yml`，drift 偵測 lag 從 ≤ 1 天變 ≤ 1 週。
 
 ### 7.1 為什麼存在
 
-T-042（gpt-image 多圖 multipart）/ T-045（gpt-5-mini reasoning model contract drift）/ T-051（Veo RAI filter shape）連三次同款 failure mode：stub 跟真 provider 漂移、PR CI 全綠但 prod 失敗。Nightly replay 是這條 pattern 的 sensor，先 GitHub 通知再讓人類介入。
+T-042（gpt-image 多圖 multipart）/ T-045（gpt-5-mini reasoning model contract drift）/ T-051（Veo RAI filter shape）連三次同款 failure mode：stub 跟真 provider 漂移、PR CI 全綠但 prod 失敗。Real-provider replay 是這條 pattern 的 sensor，先 GitHub 通知再讓人類介入。
 
 ### 7.2 測試 API key 註冊
 
@@ -425,14 +427,22 @@ T-042（gpt-image 多圖 multipart）/ T-045（gpt-5-mini reasoning model contra
 4. 名稱用上表，值貼進去
 5. `gh workflow run provider-contract.yml` 手動跑一次驗證
 
-### 7.3 Spending cap 設定
+> T-066 後 secret 不再是「workflow 能跑」的硬性條件：manual dispatch 時若某把 key 沒設，對應 test 走 `pytest.skip()`（見 `_require_env` in `test_real_provider_contract.py:64`），只跑有 key 的 provider。原 `if: github.event_name == 'schedule'` guard 留著當未來改回 cron 的 fallback。
 
-每個 provider account 都要設**月度 spending cap**，避免 nightly run 失控時把整個 quota 燒乾：
+### 7.3 觸發時機與 spending cap
+
+**何時手動跑：**
+
+- PR 動到 `app/ai/gpt_image_2.py` / `app/ai/reconciler.py` / `app/ai/veo_3_1.py` 或它們的 `_parse_*` 函式 → 開 PR 後手動跑一次
+- 懷疑某 provider 改了 schema（出現 `model_invalid_request` / 解析錯誤 spike）
+- 季度 retro 想看 baseline 還在不在 → 隨手跑一次
+
+每個 provider account 仍建議設**月度 spending cap**，避免 manual dispatch 連跑多次 + drift retry 失控：
 
 - **OpenAI project：** Settings → Limits → Monthly budget = **$5/month**, hard cap（block requests when exceeded）。
 - **Google AI Studio / GCP：** Billing → Budgets & alerts → Budget = **$5/month**, alert thresholds at 50% / 100%。GCP 沒有原生 hard cap，靠 budget alert + 手動 disable API。
 
-每次 nightly run 預估成本：
+每次 manual run 預估成本：
 
 | Provider | Call | 預估 cost |
 |---|---|---|
@@ -440,11 +450,11 @@ T-042（gpt-image 多圖 multipart）/ T-045（gpt-5-mini reasoning model contra
 | gpt-5-mini (chat completions, ~100 tokens in/out) | 1 | < $0.01 |
 | Veo 3.1 i2v (duration=3s, smallest legal) | 1 | ~$0.30 |
 
-月度上限 ≈ 31 × $0.32 ≈ $10。$5 cap 留一倍 margin；若連續多次 drift 觸發手動 dispatch 把月底吃滿，pytest 第 N+1 個 call 會收 4xx，自動進 drift issue 流程。
+每次跑一輪 ≈ $0.32；$5 cap 容得下 ~15 次 / 月 dispatch，正常 sprint 用量遠低於此。若 manual 觸發狂升表示 ai client 在大改，本身就是 retro 信號。
 
 ### 7.4 失敗 issue 觸發後的 triage
 
-Nightly job 失敗 → `actions/github-script` 自動開 issue（label `provider-drift`），body 包含 truncated 60 KB pytest output + run URL。On-call 拿到通知後：
+Manual run 失敗 → `actions/github-script` 自動開 issue（label `provider-drift`），body 包含 truncated 60 KB pytest output + run URL。流程：
 
 1. **看 issue body 內的 raw payload。** Test code 用 `ContractDriftError("<message>\n\nraw payload:\n<payload>")`——payload 全文直接黏在錯誤訊息裡。
 2. **三選一判讀：**
@@ -453,9 +463,11 @@ Nightly job 失敗 → `actions/github-script` 自動開 issue（label `provider
    - **Test infra 壞掉**（GH Actions runner / secret expired / spending cap hit）→ 修 infra，補 secret，補額度。Close issue 留 root cause 註記。
 3. **不要直接關 issue 不處理**——`provider-drift` label 累積數據後可以看 drift 頻率，作為 sprint retro 的素材。
 
-### 7.5 第一次跑後的 baseline 鎖定
+### 7.5 Baseline 鎖定與後續變更
 
-T-058 land 後第一次 nightly green run 就是 baseline。之後若 shape 變動（即使 test pass），review 時要意識到 shape function 的判定條件夠不夠嚴——例如 `_videos_present` 接受 `videos[]` 或 `generateVideoResponse.generatedSamples[].video` 兩種 nesting，若有第三種出現要併進來。
+T-058 第一次成功 run 為 baseline。之後若 shape 變動（即使 test pass），review 時要意識到 shape function 的判定條件夠不夠嚴——例如 `_videos_present` 接受 `videos[]` 或 `generateVideoResponse.generatedSamples[].video` 兩種 nesting，若有第三種出現要併進來。
+
+未來想恢復 nightly 或週次 cron：直接把 `schedule:` block 加回 `provider-contract.yml`（test 本體不需動），SOP 仍適用。
 
 ### 7.6 PR CI 互動
 
