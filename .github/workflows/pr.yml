@@ -305,26 +305,48 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.test.yml logs --tail=200
           exit 1
 
-      - name: Wait for Authentik health + blueprint apply
-        # Authentik server boots in ~30-60s (migrations + flow init), and
-        # the worker then applies blueprints — `/-/health/ready/` flips to
-        # 200 only after both ready. We additionally probe the SPA's
-        # OpenID config endpoint because that endpoint specifically requires
-        # the cf-e2e-bootstrap blueprint to have completed (the provider
-        # must exist). 90 * 2s = 3min ceiling — Authentik cold-boot has
-        # been observed at ~75s on the GitHub-hosted runner image.
+      - name: Wait for Authentik health
+        # Two-stage wait so the failure mode is unambiguous. Stage 1: just
+        # `/-/health/ready/` which flips on after gunicorn + the worker
+        # acquire the DB lock and complete django migrations. Observed on
+        # GitHub-hosted runner: ~90s cold boot. Ceiling 150s.
         run: |
-          for i in $(seq 1 90); do
-            if curl -sf http://localhost/oauth/-/health/ready/ > /dev/null \
-               && curl -sf http://localhost/oauth/application/o/character-foundry-spa/.well-known/openid-configuration > /dev/null; then
-              echo "authentik ready after ${i} attempts"
+          for i in $(seq 1 75); do
+            if curl -sf http://localhost/oauth/-/health/ready/ > /dev/null; then
+              echo "authentik healthy after ${i} attempts"
               exit 0
             fi
             sleep 2
           done
-          echo "authentik / blueprint failed to come up"
+          echo "authentik health endpoint never returned 200"
           docker compose -f docker-compose.yml -f docker-compose.test.yml ps
           docker compose -f docker-compose.yml -f docker-compose.test.yml logs authentik-server authentik-worker --tail=200
+          exit 1
+
+      - name: Wait for cf-e2e-bootstrap blueprint apply
+        # Stage 2: the SPA provider exists only after Authentik picks up
+        # `infra/authentik/blueprints/cf-e2e-bootstrap.yaml` and the worker
+        # finishes applying it (behind the 20+ default blueprints, which
+        # serialize in the celery worker pool). The OpenID discovery
+        # endpoint is the cheapest unauthenticated proof that the
+        # `character-foundry-spa` provider + application exist (per
+        # RFC 8414 well-known endpoints are public). Ceiling 240s — at
+        # ~100ms/blueprint apply through one worker that buys us 4x
+        # headroom. If we hit this timeout the most likely cause is a
+        # blueprint validation error that silently marks the instance
+        # `errored` — dump worker logs and the BlueprintInstance status
+        # for triage.
+        run: |
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost/oauth/application/o/character-foundry-spa/.well-known/openid-configuration > /dev/null; then
+              echo "cf-e2e-bootstrap blueprint applied after ${i} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "cf-e2e-bootstrap blueprint never produced the SPA OpenID config endpoint"
+          docker compose -f docker-compose.yml -f docker-compose.test.yml ps
+          docker compose -f docker-compose.yml -f docker-compose.test.yml logs authentik-worker --tail=400 | grep -iE "cf-e2e|character-foundry|blueprint|error|except" || true
           exit 1
 
       - name: Apply migrations

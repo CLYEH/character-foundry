@@ -187,7 +187,7 @@ entries:
       open_in_new_tab: false
 
   # ── Bind group → application (lets users in `cf-agent-default` use SPA) ─
-  - model: authentik_core.policybinding
+  - model: authentik_policies.policybinding
     identifiers:
       target:
         !Find [authentik_core.application, [slug, character-foundry-spa]]
