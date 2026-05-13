@@ -130,7 +130,7 @@ jobs:
           # if already present. Idempotent — safe on every failure.
           gh label create provider-drift \
             --color FF7F50 \
-            --description "Nightly real-provider contract replay drift (T-058)" \
+            --description "Real-provider contract replay drift (T-058)" \
             --force
 
       - name: Open or update provider-drift issue on failure
@@ -210,15 +210,15 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: recent.number,
-                body: [`Nightly contract replay failed again on ${date}.`, ``, trailerBlock].join('\n'),
+                body: [`Provider contract replay failed again on ${date}.`, ``, trailerBlock].join('\n'),
               });
             } else {
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: `[provider-drift] Nightly contract replay failed (${date})`,
+                title: `[provider-drift] Provider contract replay failed (${date})`,
                 labels: ['provider-drift'],
-                body: [`Nightly provider contract replay (T-058) failed on ${date}.`, ``, trailerBlock].join('\n'),
+                body: [`Provider contract replay (T-058) failed on ${date}.`, ``, trailerBlock].join('\n'),
               });
             }
 

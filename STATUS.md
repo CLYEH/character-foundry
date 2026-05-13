@@ -109,7 +109,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 
 | # | Ticket | Status |
 |---|---|---|
-| T-058 | Nightly 真 provider contract replay sensor（A1）| DONE |
+| T-058 | 真 provider contract replay sensor（A1；manual-only since T-066）| DONE |
 | T-059 | Architecture fitness — layering / import-direction test（A2）| DONE |
 | T-060 | Coverage gate + mutation testing on critical modules（A3）| DONE |
 | T-061 | Secret scan + SAST baseline（A4；**T-053 之前必 land**）| DONE |

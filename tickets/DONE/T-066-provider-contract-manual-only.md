@@ -1,6 +1,6 @@
 # T-066: Provider contract replay 改為手動 only（停 nightly）
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 3.5-pre（Harness pre-flight follow-up）
 **Est:** XS（15min）
 **Depends on:** none
@@ -36,13 +36,13 @@ T-058 nightly `provider-contract.yml` 改為 `workflow_dispatch` only，拿掉 `
 
 ## Acceptance criteria
 
-- [ ] `provider-contract.yml` 不再有 `schedule:` block，`workflow_dispatch:` 仍在
-- [ ] `gh workflow run provider-contract.yml` 手動觸發路徑可走（dry-run 不需真跑，但 `gh workflow list` 看得到、UI 上「Run workflow」按鈕還在）
-- [ ] `planning/devops/operations.md` §7 描述對齊（標題、cost 估算、觸發時機）
-- [ ] `planning/harness/scope.md` / `roadmap.md` A1 描述對齊
-- [ ] `STATUS.md` 對 T-058 / T-060 描述中「nightly」字眼同步
-- [ ] Issue #83 close 並留 comment 連到本 ticket / merge commit
-- [ ] 沒動到 `test_real_provider_contract.py` 或 `addopts = -m "not real_provider"` 設定（contract test 程式碼不變）
+- [x] `provider-contract.yml` 不再有 `schedule:` block，`workflow_dispatch:` 仍在
+- [x] `gh workflow run provider-contract.yml` 手動觸發路徑可走（dry-run 不需真跑，但 `gh workflow list` 看得到、UI 上「Run workflow」按鈕還在）
+- [x] `planning/devops/operations.md` §7 描述對齊（標題、cost 估算、觸發時機）
+- [x] `planning/harness/scope.md` / `roadmap.md` A1 描述對齊
+- [x] `STATUS.md` 對 T-058 / T-060 描述中「nightly」字眼同步
+- [ ] Issue #83 close 並留 comment 連到本 ticket / merge commit（post-merge）
+- [x] 沒動到 `test_real_provider_contract.py` 或 `addopts = -m "not real_provider"` 設定（contract test 程式碼不變）
 
 ---
 
