@@ -659,24 +659,35 @@ def test_oauth_token_missing_exp_claim_is_rejected(
     _assert_agent_error(resp.json(), "AUTH_INVALID_TOKEN")
 
 
-def test_expired_oauth_token_returns_auth_expired_envelope(
+def test_expired_oauth_token_returns_oauth_expired_envelope(
     scoped_client: TestClient,
     seeded_user: dict[str, str],
     _preload_jwks_cache: JWKSCache,
     make_oauth_token: Any,
 ) -> None:
+    """Codex round-7 P2: OAuth expired tokens get a dedicated code with an
+    OAuth-tuned fix message (Authentik /oauth/token, not /v1/auth/refresh).
+    The legacy AUTH_EXPIRED stays bound to the legacy JWT path.
+    """
     token = make_oauth_token(
         scopes=["character:read"],
         client_id="claude-code",
         email=seeded_user["email"],
-        expires_in=-60,  # already expired
+        expires_in=-60,  # already expired, well beyond the 30s leeway
     )
     resp = scoped_client.get(
         "/v1/auth/me",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 401, resp.text
-    _assert_agent_error(resp.json(), "AUTH_EXPIRED")
+    body = resp.json()
+    _assert_agent_error(body, "AUTH_OAUTH_EXPIRED")
+    # The fix message must positively point OAuth clients at Authentik's
+    # token endpoint. (The same fix string also mentions `/v1/auth/refresh`
+    # in a negative "Do NOT" context — that's intentional anti-misdirection
+    # rather than a fallback recommendation, so we don't blanket-ban the
+    # substring.)
+    assert "/oauth/token" in body["error"]["fix"]
 
 
 def test_missing_authorization_header_returns_missing_token(

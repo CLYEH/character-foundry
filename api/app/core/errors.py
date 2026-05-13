@@ -264,6 +264,25 @@ def auth_m2m_wrong_surface() -> AgentErrorException:
     )
 
 
+def auth_oauth_expired() -> AgentErrorException:
+    return AgentErrorException(
+        AgentError(
+            code="AUTH_OAUTH_EXPIRED",
+            message="OAuth 存取權杖已過期，請重新取得",
+            problem="OAuth access token `exp` is in the past.",
+            cause="The Authentik-issued access-token TTL elapsed (default 1h "
+            "per `planning/devops/authentik-stack.md` §5.4).",
+            fix="For delegated clients with `offline_access`, exchange the refresh "
+            "token at Authentik's `/oauth/token` endpoint. For M2M "
+            "(client_credentials) clients, re-call `/oauth/token` with the client "
+            "credentials. Do NOT call `/v1/auth/refresh` — that's the legacy JWT "
+            "path and does not accept OAuth tokens.",
+            retryable=True,
+        ),
+        status_code=401,
+    )
+
+
 def auth_oauth_provider_unavailable() -> AgentErrorException:
     return AgentErrorException(
         AgentError(

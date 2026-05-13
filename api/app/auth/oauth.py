@@ -41,8 +41,8 @@ from jwt import PyJWK
 from app.auth.mcp_clients import get_allowed_scopes, is_allowed_client
 from app.core.errors import (
     auth_client_not_allowed,
-    auth_expired,
     auth_invalid_token,
+    auth_oauth_expired,
     auth_oauth_provider_unavailable,
     auth_scope_exceeds_allowlist,
 )
@@ -440,7 +440,9 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
             options={"require": ["exp", "iat", "iss", "aud", "sub"]},
         )
     except jwt.ExpiredSignatureError as exc:
-        raise auth_expired() from exc
+        # Distinct from legacy `auth_expired` — the OAuth recovery path is
+        # Authentik's `/oauth/token`, not `/v1/auth/refresh`. Codex round-7 P2.
+        raise auth_oauth_expired() from exc
     except jwt.InvalidTokenError as exc:
         raise auth_invalid_token() from exc
 
