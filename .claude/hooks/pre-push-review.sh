@@ -16,7 +16,36 @@
 
 set -u
 
+# T-063: bypass audit log. Append one JSONL line to `.harness/skip-review.log`
+# every time CF_SKIP_REVIEW=1 is honored, so quarterly retros can spot drift
+# (bypass rate climbing, reason field consistently empty, etc.). File is
+# gitignored — local accumulation only, never sync'd.
+append_skip_log() {
+  local repo_root ts branch upstream range reason esc_branch esc_range esc_reason log
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  log="$repo_root/.harness/skip-review.log"
+  [ -d "$repo_root/.harness" ] || return 0
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "")
+  if [ -n "$upstream" ]; then
+    range="${upstream}..HEAD"
+  else
+    range="origin/main..HEAD"
+  fi
+  reason="${CF_SKIP_REVIEW_REASON:-}"
+  # Minimal JSON-string escape: backslash → \\, double quote → \", then strip
+  # raw newlines / tabs from `reason` so each entry stays on one line.
+  esc_branch="${branch//\\/\\\\}"; esc_branch="${esc_branch//\"/\\\"}"
+  esc_range="${range//\\/\\\\}"; esc_range="${esc_range//\"/\\\"}"
+  esc_reason="${reason//\\/\\\\}"; esc_reason="${esc_reason//\"/\\\"}"
+  esc_reason="${esc_reason//$'\n'/ }"; esc_reason="${esc_reason//$'\t'/ }"
+  printf '{"ts":"%s","branch":"%s","range":"%s","reason":"%s","source":"claude-hook"}\n' \
+    "$ts" "$esc_branch" "$esc_range" "$esc_reason" >> "$log" 2>/dev/null || true
+}
+
 if [ "${CF_SKIP_REVIEW:-0}" = "1" ]; then
+  append_skip_log
   cat <<'JSON'
 {"permissionDecision":"allow","additionalContext":"Pre-push review bypass active (CF_SKIP_REVIEW=1)."}
 JSON

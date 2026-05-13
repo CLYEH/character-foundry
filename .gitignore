@@ -71,6 +71,14 @@ mempalace.yaml
 .mempalace/
 
 # ========================
+# Pre-push bypass audit log (T-063)
+# ========================
+# Both pre-push hooks append a JSONL line here when CF_SKIP_REVIEW=1 is
+# honored. Local accumulation only — quarterly retros read it on disk and
+# never sync to repo. See `.harness/README.md`.
+.harness/skip-review.log
+
+# ========================
 # Mutation testing (T-060)
 # ========================
 # `mutmut run` writes a sandbox copy of the codebase + per-mutant metadata
