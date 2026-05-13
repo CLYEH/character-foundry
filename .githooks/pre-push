@@ -35,9 +35,13 @@ SEC_CHAIN=0
 DB_CHAIN=0
 
 if [ -n "${TICKET:-}" ]; then
-  for f in tickets/${TICKET}-*.md tickets/DONE/${TICKET}-*.md; do
+  # Anchor to repo root so subdir / worktree invocations still resolve.
+  REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
+  for f in "$REPO_ROOT"/tickets/${TICKET}-*.md "$REPO_ROOT"/tickets/DONE/${TICKET}-*.md; do
     [ -f "$f" ] || continue
-    body=$(grep -v '^## OAuth scope required' "$f")
+    # `-i` makes the OAuth-template-header strip robust to casing drift in
+    # tickets/_TEMPLATE.md (see CONTRIBUTING §4.4).
+    body=$(grep -vi '^## OAuth scope' "$f")
     if printf '%s\n' "$body" | grep -qiE 'security-sensitive|oauth|\bjwt\b|\bpkce\b|bearer token|authentik|client_secret|refresh[._ ]token|scope decorator|secret scan|sast' ; then
       SEC_CHAIN=1
     fi

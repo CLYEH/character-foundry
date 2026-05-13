@@ -35,17 +35,23 @@ SEC_CHAIN=0
 DB_CHAIN=0
 
 if [ -n "${TICKET:-}" ]; then
-  for f in tickets/${TICKET}-*.md tickets/DONE/${TICKET}-*.md; do
+  # Anchor ticket lookup to the worktree root so subdirectory invocation
+  # (worktrees, `api/`-cwd shells) still resolves the ticket file.
+  REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
+  for f in "$REPO_ROOT"/tickets/${TICKET}-*.md "$REPO_ROOT"/tickets/DONE/${TICKET}-*.md; do
     [ -f "$f" ] || continue
     # Strip template scaffold lines that mention OAuth purely as section
-    # boilerplate (every ticket has `## OAuth scope required` from the
-    # template — keyword matches there are noise).
-    body=$(grep -v '^## OAuth scope required' "$f")
+    # boilerplate (every ticket carries `## OAuth scope required` from
+    # tickets/_TEMPLATE.md — keyword matches there are noise; T-064 was
+    # the negative-control reproduction). `-i` keeps the strip robust to
+    # template rename casing drift.
+    body=$(grep -vi '^## OAuth scope' "$f")
     # Security-sensitive keywords (auth / OAuth / secrets surface).
     if printf '%s\n' "$body" | grep -qiE 'security-sensitive|oauth|\bjwt\b|\bpkce\b|bearer token|authentik|client_secret|refresh[._ ]token|scope decorator|secret scan|sast' ; then
       SEC_CHAIN=1
     fi
-    # Schema-migration / DB-shape keywords.
+    # Schema-migration / DB-shape keywords. `new index` is broad on
+    # purpose ("err on the side of chaining" — see CONTRIBUTING §4.4).
     if printf '%s\n' "$body" | grep -qiE 'alembic|alter table|add column|drop column|schema migration|migration script|\bbackfill\b|new index|enum column' ; then
       DB_CHAIN=1
     fi
