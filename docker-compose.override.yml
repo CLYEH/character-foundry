@@ -57,9 +57,17 @@ services:
   # (akadmin first-login token flow needs direct :9000 access).
   # Phase 1 / prod 走 nginx /oauth/ 反代，不對外開 9000/9443
   # (per planning/devops/authentik-stack.md §3.1 + ticket §Notes).
+  #
+  # Loopback-bind (127.0.0.1:) so the Authentik bootstrap-setup flow
+  # is not reachable from the LAN before T-053 promotes a real admin.
+  # Without the loopback prefix Docker binds 0.0.0.0 — anyone on the
+  # dev box's network (or a misconfigured firewall) could hit
+  # /-/flow/initial-setup/ and become akadmin first. T-053 owns the
+  # full IdP / client / admin setup; until it lands, keep the bootstrap
+  # surface localhost-only.
   authentik-server:
     environment:
       AUTHENTIK_LOG_LEVEL: debug
     ports:
-      - "9000:9000"
-      - "9443:9443"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9443:9443"

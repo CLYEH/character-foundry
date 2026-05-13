@@ -103,6 +103,8 @@
 | `AUTHENTIK_POSTGRES_PASSWORD` | ✓ | Authentik 專用 postgres instance 密碼（與主 app `POSTGRES_PASSWORD` 分開）| 🔒 |
 
 > Authentik 自身的 postgres / redis 是 docker-compose 內專屬 instance，hostname `authentik-postgres` / `authentik-redis`，user/db 固定 `authentik`。T-053 起再加 upstream Google IdP / client_secret 等 env。
+>
+> **`AUTHENTIK_SECRET_KEY` rotation footprint：** 轉這把 key 會 invalidate 所有 active session + pending recovery / invitation link（Django session signing + signer.Signer + JWE cookie 加密 全部走它）。**不會** rotate OIDC signing key（OIDC key 存在 Authentik 內部 cert store，`/certs` named volume 持久化，獨立輪換）。實務上等同「強制全 user 重登」，但不會 invalid 已發出的 access / refresh token。
 
 ### 2.9 Frontend（VITE_ 前綴，**會 inline 到 bundle**）
 

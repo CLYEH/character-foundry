@@ -100,6 +100,12 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Intentionally NO --requirepass: authentik-redis is reachable only on the
+  # compose private network and Authentik connects without auth. If this
+  # service is ever exposed beyond the compose net, add --requirepass AND
+  # AUTHENTIK_REDIS__PASSWORD together (changing one without the other will
+  # break Authentik silently — the ping healthcheck still passes because
+  # `NOAUTH` reply doesn't match `PONG` only if auth IS required).
   authentik-redis:
     image: redis:7-alpine
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
@@ -112,6 +118,11 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Image pin: `2024.12` is the LTS major.minor *rolling* tag — patch
+  # releases (2024.12.x) auto-pick-up on `docker compose pull`. Not a
+  # digest pin; the deliberate trade is "stay on the LTS line, take
+  # backported security fixes automatically". M3.5 ship-prep ticket
+  # will tighten to a digest pin + upgrade SOP.
   authentik-server:
     image: ghcr.io/goauthentik/server:2024.12
     command: server
@@ -122,8 +133,13 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
       AUTHENTIK_REDIS__HOST: authentik-redis
+    # `/certs` holds OIDC/SAML signing key material — must persist across
+    # container recreate or every restart rotates the keys and invalidates
+    # tokens already issued. AC #4 (Authentik 設定持續 across down/up)
+    # depends on this volume existing.
     volumes:
       - authentik_media:/media
+      - authentik_certs:/certs
     healthcheck:
       test: ["CMD", "ak", "healthcheck"]
       start_period: 60s
@@ -147,8 +163,13 @@ services:
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
       AUTHENTIK_REDIS__HOST: authentik-redis
+    # Mirror server: worker also reads /certs for OIDC/SAML signing.
+    # No docker.sock mount — we don't use Authentik outposts (which would
+    # auto-deploy outpost containers via the docker API). Outpost feature
+    # remains disabled.
     volumes:
       - authentik_media:/media
+      - authentik_certs:/certs
     healthcheck:
       test: ["CMD", "ak", "healthcheck"]
       start_period: 60s
@@ -169,3 +190,4 @@ volumes:
   authentik_postgres_data:
   authentik_redis_data:
   authentik_media:
+  authentik_certs:
