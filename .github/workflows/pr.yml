@@ -245,6 +245,16 @@ jobs:
           # server / nginx via the dependency chain — the whole `up -d` fails.
           AUTHENTIK_POSTGRES_PASSWORD=cf_test_authentik_pw
           AUTHENTIK_SECRET_KEY=ci_authentik_secret_not_for_prod_0123456789abcdef0123456789abcdef
+          # T-057: backend OAuth verifier wiring. Issuer is per-provider
+          # (T-053 §5.4 + .env.example commentary). The blueprint creates
+          # the `character-foundry-spa` provider with `issuer_mode:
+          # per_provider`, so `iss` is `<public-base>/oauth/application/o/
+          # character-foundry-spa/`. The backend resolves it inside the
+          # docker network — Authentik's `AUTHENTIK_WEB__PATH=/oauth/` means
+          # the in-container path also includes `/oauth/`.
+          AUTHENTIK_ISSUER_URL=http://localhost/oauth/application/o/character-foundry-spa/
+          AUTHENTIK_AUDIENCE=character-foundry-spa
+          AUTHENTIK_JWKS_URL=http://authentik-server:9000/oauth/application/o/character-foundry-spa/jwks/
           OPENAI_API_KEY=
           SEEDANCE_API_KEY=
           ANTHROPIC_API_KEY=
@@ -264,12 +274,22 @@ jobs:
           VITE_API_BASE_URL=/api
           VITE_STORAGE_BASE_URL=/storage
           VITE_APP_VERSION=0.1.0-ci
+          # T-057: frontend SPA reads these via import.meta.env at runtime
+          # (vite dev server inside docker). All same-origin so nginx
+          # reverse-proxies to authentik-server; no CORS to deal with.
+          VITE_AUTHENTIK_AUTHORIZE_URL=/oauth/application/o/authorize/
+          VITE_AUTHENTIK_TOKEN_URL=/oauth/application/o/token/
+          VITE_AUTHENTIK_LOGOUT_URL=/oauth/application/o/revoke/
+          VITE_AUTHENTIK_CLIENT_ID=character-foundry-spa
           EOF
 
       - name: Start stack
-        # Use only the base compose — the override mounts host paths that
-        # don't exist on the runner.
-        run: docker compose -f docker-compose.yml up -d --build
+        # T-057: docker-compose.test.yml mounts the cf-e2e-bootstrap
+        # blueprint into Authentik so the SPA provider + scopes + test
+        # users are seeded on startup. The dev `docker-compose.override.yml`
+        # is NOT merged (it bind-mounts host paths the runner doesn't
+        # have, and exposes :9000/:9443 we don't need).
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
 
       - name: Wait for /api/health
         run: |
@@ -281,15 +301,88 @@ jobs:
             sleep 2
           done
           echo "stack failed to come up"
-          docker compose -f docker-compose.yml ps
-          docker compose -f docker-compose.yml logs --tail=200
+          docker compose -f docker-compose.yml -f docker-compose.test.yml ps
+          docker compose -f docker-compose.yml -f docker-compose.test.yml logs --tail=200
+          exit 1
+
+      - name: Wait for Authentik health
+        # Two-stage wait so the failure mode is unambiguous. Stage 1: just
+        # `/-/health/ready/` which flips on after gunicorn + the worker
+        # acquire the DB lock, complete django migrations, and finish app
+        # module loading. On the GitHub-hosted runner cold boot has been
+        # observed at 90s (first run with warm postgres init) and 180s
+        # (cold image pull + slow disk). 240s ceiling gives 4x headroom
+        # over the fast case without burning runner minutes on a genuinely
+        # dead Authentik.
+        run: |
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost/oauth/-/health/ready/ > /dev/null; then
+              echo "authentik healthy after ${i} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "authentik health endpoint never returned 200"
+          docker compose -f docker-compose.yml -f docker-compose.test.yml ps
+          docker compose -f docker-compose.yml -f docker-compose.test.yml logs authentik-server authentik-worker --tail=200
+          exit 1
+
+      - name: Wait for cf-e2e-bootstrap blueprint apply
+        # Stage 2: the SPA provider exists only after Authentik picks up
+        # `infra/authentik/blueprints/cf-e2e-bootstrap.yaml` and the worker
+        # finishes applying it (behind the 20+ default blueprints, which
+        # serialize in the celery worker pool). The OpenID discovery
+        # endpoint is the cheapest unauthenticated proof that the
+        # `character-foundry-spa` provider + application exist (per
+        # RFC 8414 well-known endpoints are public). Ceiling 240s.
+        #
+        # On timeout we query the Authentik API directly with the
+        # bootstrap token (set in docker-compose.test.yml) to surface
+        # WHICH part of the blueprint silently no-op'd: list applications,
+        # providers, scope mappings, and the BlueprintInstance status with
+        # any errored entries. apply_blueprint celery tasks report SUCCESS
+        # even when individual entries fail schema validation — the only
+        # ground truth is API state, not task logs.
+        run: |
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost/oauth/application/o/character-foundry-spa/.well-known/openid-configuration > /dev/null; then
+              echo "cf-e2e-bootstrap blueprint applied after ${i} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "cf-e2e-bootstrap blueprint never produced the SPA OpenID config endpoint"
+          docker compose -f docker-compose.yml -f docker-compose.test.yml ps
+          echo "── Authentik API state (bootstrap-token auth) ──"
+          AUTH="Authorization: Bearer cf_e2e_bootstrap_token_not_for_prod"
+          echo "── Applications ──"
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/core/applications/" | head -c 2000 || true
+          echo
+          echo "── OAuth2 Providers ──"
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/providers/oauth2/" | head -c 2000 || true
+          echo
+          echo "── Scope Mappings ──"
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/propertymappings/provider/scope/" | head -c 2000 || true
+          echo
+          echo "── BlueprintInstance cf-e2e-bootstrap ──"
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/managed/blueprints/?name=cf-e2e-bootstrap" || true
+          echo
+          echo "── SystemTask records for apply_blueprint (carries error message) ──"
+          # Authentik captures blueprint apply failures via SystemTask, not
+          # via stdout. The `error` / `messages` fields of an errored task
+          # row contain the actual ValidationError text — the worker logs
+          # only show the wrapper Task started/finished events.
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/events/system_tasks/" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps([t for t in d.get('results',[]) if t.get('name')=='apply_blueprint' or 'blueprint' in (t.get('uid') or '')], indent=2))" || true
+          echo
+          echo "── authentik-server + worker raw logs (no filter) ──"
+          docker compose -f docker-compose.yml -f docker-compose.test.yml logs authentik-server authentik-worker 2>&1 | tail -400
           exit 1
 
       - name: Apply migrations
-        run: docker compose -f docker-compose.yml exec -T api alembic upgrade head
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml exec -T api alembic upgrade head
 
       - name: Seed E2E users
-        run: docker compose -f docker-compose.yml exec -T api python -m app.cli seed-e2e
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml exec -T api python -m app.cli seed-e2e
 
       - uses: pnpm/action-setup@v4
         with:
@@ -327,8 +420,8 @@ jobs:
 
       - name: Dump compose logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml logs --tail=500
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml logs --tail=500
 
       - name: Tear down stack
         if: always()
-        run: docker compose -f docker-compose.yml down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml down -v

@@ -1,6 +1,6 @@
 # T-057: E2E OAuth login smoke + dual-stack 並存測試
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 3.5a
 **Est:** S
 **Depends on:** T-056（前端 OAuth flow 必須跑得起來）、T-054（後端 dual-stack 必須接兩種 token）
