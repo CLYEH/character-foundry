@@ -95,7 +95,18 @@
 | `PROMETHEUS_METRICS_PORT` |  | 預設 `9090`（僅內網）| |
 | `SENTRY_DSN` |  | optional，Phase 2 可接 | 🔒 |
 
-### 2.8 Frontend（VITE_ 前綴，**會 inline 到 bundle**）
+### 2.8 Authentik OAuth provider (T-052)
+
+| 變數 | 必填 | 說明 | 敏感 |
+|---|---|---|---|
+| `AUTHENTIK_SECRET_KEY` | ✓ | Authentik server / worker 共用，`openssl rand -base64 32` 產 | 🔒 |
+| `AUTHENTIK_POSTGRES_PASSWORD` | ✓ | Authentik 專用 postgres instance 密碼（與主 app `POSTGRES_PASSWORD` 分開）| 🔒 |
+
+> Authentik 自身的 postgres / redis 是 docker-compose 內專屬 instance，hostname `authentik-postgres` / `authentik-redis`，user/db 固定 `authentik`。T-053 起再加 upstream Google IdP / client_secret 等 env。
+>
+> **`AUTHENTIK_SECRET_KEY` rotation footprint：** 轉這把 key 會 invalidate 所有 active session + pending recovery / invitation link（Django session signing + signer.Signer + JWE cookie 加密 全部走它）。**不會** rotate OIDC signing key（OIDC key 存在 Authentik 內部 cert store，`/certs` named volume 持久化，獨立輪換）。實務上等同「強制全 user 重登」，但不會 invalid 已發出的 access / refresh token。
+
+### 2.9 Frontend（VITE_ 前綴，**會 inline 到 bundle**）
 
 | 變數 | 必填 | 範例 | 說明 |
 |---|---|---|---|
@@ -118,6 +129,8 @@ POSTGRES_PASSWORD=change_me
 REDIS_PASSWORD=change_me
 JWT_SECRET=change_me_32_bytes_hex
 STORAGE_SIGNED_URL_SECRET=change_me_32_bytes_hex
+AUTHENTIK_SECRET_KEY=change_me_base64_32
+AUTHENTIK_POSTGRES_PASSWORD=change_me
 
 OPENAI_API_KEY=sk-...              # gpt-image-2 + gpt-5-mini reconciler 共用
 AI_STUB_MODE=true                  # dev/CI 預設；prod 設 false
