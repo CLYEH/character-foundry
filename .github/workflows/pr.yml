@@ -334,12 +334,15 @@ jobs:
         # serialize in the celery worker pool). The OpenID discovery
         # endpoint is the cheapest unauthenticated proof that the
         # `character-foundry-spa` provider + application exist (per
-        # RFC 8414 well-known endpoints are public). Ceiling 240s — at
-        # ~100ms/blueprint apply through one worker that buys us 4x
-        # headroom. If we hit this timeout the most likely cause is a
-        # blueprint validation error that silently marks the instance
-        # `errored` — dump worker logs and the BlueprintInstance status
-        # for triage.
+        # RFC 8414 well-known endpoints are public). Ceiling 240s.
+        #
+        # On timeout we query the Authentik API directly with the
+        # bootstrap token (set in docker-compose.test.yml) to surface
+        # WHICH part of the blueprint silently no-op'd: list applications,
+        # providers, scope mappings, and the BlueprintInstance status with
+        # any errored entries. apply_blueprint celery tasks report SUCCESS
+        # even when individual entries fail schema validation — the only
+        # ground truth is API state, not task logs.
         run: |
           for i in $(seq 1 120); do
             if curl -sf http://localhost/oauth/application/o/character-foundry-spa/.well-known/openid-configuration > /dev/null; then
@@ -350,6 +353,21 @@ jobs:
           done
           echo "cf-e2e-bootstrap blueprint never produced the SPA OpenID config endpoint"
           docker compose -f docker-compose.yml -f docker-compose.test.yml ps
+          echo "── Authentik API state (bootstrap-token auth) ──"
+          AUTH="Authorization: Bearer cf_e2e_bootstrap_token_not_for_prod"
+          echo "── Applications ──"
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/core/applications/" | head -c 2000 || true
+          echo
+          echo "── OAuth2 Providers ──"
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/providers/oauth2/" | head -c 2000 || true
+          echo
+          echo "── Scope Mappings ──"
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/propertymappings/provider/scope/" | head -c 2000 || true
+          echo
+          echo "── BlueprintInstance status ──"
+          curl -sf -H "$AUTH" "http://localhost/oauth/api/v3/managed/blueprints/" | head -c 4000 || true
+          echo
+          echo "── authentik-worker tail (cf-e2e/blueprint/error) ──"
           docker compose -f docker-compose.yml -f docker-compose.test.yml logs authentik-worker --tail=400 | grep -iE "cf-e2e|character-foundry|blueprint|error|except" || true
           exit 1
 
