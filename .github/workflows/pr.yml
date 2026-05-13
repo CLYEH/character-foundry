@@ -64,6 +64,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_VERSION: "8.18.4"
+          # Pin the config path explicitly rather than relying on the
+          # action's auto-discovery (some versions only check
+          # `gitleaks.toml`, others only `.gitleaks.toml`). With the
+          # dotfile name in place locally for pre-commit auto-discovery,
+          # CI must be told where to look — otherwise the action falls
+          # back to default rules and the allowlist becomes a no-op on
+          # the CI side. Surfaced by T-061 Codex review (PR #80).
+          GITLEAKS_CONFIG: .gitleaks.toml
 
       - uses: actions/setup-python@v5
         with:

@@ -1,4 +1,4 @@
-# gitleaks.toml — secret-scan configuration for Character Foundry.
+# .gitleaks.toml — secret-scan configuration for Character Foundry.
 #
 # Pinned in T-061 (Harness A4) ahead of T-053, which will introduce
 # Authentik `client_secret` values. Letting `client_secret` slip into git
@@ -7,8 +7,17 @@
 # exists *before* the OAuth ticket.
 #
 # Activated in two places (both must stay in sync):
-#   1. `.pre-commit-config.yaml` — `gitleaks` upstream hook, scans staged diff
-#   2. `.github/workflows/pr.yml` — `security` job, scans the PR commit range
+#   1. `.pre-commit-config.yaml` — `gitleaks` upstream hook runs
+#      `gitleaks git --pre-commit --staged` with no explicit `--config`,
+#      so gitleaks **auto-discovers** this file via its default lookup
+#      order. That lookup only matches the **dotfile name
+#      `.gitleaks.toml`**, NOT `gitleaks.toml` (no dot). The leading dot
+#      is load-bearing; renaming silently disables this allowlist for
+#      local commits while CI keeps applying it. T-061 Codex review
+#      surfaced the gap; see PR #80 thread for the cross-check.
+#   2. `.github/workflows/pr.yml` — `security` job sets `GITLEAKS_CONFIG`
+#      env to this file's path, bypassing auto-discovery entirely so CI
+#      behaviour is robust to future filename churn.
 #
 # Default ruleset (OpenAI / Anthropic / Google `AIza...` / private keys /
 # generic high-entropy strings) is pulled in via `useDefault = true` rather
