@@ -160,10 +160,17 @@ entries:
       # Redirect URIs: e2e runs against `http://localhost` (nginx in compose
       # publishes :80 only). Dev `pnpm dev` outside docker would be
       # http://localhost:5173/auth/callback — keep both so blueprints work
-      # in either mode without bespoke overrides.
-      redirect_uris: |-
-        http://localhost/auth/callback
-        http://localhost:5173/auth/callback
+      # in either mode without bespoke overrides. Authentik 2024.x changed
+      # the field from a newline-delimited string to a list of
+      # {matching_mode, url} dicts (migration 0026_redirecturi); the string
+      # form is silently ignored, leaving the provider with zero redirect
+      # URIs which Authentik treats as "no application registered" and the
+      # OpenID discovery endpoint 404s — surfaced by T-057 PR #91 run #4.
+      redirect_uris:
+        - matching_mode: strict
+          url: http://localhost/auth/callback
+        - matching_mode: strict
+          url: http://localhost:5173/auth/callback
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
