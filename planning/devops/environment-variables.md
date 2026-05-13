@@ -50,6 +50,7 @@
 | `VEO_MODEL` |  | 預設 `veo-3.1` | |
 | `VEO_TIMEOUT_MS` |  | 預設 `180000` (3min) | |
 | `VEO_MAX_RETRIES` |  | 預設 `2` | |
+| `VEO_RAI_MAX_RETRIES` |  | 預設 `2` — 偵測 RAI filter false positive 後 post-submit 重試的次數上限（T-051）；每次重試 = 完整 submit 一次（會再付一次費），incident 期間設 `0` 立刻停血 | |
 | `RECONCILER_MODEL` |  | 預設 `gpt-5-mini`（共用 `OPENAI_API_KEY`） | |
 | `RECONCILER_TIMEOUT_MS` |  | 預設 `30000` | |
 | `RECONCILER_MAX_TOKENS` |  | 預設 `800` | |

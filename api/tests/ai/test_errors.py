@@ -7,6 +7,8 @@ import httpx
 from app.ai.errors import (
     map_exception_to_agent_error,
     map_response_to_agent_error,
+    model_content_filtered,
+    model_invalid_request,
     parse_retry_after_seconds,
 )
 
@@ -49,6 +51,36 @@ def test_400_other_maps_to_invalid_request_not_retryable() -> None:
     err = map_response_to_agent_error("gpt-image-2", _resp(400, body))
     assert err.error.code == "MODEL_INVALID_REQUEST"
     assert err.error.retryable is False
+    # T-051: the real-4xx path SHOULD name the status code so on-call sees
+    # the specific provider response, not the historical "4xx" placeholder.
+    assert "HTTP 400" in err.error.problem
+
+
+def test_model_invalid_request_detail_only_does_not_claim_4xx() -> None:
+    """T-051: callers that pass only `detail` (no `http_status`) describe
+    a response-shape problem, not an HTTP 4xx. The problem text must NOT
+    say "returned 4xx"; instead it says "returned an unexpected response"
+    so on-call doesn't waste cycles looking for a non-existent 4xx."""
+    err = model_invalid_request("veo-3.1", detail="some shape mismatch")
+    problem = err.error.problem.lower()
+    assert "returned 4xx" not in problem
+    assert "unexpected response" in problem
+    assert "some shape mismatch" in err.error.problem
+
+
+def test_model_content_filtered_envelope_is_retryable() -> None:
+    """T-051: distinct factory for "operation completed but safety filter
+    dropped the output". retryable=True so the worker / RAI retry envelope
+    can recover; status_code=502 matches the provider-issue family."""
+    err = model_content_filtered("veo-3.1", detail="raiMediaFilteredCount=1; reasons=safety")
+    assert err.error.code == "MODEL_CONTENT_FILTERED"
+    assert err.error.retryable is True
+    assert err.status_code == 502
+    # Cause must point at the upstream behaviour (not user prompt) so triage
+    # picks the right escalation path.
+    assert "rai" in err.error.cause.lower() or "safety filter" in err.error.cause.lower()
+    # Detail flows through.
+    assert "raiMediaFilteredCount" in err.error.problem
 
 
 def test_401_maps_to_internal_auth_failed() -> None:

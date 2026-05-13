@@ -29,12 +29,17 @@ def _make_client(
     max_retries: int = 2,
     poll_interval_seconds: float = 0.0,
     max_poll_attempts: int = 5,
+    rai_max_retries: int = 0,
     monkeypatch: pytest.MonkeyPatch | None = None,
 ) -> Veo31Client:
     """Build a Veo31Client wired to an httpx MockTransport.
 
     `monkeypatch.setattr(asyncio, "sleep", ...)` keeps retry / poll loops
     instant without depending on real timers.
+
+    `rai_max_retries` defaults to 0 so existing tests stay deterministic
+    (a single submit→poll→download per call); T-051 RAI tests pass an
+    explicit positive value.
     """
     if monkeypatch is not None:
 
@@ -57,6 +62,7 @@ def _make_client(
         max_retries=max_retries,
         poll_interval_seconds=poll_interval_seconds,
         max_poll_attempts=max_poll_attempts,
+        rai_max_retries=rai_max_retries,
         http_client=http_client,
     )
 
@@ -1031,6 +1037,331 @@ async def test_submit_400_does_not_retry_or_open_breaker(
     assert info.value.error.code == "MODEL_INVALID_REQUEST"
     assert calls["n"] == 1
     assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 0
+
+
+# ---------------------------------------------------------------------------
+# T-051 — RAI filter handling
+# ---------------------------------------------------------------------------
+
+
+def _rai_filtered_response(
+    reasons: list[str] | None = None,
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Build a poll-handler that returns Veo's RAI-filtered terminal envelope.
+
+    Matches the real user-reported failure (task 371fc9a8): `done: true`,
+    no `error` block, and `raiMediaFilteredCount`/`raiMediaFilteredReasons`
+    nested under `response.generateVideoResponse`.
+    """
+    payload_reasons = (
+        reasons
+        if reasons is not None
+        else ["We encountered an issue with the audio for your prompt..."]
+    )
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {
+                    "generateVideoResponse": {
+                        "raiMediaFilteredCount": len(payload_reasons),
+                        "raiMediaFilteredReasons": payload_reasons,
+                    }
+                },
+            },
+        )
+
+    return _handler
+
+
+async def test_rai_filter_signal_raises_model_content_filtered(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact shape that caused the misleading MODEL_INVALID_REQUEST
+    "returned 4xx" report (task 371fc9a8) must now surface as
+    MODEL_CONTENT_FILTERED (retryable=True).
+    """
+    handler, _ = _make_seq_handler(poll_fns=[_rai_filtered_response()])
+    client = _make_client(
+        fake_redis,
+        handler,
+        max_retries=0,
+        rai_max_retries=0,  # no budget → first RAI failure surfaces immediately
+        monkeypatch=monkeypatch,
+    )
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    err = info.value.error
+    assert err.code == "MODEL_CONTENT_FILTERED"
+    assert err.retryable is True
+    # The RAI reasons should be surfaced in the AgentError problem so ops
+    # can correlate; user-facing `message` stays generic per ticket Notes
+    # ("不要把 RAI reason 字串回前端").
+    assert "raiMediaFilteredCount" in err.problem
+    assert "audio for your prompt" in err.problem
+
+
+async def test_rai_filter_signal_under_response_root_also_detected(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defensive: same fields can appear directly under `response.*` rather
+    than nested under `generateVideoResponse`. The detector should handle
+    either placement so a Google shape rotation doesn't silently re-introduce
+    the misclassification."""
+
+    def _poll(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {
+                    "raiMediaFilteredCount": 1,
+                    "raiMediaFilteredReasons": ["safety filter (top-level)"],
+                },
+            },
+        )
+
+    handler, _ = _make_seq_handler(poll_fns=[_poll])
+    client = _make_client(
+        fake_redis, handler, max_retries=0, rai_max_retries=0, monkeypatch=monkeypatch
+    )
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_CONTENT_FILTERED"
+
+
+async def test_rai_filter_does_not_feed_breaker(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RAI false positives mean the operation completed — Veo is healthy.
+    Counting them toward breaker OPEN would surface MODEL_UNAVAILABLE to
+    unrelated callers; T-051 explicitly excludes RAI from breaker accounting.
+    """
+    handler, _ = _make_seq_handler(poll_fns=[_rai_filtered_response()])
+    client = _make_client(
+        fake_redis, handler, max_retries=0, rai_max_retries=0, monkeypatch=monkeypatch
+    )
+    try:
+        with pytest.raises(AgentErrorException):
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 0
+    assert await fake_redis.get(f"degraded:{VEO_SERVICE_NAME}") is None
+
+
+async def test_rai_retry_recovers_within_budget(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The known-flaky upstream often clears on the next submission
+    (`googleapis/js-genai#1272`). First attempt RAI-filtered, second
+    attempt returns inline bytes → caller sees success, not error.
+
+    Each retry must perform a fresh `predictLongRunning` POST (per ticket
+    "重新 submit 才有意義；單純重 poll 沒用") — assert two submits.
+    """
+    poll_seq = [_rai_filtered_response(), _done_response_inline]
+    handler, counters = _make_seq_handler(poll_fns=poll_seq)
+    client = _make_client(
+        fake_redis, handler, max_retries=0, rai_max_retries=1, monkeypatch=monkeypatch
+    )
+    try:
+        result = await client.generate_i2v(image_bytes=b"i", prompt="x", duration_seconds=5)
+    finally:
+        await client.aclose()
+
+    assert result.video_bytes == _FAKE_MP4
+    assert counters["submit"] == 2, "RAI retry must trigger a fresh submission"
+    assert counters["poll"] == 2
+    # Eventual success means no breaker pressure at all from this run.
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 0
+
+
+async def test_rai_retry_budget_exhausted_surfaces_content_filtered(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When every attempt within `rai_max_retries + 1` is RAI-filtered the
+    final error must surface as MODEL_CONTENT_FILTERED — NOT mutate into
+    MODEL_INVALID_REQUEST or MODEL_UNAVAILABLE — so workers can pick the
+    right user-facing message.
+    """
+    handler, counters = _make_seq_handler(poll_fns=[_rai_filtered_response()])
+    client = _make_client(
+        fake_redis, handler, max_retries=0, rai_max_retries=2, monkeypatch=monkeypatch
+    )
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_CONTENT_FILTERED"
+    # rai_max_retries=2 → 3 attempts total (initial + 2 retries).
+    assert counters["submit"] == 3
+    # RAI failures never feed the breaker even after the budget is exhausted.
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 0
+
+
+async def test_error_dict_wins_over_rai_signal_in_same_envelope(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Precedence guard: if a poll envelope carries BOTH a genuine operation
+    error AND an RAI signal, the error dict must win and surface as its
+    mapped code (MODEL_INVALID_REQUEST for INVALID_ARGUMENT) — NOT be
+    silently swallowed into MODEL_CONTENT_FILTERED + retry.
+
+    Why this is load-bearing: the inverse would absorb genuine, non-
+    retryable failures into the RAI retry budget and burn Veo cost on
+    requests that can never succeed. A future refactor reversing the
+    check order in `_poll_until_done` would regress this; pin it.
+    """
+
+    def _poll(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "error": {"status": "INVALID_ARGUMENT", "message": "bad prompt"},
+                "response": {
+                    "generateVideoResponse": {
+                        "raiMediaFilteredCount": 1,
+                        "raiMediaFilteredReasons": ["should not be reached"],
+                    }
+                },
+            },
+        )
+
+    handler, counters = _make_seq_handler(poll_fns=[_poll])
+    client = _make_client(
+        fake_redis, handler, max_retries=0, rai_max_retries=3, monkeypatch=monkeypatch
+    )
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_INVALID_REQUEST"
+    # Critical: did NOT enter the RAI retry path (otherwise we'd see >1 submit).
+    assert counters["submit"] == 1
+
+
+async def test_rai_signal_detected_on_reasons_alone(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defensive: `raiMediaFilteredReasons` non-empty without a positive
+    `raiMediaFilteredCount` still indicates the filter fired. The detector
+    triggers on `count > 0 OR reasons` (not AND) — pin that behavior so a
+    future "simplification" to a strict AND doesn't silently regress on a
+    Google response shape we've already seen vary."""
+
+    def _poll(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "name": _OPERATION_NAME,
+                "done": True,
+                "response": {
+                    "generateVideoResponse": {
+                        # No count, but reasons present.
+                        "raiMediaFilteredReasons": ["filter fired"],
+                    }
+                },
+            },
+        )
+
+    handler, _ = _make_seq_handler(poll_fns=[_poll])
+    client = _make_client(
+        fake_redis, handler, max_retries=0, rai_max_retries=0, monkeypatch=monkeypatch
+    )
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    assert info.value.error.code == "MODEL_CONTENT_FILTERED"
+    assert "filter fired" in info.value.error.problem
+
+
+async def test_rai_retry_then_non_rai_failure_surfaces_latter(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mixed-attempt sequence: attempt 1 RAI-filtered (stored as `last_rai
+    _error` and continues), attempt 2 returns a different failure (5xx
+    upstream) — the more specific, fresher signal must surface, not the
+    stale RAI error.
+
+    Also asserts the non-RAI failure feeds the breaker (retryable=True,
+    upstream is sick) while the prior RAI attempt did NOT.
+    """
+    poll_seq = [
+        _rai_filtered_response(),
+        lambda _r: httpx.Response(503, json={"error": {"message": "down"}}),
+    ]
+    handler, counters = _make_seq_handler(poll_fns=poll_seq)
+    client = _make_client(
+        fake_redis, handler, max_retries=0, rai_max_retries=2, monkeypatch=monkeypatch
+    )
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    # Latest, non-RAI signal wins — stale MODEL_CONTENT_FILTERED is dropped.
+    assert info.value.error.code == "MODEL_UNAVAILABLE"
+    assert counters["submit"] == 2
+    # Only the non-RAI failure should have fed the breaker (1 entry, not 2).
+    assert await fake_redis.zcard(f"circuit:{VEO_SERVICE_NAME}:failures") == 1
+
+
+async def test_truly_empty_response_problem_does_not_claim_4xx(
+    fake_redis: fakeredis.aioredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-051: detail-only `model_invalid_request` callers must not claim
+    the provider returned an HTTP 4xx — the operation completed normally,
+    we just couldn't parse the response shape.
+
+    This is the regression the user reported (task 371fc9a8): the original
+    template said "veo-3.1-generate-preview returned 4xx for the request
+    payload" even though no 4xx ever happened.
+    """
+    poll_empty = lambda _r: httpx.Response(  # noqa: E731
+        200,
+        json={
+            "name": _OPERATION_NAME,
+            "done": True,
+            "response": {"unrelatedField": "no videos here"},
+        },
+    )
+    handler, _ = _make_seq_handler(poll_fns=[poll_empty])
+    client = _make_client(fake_redis, handler, max_retries=0, monkeypatch=monkeypatch)
+    try:
+        with pytest.raises(AgentErrorException) as info:
+            await client.generate_i2v(image_bytes=b"i", prompt="x")
+    finally:
+        await client.aclose()
+
+    problem = info.value.error.problem.lower()
+    assert "returned 4xx" not in problem
+    assert "http 4" not in problem
+    # The detail should still be embedded so on-call can pin the cause.
+    assert "did not include any video items" in info.value.error.problem
 
 
 # ---------------------------------------------------------------------------
