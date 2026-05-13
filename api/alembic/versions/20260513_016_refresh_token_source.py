@@ -52,8 +52,17 @@ def upgrade() -> None:
     )
 
     # Phase 1 ship-before state: every row was minted by the JWT path.
+    # NB: single-statement backfill is only safe here because `refresh_tokens`
+    # is small in Phase 1 (single team, <10k rows). Do NOT copy this pattern
+    # onto `tasks` / `characters` / partitioned tables — those need batched
+    # backfills (WHERE id BETWEEN ...) with autovacuum breathing room.
     op.execute("UPDATE refresh_tokens SET token_source = 'jwt' WHERE token_source IS NULL")
 
+    # ALTER COLUMN SET NOT NULL takes AccessExclusiveLock and (on PG <12, or
+    # PG 12+ without a NOT-NULL CHECK already in place) scans the full table
+    # to verify the constraint. Trivially fast at Phase 1 scale; for the
+    # same pattern on a larger table consider adding a NOT VALID CHECK +
+    # VALIDATE first to avoid the scan.
     op.alter_column("refresh_tokens", "token_source", nullable=False)
 
 
