@@ -53,12 +53,16 @@ _ALLOWED_JWKS_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
 
 _JWKS_TTL_SECONDS: Final[int] = 3600  # 1h, per ticket §"JWKS cache TTL" rationale
 _JWKS_FETCH_TIMEOUT_SECONDS: Final[float] = 5.0
-# Rate-limit refresh-on-unknown-kid (Codex P1): when a token presents a kid
-# the fresh cache doesn't know, we refresh once to pick up an Authentik key
-# rotation, but only if we haven't already refreshed for this reason within
-# this window. Without this gate, an attacker probing with random kids would
-# trigger one JWKS fetch per request.
-_JWKS_MISS_REFRESH_INTERVAL_SECONDS: Final[float] = 60.0
+# Refresh-on-unknown-kid is gated by a small token bucket (Codex P1 → P2):
+# allow up to `_JWKS_MISS_REFRESH_MAX_PER_WINDOW` JWKS fetches within
+# `_JWKS_MISS_REFRESH_WINDOW_SECONDS`. A single bad-kid request used to
+# suppress refresh for the entire window — Codex round-3 flagged that a
+# subsequent legitimate Authentik rotation would then be invisible until
+# the gate cleared. Token bucket fixes this without re-opening the spam
+# vector: Authentik rotation only needs one refresh; an attacker spraying
+# random kids consumes the budget but stops at 3 outbound fetches/min.
+_JWKS_MISS_REFRESH_WINDOW_SECONDS: Final[float] = 60.0
+_JWKS_MISS_REFRESH_MAX_PER_WINDOW: Final[int] = 3
 _ISSUER_ENV: Final[str] = "AUTHENTIK_ISSUER_URL"
 _AUDIENCE_ENV: Final[str] = "AUTHENTIK_AUDIENCE"
 _JWKS_URI_ENV: Final[str] = "AUTHENTIK_JWKS_URL"
@@ -106,10 +110,11 @@ class JWKSCache:
         self._entry: _JWKSEntry | None = None
         self._lock = asyncio.Lock()
         self._fetch_count = 0
-        # Gate refresh-on-unknown-kid attempts (separate from TTL-based
-        # refresh) so a request flood with bad kids can't induce arbitrary
-        # outbound JWKS traffic.
-        self._last_miss_refresh: float = 0.0
+        # Timestamps of recent refresh-on-unknown-kid attempts; pruned to
+        # the trailing `_JWKS_MISS_REFRESH_WINDOW_SECONDS`. Bounded budget
+        # via `_JWKS_MISS_REFRESH_MAX_PER_WINDOW`. See top-of-module
+        # comment for the rotation-vs-spam trade-off.
+        self._miss_refresh_timestamps: list[float] = []
 
     @property
     def fetch_count(self) -> int:
@@ -127,12 +132,9 @@ class JWKSCache:
             if key is not None:
                 return key
             # Fresh cache but kid not present — likely Authentik just rotated
-            # signing keys. Refresh once (rate-limited) to pick up the new
-            # key set; without this, valid tokens signed with the new kid
-            # would 401 for the entire 1h TTL window. Codex P1 (T-054 round 2).
-            now = time.time()
-            if now - self._last_miss_refresh < _JWKS_MISS_REFRESH_INTERVAL_SECONDS:
-                return None
+            # signing keys. Try a budgeted refresh (token bucket: up to
+            # `MAX_PER_WINDOW` refreshes per `WINDOW_SECONDS`) so legitimate
+            # rotation pickup isn't blocked by a single attacker probe.
             async with self._lock:
                 # Re-check under the lock — another coroutine may have just
                 # refreshed and populated the kid we want.
@@ -140,10 +142,9 @@ class JWKSCache:
                 key = self._entry.keys.get(kid)
                 if key is not None:
                     return key
-                if time.time() - self._last_miss_refresh < _JWKS_MISS_REFRESH_INTERVAL_SECONDS:
+                if not self._consume_miss_refresh_budget():
                     return None
                 await self._refresh()
-                self._last_miss_refresh = time.time()
             assert self._entry is not None
             return self._entry.keys.get(kid)
         # Stale (TTL elapsed) or cold cache — full refresh under the lock.
@@ -152,6 +153,22 @@ class JWKSCache:
                 await self._refresh()
             assert self._entry is not None
             return self._entry.keys.get(kid)
+
+    def _consume_miss_refresh_budget(self) -> bool:
+        """Try to take one slot from the kid-miss refresh budget.
+
+        Prunes timestamps older than the window, then admits the caller if
+        the remaining count is below the per-window ceiling. Must be called
+        with `self._lock` held — the timestamp list is shared state.
+        """
+        now = time.time()
+        self._miss_refresh_timestamps = [
+            t for t in self._miss_refresh_timestamps if now - t < _JWKS_MISS_REFRESH_WINDOW_SECONDS
+        ]
+        if len(self._miss_refresh_timestamps) >= _JWKS_MISS_REFRESH_MAX_PER_WINDOW:
+            return False
+        self._miss_refresh_timestamps.append(now)
+        return True
 
     def _is_fresh(self) -> bool:
         return self._entry is not None and time.time() < self._entry.expires_at
@@ -210,13 +227,16 @@ class JWKSCache:
                 continue
             try:
                 keys[kid] = PyJWK(key_data)
-            except jwt.InvalidKeyError as exc:
+            except jwt.PyJWTError as exc:
                 # Skip malformed entries rather than failing the whole cache —
                 # Authentik occasionally publishes keys with algorithms we
                 # don't recognise and we shouldn't lock out the rest. WARN
                 # so operators see the signal when a rotated key has a
                 # format pyjwt can't parse and every fresh-signed token
-                # then 401s with no obvious cause.
+                # then 401s with no obvious cause. Catching the broad
+                # `PyJWTError` (not just `InvalidKeyError`) covers
+                # `PyJWKError`, `PyJWKSetError`, etc., which are siblings
+                # not subclasses — Codex round-3 P1.
                 _logger.warning(
                     "jwks_skipped_invalid_key",
                     extra={"kid": kid, "reason": str(exc)},

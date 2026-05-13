@@ -753,17 +753,25 @@ def test_jwks_cache_refreshes_on_unknown_kid(
         reset_jwks_cache_for_test()
 
 
-def test_jwks_cache_kid_miss_refresh_is_rate_limited(
+def test_jwks_cache_kid_miss_refresh_is_token_bucket_rate_limited(
     scoped_client: TestClient,
     seeded_user: dict[str, str],
     _oauth_env: None,
     _jwks_document: dict[str, Any],
     make_oauth_token: Any,
 ) -> None:
-    """An attacker probing with random kids must not be able to induce one
-    JWKS fetch per request — the refresh-on-miss path is gated by a window.
-    Two back-to-back requests with unknown kids → exactly one refresh.
+    """Codex round-3 P2: an attacker probing with random kids must not
+    induce one JWKS fetch per request, but a single bad token must NOT block
+    legit rotation pickup either. The cache uses a token bucket: up to N
+    refreshes per window, then throttled.
+
+    With N = `_JWKS_MISS_REFRESH_MAX_PER_WINDOW` (=3 today), `N + 2` distinct
+    unknown-kid requests in quick succession should yield exactly N
+    refreshes — bounded outbound traffic, still room for rotation pickup
+    after a stray probe.
     """
+    from app.auth.oauth import _JWKS_MISS_REFRESH_MAX_PER_WINDOW
+
     reset_jwks_cache_for_test()
     try:
         cache = JWKSCache(_TEST_JWKS_URI)
@@ -773,9 +781,10 @@ def test_jwks_cache_kid_miss_refresh_is_rate_limited(
         set_jwks_cache_for_test(cache)
         before = cache.fetch_count
 
+        probes = [f"attacker-probe-{i}" for i in range(_JWKS_MISS_REFRESH_MAX_PER_WINDOW + 2)]
         with respx.mock(assert_all_called=False) as router:
             router.get(_TEST_JWKS_URI).mock(return_value=httpx.Response(200, json=_jwks_document))
-            for kid in ("attacker-probe-1", "attacker-probe-2"):
+            for kid in probes:
                 token = make_oauth_token(
                     scopes=["character:read"],
                     client_id="claude-code",
@@ -789,9 +798,59 @@ def test_jwks_cache_kid_miss_refresh_is_rate_limited(
                 assert resp.status_code == 401, resp.text
 
         after = cache.fetch_count
-        assert after == before + 1, (
-            f"Expected rate limit to cap refresh-on-miss at 1; fetch_count went {before} → {after}"
+        assert after - before == _JWKS_MISS_REFRESH_MAX_PER_WINDOW, (
+            f"Expected token-bucket to cap refresh-on-miss at "
+            f"{_JWKS_MISS_REFRESH_MAX_PER_WINDOW} within the window; "
+            f"fetch_count delta was {after - before}"
         )
+    finally:
+        reset_jwks_cache_for_test()
+
+
+def test_jwks_refresh_handles_broader_pyjwk_parse_errors(
+    scoped_client: TestClient,
+    seeded_user: dict[str, str],
+    _oauth_env: None,
+    _jwks_document: dict[str, Any],
+    make_oauth_token: Any,
+) -> None:
+    """Codex round-3 P1: PyJWK() can raise PyJWKError / PyJWKSetError —
+    siblings of InvalidKeyError under the PyJWTError umbrella, NOT
+    subclasses. The narrow `except InvalidKeyError` let them escape as
+    500. Now we catch `PyJWTError`; a JWKS doc with one valid key plus a
+    malformed entry must stay on the controlled path and the valid token
+    must still verify.
+    """
+    reset_jwks_cache_for_test()
+    try:
+        bogus_jwks = {
+            "keys": [
+                *_jwks_document["keys"],
+                {
+                    # Missing the `n` / `e` RSA parameters — PyJWK raises
+                    # somewhere in the PyJWTError hierarchy.
+                    "kty": "RSA",
+                    "use": "sig",
+                    "alg": "RS256",
+                    "kid": "malformed-entry",
+                },
+            ]
+        }
+        with respx.mock(assert_all_called=False) as router:
+            router.get(_TEST_JWKS_URI).mock(return_value=httpx.Response(200, json=bogus_jwks))
+
+            token = make_oauth_token(
+                scopes=["character:read"],
+                client_id="claude-code",
+                email=seeded_user["email"],
+            )
+            resp = scoped_client.get(
+                "/v1/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            # The valid kid still resolves → 200. The point is we did NOT
+            # bubble a 500 because PyJWK couldn't parse the second entry.
+            assert resp.status_code == 200, resp.text
     finally:
         reset_jwks_cache_for_test()
 
