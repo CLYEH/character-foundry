@@ -146,6 +146,54 @@ Authentik server 暴露在 nginx `/oauth/` 路徑（或 subdomain `auth.characte
 3. **Save**
 4. 驗證：登出 admin → login 頁面應出現 Google 圖示 → 按下去 → Google consent → 回 Authentik dashboard 用 Workspace 帳號登入成功（admin 仍是另一個 user，這是測 user-side flow）
 
+### 5.2.1 Source-init `next`-propagation — 走 `cf-google-init` flow，不要直連 source-init URL
+
+> **2026-05-14: operator persona pass retrofit (T-073)** — 補 §5.2 的 wall 3：source enrollment / authentication flow 完成後不 redirect 回 SPA，operator 首登 dead-end 在 `/if/user/`。
+
+SPA 的「使用 Google 登入」**不能**直接導到 Authentik 的 `/oauth/source/oauth/login/<slug>/?next=<authorize URL>`。Authentik 2024.12.5 的 OAuth `OAuthRedirect` view（`authentik/sources/oauth/views/redirect.py`）**靜默忽略 `?next=`** —— 它從不把 `next` 寫進 session。`next` 只有在 `SESSION_KEY_GET` 被填好時才會被 honor，而那個 key 只由 **flow executor 的 dispatch**（`authentik/flows/views/executor.py:179`）寫入，bare 的 OAuth source-init path 不會。所以 Google callback 回到 `SourceFlowManager._prepare_flow` 時 `SESSION_KEY_GET[next]` 是空的，`final_redirect` fallback 到 `authentik_core:if-user`（`/if/user/`）—— operator 卡在 Authentik user 頁。（SAML source 沒這問題，因為 `authentik/sources/saml/views.py:160` 有顯式寫 `SESSION_KEY_GET`；OAuth source path 沒有對等實作。）
+
+> ⚠ 這影響 **enrollment 與 authentication 兩條 flow** —— 兩者都走 `_prepare_flow`。原 T-073 ticket 假設「authentication flow 會 honor `next`、只有 enrollment 不會」是錯的：bare source-init 進來時兩條都不會。
+
+**修法 —— `cf-google-init` launcher flow（blueprint codified）：**
+
+SPA 改導到 `/oauth/if/flow/cf-google-init/?query=next=<authorize URL>`（`?query=` 是 Authentik flow-executor 把 upstream querystring 帶進 flow 的慣例）。這條 flow 只有一個 **RedirectStage**（static mode → `/oauth/source/oauth/login/google/`）：
+
+```
+SPA → /oauth/if/flow/cf-google-init/?query=next=<authorize URL>
+    → FlowExecutorView.dispatch 寫 SESSION_KEY_GET={next: ...}
+    → RedirectStage → /oauth/source/oauth/login/google/
+    → Google → callback → _prepare_flow 讀 SESSION_KEY_GET（中間沒有
+      flow-executor dispatch，所以還在）→ 把 PLAN_CONTEXT_REDIRECT
+      baked 進 enrollment / authentication plan
+    → _flow_done() 優先 honor PLAN_CONTEXT_REDIRECT → 回 SPA authorize URL
+```
+
+flow / stage / binding 全部 codify 在 `infra/authentik/blueprints/cf-google-init.yaml`（純結構物件，無 secret / `!Env`）。Dev 由 `docker-compose.override.yml` 單檔 mount、e2e 由 `docker-compose.test.yml` 整個 dir mount 各自帶進去。**這就是「把 flow 設定 codify 一次解決 DB reset 重來」的落地**；OAuth Source 物件本身（§5.2）仍是 admin-UI / `ak shell` 管理（codify 它需要把 `GOOGLE_OAUTH_*` plumb 進 Authentik container env，T-073 刻意不做以保持 surgical）。
+
+**SPA 端對應改動：** `web/src/lib/oauth-client.ts` 的 `buildSourceInitUrl` 改成產 `cf-google-init` flow-executor URL（非 bare source-init）。`VITE_AUTHENTIK_GOOGLE_SOURCE_SLUG` 從此只當「按鈕顯不顯示」的 gate；實際 source 由 blueprint 固定。
+
+**Verification：**
+
+1. **Blueprint 有 apply**（Authentik 會吞掉 blueprint error —— 見 memory `authentik_blueprint_2024_12_gotchas`）：
+   ```bash
+   docker compose exec authentik-server ak shell -c \
+     "from authentik.blueprints.models import BlueprintInstance as B; \
+      b=B.objects.get(name='cf-google-init'); print(b.status, bool(b.last_applied_hash))"
+   # 預期：successful True
+   ```
+2. **Flow executor 回 redirect challenge**：
+   ```bash
+   # `query` 的值是雙層編碼：內層 `next=<authorize URL>` 是一條 querystring，
+   # 整條再被當成 `query` 參數值編碼一次（`buildSourceInitUrl` 用兩個
+   # URLSearchParams 做這件事）。下面 `%252Ffoo` 是 `/foo` 雙層編碼後的
+   # 樣子，`/foo` 只是 authorize URL 的簡化替身。
+   curl -s 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3D%252Ffoo' \
+     -H 'Accept: application/json'
+   # 預期 body 含 "component": "xak-flow-redirect", "to": "/oauth/source/oauth/login/google/"
+   ```
+   同一個 request 的 session 應已寫入 `authentik/flows/get`（= `SESSION_KEY_GET`），值為 `{'next': '/foo'}`。
+3. **真人 operator 首登 end-to-end**（AC #4 —— 需真 Google 帳號，手動）：fresh browser（清掉 `authentik_session` cookie 模擬無 session）→ `:5173/login` → 「使用 Google 登入」→ Google → enrollment（選 username）→ **redirect 回 SPA → Dashboard**，不落在 `/if/user/`。沿用 T-070 的 CDP harness。
+
 ### 5.3 定義 5 條 scope
 
 OAuth scope 在 Authentik 是 **Scope Mapping** 物件。Authentik 預設已建好 `openid` / `profile` / `email` / `offline_access` 4 條，本步驟加 5 條自訂 scope，對應 `app/auth/mcp_clients.py` 的 `CANONICAL_SCOPES`。
@@ -322,6 +370,7 @@ M3.5 ship 前 backup 流程進 `operations.md`，包含：
 
 - [ ] §5.1 admin 首登完成、akadmin 密碼進 1Password
 - [ ] §5.2 Google OAuth Source 設好（含 Authentication flow + Enrollment flow）；登出 admin 後 login 頁有 Google 按鈕；用 Workspace 帳號登入成功
+- [ ] §5.2.1 `cf-google-init` blueprint 有 apply（`BlueprintInstance.status == successful`）；flow executor 回 `xak-flow-redirect` → `/oauth/source/oauth/login/google/`；真人 operator 首登 redirect 回 SPA（不落在 `/if/user/`）
 - [ ] §5.3 5 條 scope（`character:read` / `character:write` / `task:read` / `task:cancel` / `usage:read`）都建好，name 逐字對齊
 - [ ] §5.4 5 個 application（1 SPA + 4 agent）+ 對應 provider 都建好；client_id 逐字對齊 `app/auth/mcp_clients.py`
 - [ ] §5.5 group + policy binding：delegated 4 個綁 `cf-agent-default`、`cf-test-agent` 綁 `cf-test-agent-full`

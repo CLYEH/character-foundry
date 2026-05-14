@@ -95,13 +95,20 @@ describe('buildSourceInitUrl', () => {
   const authorize =
     '/oauth/application/o/authorize/?response_type=code&client_id=character-foundry-spa&state=ST'
 
-  it('wraps a relative authorize URL in /oauth/source/oauth/login/<slug>/ with next=', () => {
+  // The `query` param carries an inner `next=<authorizeUrl>` querystring
+  // (Authentik's flow-executor convention); decode it once to inspect.
+  const nextFromQuery = (url: string): string | null =>
+    new URLSearchParams(new URL(url, 'https://app.test').searchParams.get('query') ?? '').get(
+      'next',
+    )
+
+  it('wraps a relative authorize URL in the cf-google-init flow executor with next=', () => {
     const url = buildSourceInitUrl(authorize, 'google')
     expect(url).not.toBeNull()
     // URL is relative so parse with a dummy base.
     const parsed = new URL(url!, 'https://app.test')
-    expect(parsed.pathname).toBe('/oauth/source/oauth/login/google/')
-    expect(parsed.searchParams.get('next')).toBe(authorize)
+    expect(parsed.pathname).toBe('/oauth/if/flow/cf-google-init/')
+    expect(nextFromQuery(url!)).toBe(authorize)
   })
 
   it('preserves the absolute origin when the authorize URL is absolute', () => {
@@ -110,9 +117,9 @@ describe('buildSourceInitUrl', () => {
     expect(url).not.toBeNull()
     const parsed = new URL(url!)
     expect(parsed.origin + parsed.pathname).toBe(
-      'https://authentik.test/oauth/source/oauth/login/google/',
+      'https://authentik.test/oauth/if/flow/cf-google-init/',
     )
-    expect(parsed.searchParams.get('next')).toBe(absolute)
+    expect(nextFromQuery(url!)).toBe(absolute)
   })
 
   it('returns null when the source slug is empty or whitespace (button hidden)', () => {
@@ -120,11 +127,14 @@ describe('buildSourceInitUrl', () => {
     expect(buildSourceInitUrl(authorize, '   ')).toBeNull()
   })
 
-  it('encodes slugs that contain URL-unsafe characters', () => {
+  it('ignores the slug value beyond the visibility gate (source fixed by the blueprint)', () => {
+    // Post-T-073 the slug no longer appears in the URL — the upstream
+    // source is fixed by infra/authentik/blueprints/cf-google-init.yaml.
+    // Any non-empty slug just means "show the button".
     const url = buildSourceInitUrl(authorize, 'oidc/main')
     expect(url).not.toBeNull()
     const parsed = new URL(url!, 'https://app.test')
-    expect(parsed.pathname).toBe('/oauth/source/oauth/login/oidc%2Fmain/')
+    expect(parsed.pathname).toBe('/oauth/if/flow/cf-google-init/')
   })
 
   it('throws OauthError when the authorize URL lacks the standard segment', () => {

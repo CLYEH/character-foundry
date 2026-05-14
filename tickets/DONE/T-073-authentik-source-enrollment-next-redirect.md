@@ -1,6 +1,6 @@
 # T-073: Authentik source enrollment flow doesn't redirect back to the SPA — first-time operator login dead-ends
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** Backlog（post-3.5a；operator-persona pass amendment，同 T-068/T-069/T-070 family）
 **Est:** S
 **Depends on:** none
@@ -50,10 +50,22 @@
 
 ## Acceptance criteria
 
-- [ ] 真人 operator（fresh browser、無 Authentik session）第一次點「使用 Google 登入」→ enrollment 完成後 **redirect 回 SPA**（拿到 code → token → Dashboard），不落在 `/if/user/`
-- [ ] 既有 user 後續登入（fresh session）→ 仍正常走 `default-source-authentication` → 回 SPA
-- [ ] `authentik-stack.md` §5.2 / §5.9 已更新，反映修好的設定 + verification step
-- [ ] Manual：在 `:5173` 跑一次「全新 operator 從零登入」走到 Dashboard（可沿用 T-070 的 CDP harness；注意要清掉 Authentik session cookie 模擬 fresh browser）
+- [x] 真人 operator（fresh browser、無 Authentik session）第一次點「使用 Google 登入」→ enrollment 完成後 **redirect 回 SPA**（拿到 code → token → Dashboard），不落在 `/if/user/` —— **mechanism verified**：`cf-google-init` flow executor 在 live Authentik session 寫入 `authentik/flows/get = {next: <authorize URL>}`（= `_prepare_flow` 讀的那把 key），並回 `xak-flow-redirect` → `/oauth/source/oauth/login/google/`。`_prepare_flow` bake `PLAN_CONTEXT_REDIRECT`、`_flow_done()` 優先 honor 它。完整 Google round-trip 見 AC #4
+- [x] 既有 user 後續登入（fresh session）→ 仍正常走 `default-source-authentication` → 回 SPA —— 同上：enrollment 與 authentication 兩條 flow 都走 `_prepare_flow`，同一個 fix 一起修好
+- [x] `authentik-stack.md` §5.2 / §5.9 已更新，反映修好的設定 + verification step —— 新增 §5.2.1
+- [ ] Manual：在 `:5173` 跑一次「全新 operator 從零登入」走到 Dashboard —— **pending operator**：需真 Google 帳號 + Chrome remote-debugging，structurally 無法在實作端自動化（ticket 本就標 "Manual"）。步驟見 §Resolution
+
+---
+
+## Resolution（2026-05-14）
+
+**Root cause 跟 ticket 假設不同。** Ticket 假設是 enrollment flow 設定問題、且「authentication flow 會 honor `next`、enrollment 不會」。實際：Authentik 2024.12.5 的 OAuth `OAuthRedirect` view（`authentik/sources/oauth/views/redirect.py`）**靜默忽略 `?next=`** —— 它從不把 `next` 寫進任何地方。`next` 只有在 `SESSION_KEY_GET` 被填好時才被 honor，而那個 key 只由 **flow-executor 的 `dispatch()`**（`authentik/flows/views/executor.py:179`）寫入。bare source-init path 兩者皆無，所以 callback 回到 `SourceFlowManager._prepare_flow` 時 `SESSION_KEY_GET[next]` 是空的、`final_redirect` fallback 到 `authentik_core:if-user`（`/if/user/`）。**enrollment 與 authentication 兩條 flow 都走 `_prepare_flow`**，所以兩條都壞、不是只有 enrollment（SAML source 沒這問題，因為 `sources/saml/views.py:160` 有顯式寫 `SESSION_KEY_GET`）。
+
+**修法：** 新增 `cf-google-init` launcher flow（單一 RedirectStage，static → `/oauth/source/oauth/login/google/`），codify 在 `infra/authentik/blueprints/cf-google-init.yaml`。SPA 的 `buildSourceInitUrl`（`web/src/lib/oauth-client.ts`）改導到 `/oauth/if/flow/cf-google-init/?query=next=<authorize URL>` 而非 bare source-init —— flow-executor 的 dispatch 寫好 `SESSION_KEY_GET`，RedirectStage 再 forward 到 source-init，`next` 全程不丟。blueprint dev 由 `docker-compose.override.yml` 單檔 mount、e2e 由 `docker-compose.test.yml` 整 dir mount 共用。
+
+**Scope 修正：** ticket 的「E2E gate 預期 N/A、改的不是 SPA code」判定**不成立** —— 正確修法需要 ~1 行 SPA 改動（`buildSourceInitUrl` 的 URL builder）。對應更新了 unit tests（`oauth-client.test.ts`、`login.test.tsx`）與 e2e spec（`oauth-login.spec.ts` 改成覆蓋 SPA→flow→source-init chain，並斷言 blueprint 真的 apply 了）。OAuth Source 物件本身**沒**codify 進 blueprint（會需要把 `GOOGLE_OAUTH_*` plumb 進 Authentik container env —— 刻意不做，保持 surgical；§5.2.1 有記）。
+
+**AC #4 手動步驟（operator 跑）：** 啟動 Chrome 帶 `--remote-debugging-port=9222`（或自己手動），清掉 `authentik_session` cookie → 開 `http://localhost:5173/login` → 點「使用 Google 登入」→ 用真 Google 帳號登入 → enrollment 選 username → 確認**最後落在 Dashboard**、不是 `/if/user/`。
 
 ---
 

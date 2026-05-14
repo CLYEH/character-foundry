@@ -57,22 +57,22 @@ describe('LoginPage', () => {
     expect(screen.queryByLabelText('密碼')).toBeNull()
   })
 
-  it('clicking Google redirects through the source-init URL with the authorize URL as next', async () => {
+  it('clicking Google redirects through the cf-google-init flow with the authorize URL as next', async () => {
     renderLogin()
     fireEvent.click(screen.getByRole('button', { name: '使用 Google 登入' }))
 
     await waitFor(() => expect(assignSpy).toHaveBeenCalledTimes(1))
     // Test stubEnv hosts Authentik at https://authentik.test (no /oauth/
-    // prefix), so the helper produces /source/oauth/login/google/ off the
+    // prefix), so the helper produces /if/flow/cf-google-init/ off the
     // same origin. In production .env the prefix is /oauth/ and the
     // helper carries it through identically — that variant is covered in
     // buildSourceInitUrl unit tests.
     const target = new URL(assignSpy.mock.calls[0][0] as string)
-    expect(target.origin + target.pathname).toBe(
-      'https://authentik.test/source/oauth/login/google/',
-    )
+    expect(target.origin + target.pathname).toBe('https://authentik.test/if/flow/cf-google-init/')
 
-    const next = target.searchParams.get('next')
+    // `next` rides inside the flow-executor `?query=` param, not as a
+    // top-level query arg — see buildSourceInitUrl for why.
+    const next = new URLSearchParams(target.searchParams.get('query') ?? '').get('next')
     expect(next).not.toBeNull()
     const nextUrl = new URL(next!)
     expect(nextUrl.origin + nextUrl.pathname).toBe(
@@ -82,8 +82,8 @@ describe('LoginPage', () => {
     expect(nextUrl.searchParams.get('client_id')).toBe('character-foundry-spa')
 
     // PKCE must already be stashed by the time we hand off to Authentik —
-    // the source-init redirect leaves origin, so any post-hop write would
-    // be too late.
+    // the flow-executor redirect leaves origin, so any post-hop write
+    // would be too late.
     expect(sessionStorage.getItem('cf-oauth-pkce-verifier')).toMatch(/^[A-Za-z0-9_-]{43,}$/)
     expect(sessionStorage.getItem('cf-oauth-state')).toBe(nextUrl.searchParams.get('state'))
   })

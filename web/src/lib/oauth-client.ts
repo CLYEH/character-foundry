@@ -98,36 +98,60 @@ export function buildAuthorizeUrl(opts: { challenge: string; state: string }): s
 }
 
 /**
- * Wrap a regular Authentik authorize URL in a source-init redirect so the
- * user lands directly on the upstream IdP (e.g. Google) instead of the
- * identification stage. Authentik's `/source/oauth/login/<slug>/` view
- * stashes `next` in the session, kicks off the source's OAuth flow, and
- * (after IdP callback + user match) redirects back to `next`, where the
- * normal Auth Code + PKCE handoff resumes. PKCE verifier / state are
- * unchanged from the password path — same `stashPkceState` already
- * happened in the caller before this URL is consumed.
+ * The Authentik flow that fronts the SPA's "Sign in with Google" button.
+ * Defined declaratively in infra/authentik/blueprints/cf-google-init.yaml.
+ */
+const GOOGLE_INIT_FLOW_SLUG = 'cf-google-init'
+
+/**
+ * Wrap a regular Authentik authorize URL so the user lands directly on
+ * the upstream IdP (e.g. Google) instead of the identification stage,
+ * while preserving the post-login redirect back to `authorizeUrl`. PKCE
+ * verifier / state are unchanged from the password path — the same
+ * `stashPkceState` already happened in the caller before this URL is
+ * consumed.
  *
- * The source-init path lives at the same `/oauth/` mount as the authorize
+ * We navigate to the `cf-google-init` flow executor — NOT Authentik's
+ * bare `/source/oauth/login/<slug>/` view. The bare source-init view
+ * silently ignores `?next=` (authentik/sources/oauth/views/redirect.py
+ * never persists it anywhere), so a direct source-init hop dead-ends the
+ * operator on Authentik's `/if/user/` page after the IdP callback.
+ * Routing through a flow executor instead populates Authentik's
+ * `SESSION_KEY_GET`, which `SourceFlowManager._prepare_flow` reads to
+ * compute the post-callback redirect; the flow's single RedirectStage
+ * then forwards to the source-init view. See the blueprint header +
+ * T-073 for the full trace.
+ *
+ * `?query=` is Authentik's flow-executor convention for threading an
+ * upstream query string into the flow — the executor parses it and
+ * stores each param in the session. We put `next=<authorizeUrl>` there,
+ * hence the double-encoding (inner `next=…` querystring, then the whole
+ * thing as the `query` param value).
+ *
+ * The flow executor lives at the same `/oauth/` mount as the authorize
  * endpoint, so we derive the prefix by stripping the trailing
- * `/application/o/authorize/` segment from `authorizeUrl`. This avoids
- * adding a second env var for the source-init base while staying robust
- * to deployments that move Authentik off the default `/oauth/` prefix.
+ * `/application/o/authorize/` segment from `authorizeUrl`. This avoids a
+ * second env var for the executor base while staying robust to
+ * deployments that move Authentik off the default `/oauth/` prefix.
  *
- * Returns `null` when `sourceSlug` is empty — the caller is expected to
- * hide the shortcut button in that case (see `VITE_AUTHENTIK_GOOGLE_
- * SOURCE_SLUG=` in .env.example).
+ * Returns `null` when `sourceSlug` is empty — the caller hides the
+ * shortcut button in that case (see `VITE_AUTHENTIK_GOOGLE_SOURCE_SLUG=`
+ * in .env.example). `sourceSlug` is now only a visibility gate: the
+ * upstream source is fixed by the `cf-google-init` blueprint (slug
+ * `google`), not threaded through this URL.
  *
- * Trust boundary: `next` is honoured by Authentik's source-init view, so
- * `authorizeUrl` MUST stay derived from `authentik.*` config (today it's
+ * Trust boundary: `authorizeUrl` becomes the post-callback redirect
+ * target, so it MUST stay derived from `authentik.*` config (today it's
  * always `buildAuthorizeUrl(...)` output) — never pass user- or
  * query-controlled input as `authorizeUrl`, or a hostile `next` could
- * redirect the post-IdP-callback hop off-origin. Authentik's own
- * allowed-redirect validation is the backstop, but this code must not
- * lean on it.
+ * redirect the post-IdP-callback hop off-origin. There is effectively
+ * NO backstop: Authentik validates `next` (`is_url_absolute`) only on
+ * the `SESSION_KEY_GET` fallback path in `_flow_done`, NOT on the
+ * `PLAN_CONTEXT_REDIRECT` path that the source flow this URL launches
+ * actually takes. The config-derived invariant above is load-bearing.
  */
 export function buildSourceInitUrl(authorizeUrl: string, sourceSlug: string): string | null {
-  const slug = sourceSlug.trim()
-  if (!slug) return null
+  if (!sourceSlug.trim()) return null
   const marker = '/application/o/authorize/'
   const idx = authorizeUrl.indexOf(marker)
   if (idx === -1) {
@@ -137,9 +161,8 @@ export function buildSourceInitUrl(authorizeUrl: string, sourceSlug: string): st
     )
   }
   const prefix = authorizeUrl.slice(0, idx)
-  return `${prefix}/source/oauth/login/${encodeURIComponent(slug)}/?next=${encodeURIComponent(
-    authorizeUrl,
-  )}`
+  const query = new URLSearchParams({ next: authorizeUrl }).toString()
+  return `${prefix}/if/flow/${GOOGLE_INIT_FLOW_SLUG}/?${new URLSearchParams({ query }).toString()}`
 }
 
 async function postForm(url: string, form: URLSearchParams): Promise<OauthTokenResponse> {
