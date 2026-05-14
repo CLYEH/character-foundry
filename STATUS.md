@@ -152,6 +152,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | # | Ticket | Status |
 |---|---|---|
 | T-068 | SPA login page — Google direct shortcut + 帳密 fallback + dev escape hatch（推翻 `planning/frontend/oauth-integration.md` §1.1 單按鈕決策）| DONE |
+| T-069 | Dev operator provisioning — 修 `authentik-stack.md` §5.2 漏設 OAuth Source flow + 補真人 operator 兩層 user（Authentik enrollment + backend `User` row）的設定步驟（T-068 dev 測試 reveal 的 setup 缺口）| TODO |
 
 #### Sprint 3.5b / 3.5c — 未開單（3.5a ship 完再開）
 
