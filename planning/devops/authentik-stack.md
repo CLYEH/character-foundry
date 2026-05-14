@@ -106,6 +106,8 @@ Authentik server 暴露在 nginx `/oauth/` 路徑（或 subdomain `auth.characte
 > - 拿到 `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` 填進 `.env`
 > - `.env` 內 `AUTHENTIK_BOOTSTRAP_*` 暫時不設；首登走 recovery URL flow
 
+> **2026-05-14: operator persona pass retrofit (T-069)** — §5.2 補 OAuth Source 的 Authentication / Enrollment flow 設定、新增 §5.7「Provision a dev operator」。原 §5.7 / §5.8 順移為 §5.8 / §5.9。觸發：T-068 SPA 三入口登入的 dev 測試 reveal「真人 operator 從零登入」三道牆連環卡（見 `tickets/DONE/T-069-*.md`）。
+
 ### 5.1 Admin 首登
 
 1. 啟動 stack 後抓 server container log 找 initial setup URL：
@@ -135,7 +137,12 @@ Authentik server 暴露在 nginx `/oauth/` 路徑（或 subdomain `auth.characte
    - **Consumer secret**: `${GOOGLE_OAUTH_CLIENT_SECRET}` from `.env`
    - **Scopes**: `openid profile email`
    - **User matching mode**: `Link to a user with identical email address`（Workspace 同 email 自動匹配既有 user，避免分裂帳號）
+   - **Authentication flow**: `default-source-authentication`（matched user 登入時走這條；**漏設的話連 `email_link` 匹配成功的既有 user 都登不進去**）
+   - **Enrollment flow**: `default-source-enrollment`（沒 matched user 時走這條自動建新 Authentik user；**漏設就是 dev 測試踩到的 `authentik Logo / Bad Request / Source is not configured for enrollment`**）
    - **⚠ Workspace domain restriction**: `Additional scopes` 或在 Authentik enrollment flow 加 policy 限定 `hd=<your-workspace-domain>`（例：`hd=character-foundry.com`）。**這條看似多餘但必填**：「Link to a user with identical email address」相依「upstream IdP 已驗 email」這個假設；Workspace 內 tenant-restricted account 提供這保證，**但 consumer Google 不**。今天只有 Workspace 沒事；未來操作者多接一條 OAuth Source（例：personal Google / GitHub）就會撞 classic account-takeover-by-email-claim — 攻擊者用 victim 的 `victim@example.com` alias 註一個 consumer Google，登入後 link 到 victim 既有 Authentik user。先把 `hd=` 鎖在 Workspace tenant 上 anchor 這個 trust assumption；之後任何「let me also enable X login」PR 必須直面這條
+
+> **這兩個 flow Authentik 安裝時就內建**（`designation` 各為 `authentication` / `enrollment`），下拉直接選即可，不必自建。T-053 原版 §5.2 只列了 name / slug / provider / key / scopes / matching mode，**漏了這兩欄** → 照舊版做出來的 Google source 一定壞（matched user 登不進、新 user enroll 不了）。這是 §5.2 spec 本身的缺口，不是哪張 ticket 的 regression（T-069 修）。
+
 3. **Save**
 4. 驗證：登出 admin → login 頁面應出現 Google 圖示 → 按下去 → Google consent → 回 Authentik dashboard 用 Workspace 帳號登入成功（admin 仍是另一個 user，這是測 user-side flow）
 
@@ -271,7 +278,38 @@ unset CF_TEST_AGENT_CLIENT_SECRET  # 用完即清
 
 `access_token` 是 3 段 `.` 串接的 JWT base64URL → 對。Authentik 預設 OAuth2/OpenID Provider 就是 JWT 格式；若拿到 opaque random string，回頭看 provider type 是不是被改成 introspection-only。
 
-### 5.7 Backup / disaster recovery
+### 5.7 Provision a dev operator
+
+> **Scope：** 讓一個**真人 operator**（不是 e2e test user）能在 dev stack 從零走完 SPA 登入。§5.1–5.6 把 Authentik 變成 OAuth provider，但「operator 自己」這個帳號在 **Authentik** 和 **backend** 兩層都還不存在 —— dev stack 至今只被 e2e test user（`seed-e2e` 種的 `test+alice@ / test+bob@ / test+sprint2@`）涵蓋過。一個真人 operator 要能登入，**兩層 user 都要備妥**。
+
+#### 5.7.1 Authentik user（enrollment flow 自動建，不需手動指令）
+
+§5.2 的 OAuth Source 設好 **Enrollment flow** 後，operator **首次**按 SPA 的「使用 Google 登入」→ Google consent → 回 Authentik 時，因為 `email_link` matching 還匹配不到任何既有 user，Authentik 走 enrollment flow **自動建一個新 Authentik user**。
+
+預期行為：第一次登入會跳一個 enrollment 中介頁要 operator **選 username**（email / name 從 Google profile 自動帶入，username 要自己填一個）。填完即建好；之後同一個 Google 帳號再登入就靠 `email_link` 直接匹配，不再跳 enrollment。
+
+→ 這層**不需要手動指令**，flow 設好就自動。漏設 Enrollment flow 的後果見 §5.2（`Source is not configured for enrollment`）。
+
+#### 5.7.2 Backend `User` row（`provision-operator` CLI）
+
+Authentik 認得 operator 不等於 backend 認得。`api/app/api/deps.py::_resolve_oauth` 拿到 Authentik token 後走 **email lookup**（`select(User).where(User.email == claims.email)`），backend `users` 表沒有對應 row 就 `auth_invalid_token()` → `/api/v1/auth/me` 回 401。`seed-e2e` 不涵蓋真人 operator，要手動建這層：
+
+```bash
+docker compose exec api python -m app.cli provision-operator \
+  --email <operator-email> --name <operator-name> --team default
+```
+
+- `--email` 要**逐字等於** operator Google 帳號的 email —— `_resolve_oauth` 靠它匹配，差一個字就 401。
+- `--name` 是 backend 顯示用名稱，可任意。
+- `--team` 預設 `default`（Phase 1 單 team，見 DECISIONS §6 B5），一般不必帶。
+
+> **為什麼是 `provision-operator` 而不是 `create-user`：** `create-user` 是給 JWT-login 帳密路徑用的，`--password` 必填。Operator 走 OAuth（Google，或 T-068 的 Authentik 帳密 fallback），backend `User` row 的 `password_hash` 對他的登入路徑沒有意義。`provision-operator` 建的 row 帶一個**隨機、不印出也不記錄**的 password hash —— backend JWT-login 路徑對這個 operator 等同停用，他只能走 OAuth。真的要給 operator 一條獨立帳密 break-glass 時才改用 `create-user`。
+
+> **⚠ password fallback 也要這層 backend row。** 別誤以為改走 T-068 的「帳密 fallback」入口就能繞過 backend `User` row —— 帳密 path 走的是 Authentik 的 identification+password flow，SPA 拿到的一樣是 **Authentik OAuth token**，一樣會到 `_resolve_oauth` 的 email lookup。Backend `User` row 對**所有**登入入口都是必要的，跟走哪個入口無關。
+
+> **Not in scope（留 M3.5b）：** `_resolve_oauth` 自動 first-login provisioning（Authentik 已驗的 user 第一次打 API 時自動建 backend row）—— `deps.py` 該行 comment 已暗示未來會做，但那是 dual-stack migration 的一塊，scope 比本節大。在那之前，新 operator 一律手動跑一次上面的 `provision-operator`。
+
+### 5.8 Backup / disaster recovery
 
 Phase 1 不寫 automated backup；§5 setup 走過一遍要 1 小時，DB 倒掉重設 = 1 小時 + 把 `.env` 內 secrets 拷回 1Password。
 
@@ -280,14 +318,15 @@ M3.5 ship 前 backup 流程進 `operations.md`，包含：
 - `authentik_certs` named volume 一併備份（OIDC signing key；倒掉 = 所有 token 立即失效）
 - 還原步驟驗證
 
-### 5.8 Setup checklist
+### 5.9 Setup checklist
 
 - [ ] §5.1 admin 首登完成、akadmin 密碼進 1Password
-- [ ] §5.2 Google OAuth Source 設好；登出 admin 後 login 頁有 Google 按鈕；用 Workspace 帳號登入成功
+- [ ] §5.2 Google OAuth Source 設好（含 Authentication flow + Enrollment flow）；登出 admin 後 login 頁有 Google 按鈕；用 Workspace 帳號登入成功
 - [ ] §5.3 5 條 scope（`character:read` / `character:write` / `task:read` / `task:cancel` / `usage:read`）都建好，name 逐字對齊
 - [ ] §5.4 5 個 application（1 SPA + 4 agent）+ 對應 provider 都建好；client_id 逐字對齊 `app/auth/mcp_clients.py`
 - [ ] §5.5 group + policy binding：delegated 4 個綁 `cf-agent-default`、`cf-test-agent` 綁 `cf-test-agent-full`
 - [ ] §5.6.1 Google login flow 通
 - [ ] §5.6.2 `curl` client_credentials 拿到 access token、scope claim 含 5 條
 - [ ] §5.6.3 access_token 是 JWT 格式（3 段 base64URL）
+- [ ] §5.7 真人 operator 兩層 user 都備妥：首次 Google 登入自動 enroll Authentik user + `provision-operator` CLI 建好 backend `User` row
 - [ ] `cf-test-agent` client_secret 進 1Password，未進 `.env.example`

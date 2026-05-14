@@ -1,6 +1,6 @@
 # T-069: Dev operator provisioning — Authentik source flows + operator user seed
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** Backlog（post-3.5a 設定缺口；dev 登入 reveal）
 **Est:** S
 **Depends on:** none（修的是 T-053 留下的設定缺口）
@@ -44,10 +44,10 @@
 
 ## Acceptance criteria
 
-- [ ] `planning/devops/authentik-stack.md` §5.2 含設 Authentication flow + Enrollment flow 的步驟，並說明不設的後果（`Source is not configured for enrollment`）
-- [ ] `planning/devops/authentik-stack.md` 有一節清楚說明 operator 要登入需要 Authentik user（enrollment 自動建）+ backend `User` row（`create-user` CLI），兩層都列指令
-- [ ] 若決定做 `provision-operator` CLI：`docker compose exec api python -m app.cli provision-operator --email ...` 能建 backend `User` row，且 `pytest api/tests/...` 對應測試綠；若決定不做：ticket Notes 寫明理由
-- [ ] 文件改動有人能照著從零把一個真人 operator 帳號跑通（reviewer cross-check：步驟無跳號、指令可複製貼上）
+- [x] `planning/devops/authentik-stack.md` §5.2 含設 Authentication flow + Enrollment flow 的步驟，並說明不設的後果（`Source is not configured for enrollment`）
+- [x] `planning/devops/authentik-stack.md` 有一節清楚說明 operator 要登入需要 Authentik user（enrollment 自動建）+ backend `User` row（`provision-operator` CLI），兩層都列指令 — 新增 §5.7「Provision a dev operator」
+- [x] 決定做 `provision-operator` CLI：`docker compose exec api python -m app.cli provision-operator --email ...` 能建 backend `User` row，`pytest tests/cli/test_provision_operator.py` 3 條全綠（見 Notes「CLI 決定」）
+- [x] 文件改動有人能照著從零把一個真人 operator 帳號跑通（§5.7 兩層皆列可複製指令；§5.9 checklist 同步加 §5.7 項；reviewer cross-check 待 PR）
 
 ---
 
@@ -95,3 +95,16 @@ T-053 §5.2 把 Google OAuth Source 的 name / slug / provider / consumer key+se
 ### 注意：password fallback 也卡 wall 3
 
 別誤以為「改走 T-068 的帳密 fallback 就能繞過」。帳密 path 一樣會到 `_resolve_oauth` 的 email lookup，operator 沒 backend `User` row 一樣 401。Wall 3 對所有登入 path 都成立 —— 真正缺的是 operator 的 backend user，跟走哪個入口無關。
+
+### CLI 決定（scope #3）：做了 `provision-operator`
+
+施工判斷：**做**，不是純文件化。理由：
+
+- `create-user` 的 `--password` 是必填，但 OAuth operator 的登入路徑（Google / Authentik 帳密 fallback）**根本不碰 backend `password_hash`** —— `_resolve_oauth` 只做 email lookup。逼 operator 為一個用不到的欄位想一個 throwaway 密碼是真實的 operator friction，而本單存在的目的就是消除這種 friction（operator persona pass retrofit）。
+- `provision-operator` 是 thin wrapper：內部就是 `_create_user(password=secrets.token_urlsafe(32), ...)`，team lookup / `IntegrityError` → `email already exists` 全部複用，**新增邏輯 < 20 行**。
+- 隨機且不印出的 password hash 把語意做進結構：這個 row 只為 OAuth email-lookup 而存在，backend JWT-login 路徑對該 operator 等同停用。比「`create-user` + throwaway 密碼」少一條沒人記得的可登入帳密憑證。
+- 真的要給 operator 一條獨立帳密 break-glass 時，`create-user` 仍在，沒有移除任何能力。
+
+實作：`api/app/cli.py` 加 `provision-operator` 子指令；`api/tests/cli/test_provision_operator.py` 3 條測試（建 OAuth-only row 且無 guessable 密碼可 verify、password 來自 CSPRNG token source（spy `secrets.token_urlsafe`，防 sentinel regression）、重複 email fail-loud）。`ruff check` / `ruff format` / `mypy --strict` / `pytest tests/cli/`（6 條，含既有 seed-e2e）全綠。
+
+> Code review（push 前）：`engineering-code-reviewer` + `security-engineer` 兩個 subagent 跑過。security 結論「ship it」（`secrets.token_urlsafe(32)` = 256-bit CSPRNG、never recorded、Argon2id 存、JWT-login fail-closed；email lookup 不引入新 trust issue）。engineering 提一條 🟡：原本兩條測試其實沒鎖住「password 是隨機的」這個 intent —— `hash_is_random_per_user` 只證明 Argon2 per-call salt，hardcoded sentinel 也會通過。已採納：改成上面的 verify-guesses + `token_urlsafe` spy 兩條，真正會在 sentinel regression 時 fail。
