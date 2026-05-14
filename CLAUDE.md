@@ -121,9 +121,10 @@
    - `SKIPPED` 也算紅（通常是上游 check FAIL 導致 dependent job 沒跑；意味著該 check 沒給 signal）
    - 若還有 `IN_PROGRESS` / `QUEUED` / `PENDING` → 繼續 loop 等
    - 沒有任何 check 也算紅（保險：repo 應該至少要有 PR workflow 跑 lint/test）
-   - **PR body checklist 必須全部 tick 滿**（`gh pr view N --json body -q .body | grep -c '\[ \]'` 要回 `0`）。開 PR 時 `CI 綠` / `Codex critical comments 都已處理` 這些框通常還是空的（CI 還在跑），merge 前要 `gh pr edit N --body-file <file>` 把這些**已經驗證為真**的框改成 `[x]`（順手在框後面附證據，例如 `— 四個 check 全 SUCCESS+COMPLETED`）。**不准為了 tick 而 tick** —— 只能勾真的滿足的，沒滿足的框代表 gate 沒過。
+   - **PR body 裡 merge-gate 相關的 checkbox 要 tick 到反映實況** —— 具體指 `## Checklist` 的 `CI 綠` / `Codex critical comments 都已處理`、和 `## Codex Review 回應` 的 `Codex 自動 review 完成` / `所有 critical comments 已回應`。這幾個框開 PR 當下是空的（CI 還在跑、Codex 還沒 react），但 auto-mode merge classifier 會 key 它們。merge 前 `gh pr view N --json body -q .body` 看這幾條，已驗證為真的用 `gh pr edit N --body-file <file>` 改成 `[x]`（順手附證據，例如 `— 四個 check 全 SUCCESS+COMPLETED`）。**不准為了 tick 而 tick** —— 只勾真的滿足的，沒滿足的代表 gate 沒過。
+     - ⚠ **這條不是「整個 body 零空框」。** PR template 有互斥的「三選一」區塊（E2E coverage gate 三個選項只勾一個、另兩個本來就該留空），那些空框是正確狀態，不該被逼著亂勾。判準是「這個框代表的事實驗證過了嗎 + 是不是 merge gate 在意的」，不是 `grep -c '\[ \]'`。
 
-   ⚠ **為什麼 checklist 也是 gate 的一部分：** auto-mode 的 merge classifier 會讀 PR body，看到殘留的 `- [ ]`（尤其 `CI 綠` / `Codex` 那兩條）就判定 gate 未達成而擋下 `gh pr merge`——即使 `statusCheckRollup` + reactions API 其實已經全綠。PR body 是 merge 決策的 artifact，必須跟實際驗證到的狀態一致，不能停在開 PR 當下的快照。來源：T-068 2026-05-14 踩過——CI 全綠 + Codex `+1` 都驗證過了，merge 仍被擋兩次，原因就是 PR body 還留著開 PR 時的空框。
+   ⚠ **為什麼 checklist 也是 gate 的一部分：** auto-mode 的 merge classifier 會讀 PR body，看到 merge-gate 相關的框（`CI 綠` / `Codex`）還停在 `- [ ]` 就判定 gate 未達成而擋下 `gh pr merge`——即使 `statusCheckRollup` + reactions API 其實已經全綠。PR body 是 merge 決策的 artifact，那幾個框必須跟實際驗證到的狀態一致，不能停在開 PR 當下的快照。來源：T-068 2026-05-14 踩過——CI 全綠 + Codex `+1` 都驗證過了，merge 仍被擋兩次，原因就是 PR body 還留著開 PR 時的空框。
 
    ⚠ **「沒有任何 check」可能是 PR merge conflict 造成的**（GitHub 對 `mergeable: CONFLICTING` 的 PR **靜默跳過 CI workflow**，不會回任何 check）。Loop tick 看到 0 check 時加查：
 
