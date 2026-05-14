@@ -16,7 +16,9 @@
 
 Authentik 2024.12.5 的 `FlowExecutorView._flow_done()` 在 plan context 有 `PLAN_CONTEXT_REDIRECT` 時**直接 `redirect()` 過去、不做 `is_url_absolute` 驗證**（程式碼裡有明確 comment 說「context redirect 只會被 expression policy 或 authentik 自己設定，所以不檢查」）。但 `SourceFlowManager._prepare_flow` 會把 `SESSION_KEY_GET[next]` 塞進 `PLAN_CONTEXT_REDIRECT` —— 而 `SESSION_KEY_GET` 是 flow-executor 的 `dispatch()` 從 `?query=` 無條件寫入的。
 
-→ 結果：`/oauth/if/flow/<any-flow>/?query=next=https://evil.com` 在使用者走完登入後，會被 redirect 到 `evil.com`（純 open-redirect / phishing landing，evil.com **拿不到** code 或 token，但仍是 open-redirect 漏洞類）。
+→ 結果：`/oauth/if/flow/<any-flow>/?next=https://evil.com` 在使用者走完登入後，會被 redirect 到 `evil.com`（純 open-redirect / phishing landing，evil.com **拿不到** code 或 token，但仍是 open-redirect 漏洞類）。
+
+> ⚠ 攻擊面是 interface（`?next=`）跟 executor API（`?query=`）兩條都有 —— interface 前端會自己把 `?next=` bundle 進 `?query=`，executor `dispatch()` 兩條最終都寫進 `SESSION_KEY_GET`。T-075 後 SPA 正常路徑用 `?next=`，但攻擊者可自行 hand-craft 任一形狀。
 
 **這是 Authentik core 的既有行為，存在於每一條 flow-executor URL（`default-authentication-flow` 等都一樣），不是 T-073 引入或加劇的** —— T-073 只是多加了一個 flow-executor 進入點。T-073 security review 判定「正確地不在 T-073 scope」，但屬於 deployment 內的 standing risk，開本單追蹤。
 
@@ -42,7 +44,7 @@ Authentik 2024.12.5 的 `FlowExecutorView._flow_done()` 在 plan context 有 `PL
 
 ## Acceptance criteria
 
-- [ ] `/oauth/if/flow/cf-google-init/?query=next=https://evil.com` 走完登入後**不會** redirect 到 `evil.com`（被擋或改寫成安全 default）
+- [ ] `/oauth/if/flow/cf-google-init/?next=https://evil.com`（及 executor API 的 `?query=` 變體）走完登入後**不會** redirect 到 `evil.com`（被擋或改寫成安全 default）
 - [ ] 正常 SPA 登入（`next` 是 relative authorize URL）仍正常走到 Dashboard，policy 不誤殺
 - [ ] policy + binding codify 在 blueprint，DB reset 後仍在
 - [ ] 測試都綠（既有 `web/tests/e2e/oauth-login.spec.ts` 維持綠）
