@@ -1,7 +1,19 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
+
+// Dev-proxy targets depend on where `pnpm dev` runs:
+//   - inside the `web` container (`docker compose up`, the default) — reach
+//     peers by compose service name
+//   - on the host (README "Native dev server") — reach them via the ports
+//     docker-compose.override.yml publishes to localhost (api 8000, nginx 80)
+// `/.dockerenv` is Docker's standard in-container marker; auto-detecting it
+// keeps both workflows zero-config.
+const inContainer = existsSync('/.dockerenv')
+const apiProxyTarget = inContainer ? 'http://api:8000' : 'http://localhost:8000'
+const oauthProxyTarget = inContainer ? 'http://nginx' : 'http://localhost'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -16,10 +28,8 @@ export default defineConfig({
     proxy: {
       // Mirror prod nginx: strip the /api prefix before forwarding so that
       // VITE_API_BASE_URL=/api + backend routes /v1/* + /health lines up.
-      // Target is the docker service name — `pnpm dev` runs inside the `web`
-      // container, where `localhost` is the container itself, not `api`.
       '/api': {
-        target: 'http://api:8000',
+        target: apiProxyTarget,
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ''),
       },
@@ -32,7 +42,7 @@ export default defineConfig({
       // rewrite it to `nginx`, and Google rejects a redirect_uri on that
       // hostname. nginx routes /oauth/ by path (server_name _), not Host.
       '/oauth': {
-        target: 'http://nginx',
+        target: oauthProxyTarget,
         changeOrigin: false,
       },
     },
