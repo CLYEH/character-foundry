@@ -147,6 +147,12 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | T-066 | Provider contract replay 改 manual-only（停 nightly cron，~$10/月成本砍）| TODO |
 | T-067 | Harden docker-compose secret interpolation + minimal container posture（T-052 PR #85 Codex P1 + security review batch defer）| TODO |
 
+#### Post-3.5a UX follow-ups（不 block M3.5 ship；setup / dev 流程 reveal 的小調整）
+
+| # | Ticket | Status |
+|---|---|---|
+| T-068 | SPA login page — Google direct shortcut + 帳密 fallback + dev escape hatch（推翻 `planning/frontend/oauth-integration.md` §1.1 單按鈕決策）| TODO |
+
 #### Sprint 3.5b / 3.5c — 未開單（3.5a ship 完再開）
 
 **Plan phase deliverable：**

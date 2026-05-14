@@ -38,6 +38,8 @@
 開新 session 時，告訴 Claude：
 「請用 [agent 名稱] 的視角」，Claude 會讀取對應資料夾的 CLAUDE.md 進入角色。
 
+⚠ **Plan phase 額外讀 `planning/CLAUDE.md`** — 跨 agent 共用的 plan-phase reminder（含 operator persona pass）。鎖 plan 前必跑。
+
 例如：
 - 「請用 product agent 的視角，對我做需求訪談」
 - 「請用 backend agent 的視角，規劃 API」
