@@ -1,0 +1,85 @@
+# Authentik blueprint: the `cf-google-init` launcher flow behind the SPA's
+# "Sign in with Google" button (T-073).
+#
+# WHY THIS EXISTS — root cause of T-073's wall 3:
+#   The SPA used to point the Google button straight at Authentik's
+#   `/source/oauth/login/google/?next=<authorize URL>`. But Authentik's
+#   OAuth `OAuthRedirect` view (authentik/sources/oauth/views/redirect.py)
+#   silently ignores `?next=` — it never writes it anywhere. `next` is
+#   only honoured if `SESSION_KEY_GET` is populated, and that key is
+#   written by a *flow executor* dispatch (authentik/flows/views/
+#   executor.py:179) — never by the bare OAuth source-init path. So when
+#   the Google callback reaches `SourceFlowManager._prepare_flow`,
+#   `SESSION_KEY_GET[next]` is empty and `final_redirect` falls back to
+#   `authentik_core:if-user` (`/if/user/`): the operator dead-ends on the
+#   Authentik user page instead of returning to the SPA. (SAML sources
+#   work because authentik/sources/saml/views.py:160 explicitly writes
+#   SESSION_KEY_GET — the OAuth source path has no equivalent.)
+#
+# THE FIX — route the Google button through this one-stage flow instead
+# of the bare source-init URL:
+#   SPA → /oauth/if/flow/cf-google-init/?query=next=<authorize URL>
+#       → FlowExecutorView.dispatch writes SESSION_KEY_GET={next: ...}
+#       → RedirectStage (static) → /oauth/source/oauth/login/google/
+#       → Google → callback → SourceFlowManager._prepare_flow reads
+#         SESSION_KEY_GET (still set — no flow-executor dispatch runs
+#         between the RedirectStage hop and the callback) → bakes
+#         PLAN_CONTEXT_REDIRECT into the enrollment / authentication plan
+#       → _flow_done() honours plan-context redirect first → back to the
+#         SPA's authorize URL → code → token → Dashboard.
+#   This fixes first-time enrollment AND existing-user login: both go
+#   through the same `_prepare_flow` path, so neither honoured `next`
+#   before, and both do now.
+#
+# Applied in BOTH environments — dev (docker-compose.override.yml,
+# single-file mount) and e2e (docker-compose.test.yml, whole-dir mount).
+# It is pure structural config: no secrets, no !Env, no upstream-IdP
+# coupling. Safe in e2e even though e2e seeds no `google` source — the
+# RedirectStage target just 404s there, which the e2e Google-entry spec
+# (web/tests/e2e/oauth-login.spec.ts) already expects.
+#
+# The `google` slug in target_static is the OAuth Source slug from
+# planning/devops/authentik-stack.md §5.2. The OAuth Source object itself
+# is still admin-UI / `ak shell` managed (§5.2 / §5.7); codifying it as a
+# blueprint needs GOOGLE_OAUTH_* plumbed into the Authentik container
+# env, deliberately left out of T-073 to keep this change surgical.
+
+version: 1
+metadata:
+  name: cf-google-init
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  # The launcher flow. `authentication: none` so it runs for anyone —
+  # crucially including an operator who already holds an Authentik
+  # session (the wall-3 re-login case): `require_unauthenticated` would
+  # reject them with "Flow does not apply to current user".
+  - model: authentik_flows.flow
+    id: flow
+    identifiers:
+      slug: cf-google-init
+    attrs:
+      name: cf-google-init
+      title: Signing in with Google…
+      designation: authentication
+      authentication: none
+
+  # Static redirect to the OAuth source-init URL. The `/oauth/` prefix is
+  # required: the flow interface resolves `to` against the browser
+  # origin, and nginx only proxies Authentik under `/oauth/`
+  # (AUTHENTIK_WEB__PATH=/oauth/).
+  - model: authentik_stages_redirect.redirectstage
+    id: redirect-stage
+    identifiers:
+      name: cf-google-init-redirect
+    attrs:
+      mode: static
+      target_static: /oauth/source/oauth/login/google/
+      keep_context: true
+
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf flow
+      stage: !KeyOf redirect-stage
+      order: 0

@@ -71,3 +71,18 @@ services:
     ports:
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:9443:9443"
+    # T-073: mount ONLY the cf-google-init blueprint into dev. A
+    # single-file mount (not the whole infra/authentik/blueprints/ dir
+    # like docker-compose.test.yml uses) keeps the e2e-only
+    # cf-e2e-bootstrap.yaml — which seeds test users + an
+    # implicit-consent SPA provider that would clash with the dev
+    # admin-UI setup — out of the dev Authentik. cf-google-init.yaml is
+    # pure structural config and is the one blueprint dev needs.
+    volumes:
+      - ./infra/authentik/blueprints/cf-google-init.yaml:/blueprints/cf/cf-google-init.yaml:ro
+
+  # T-073: the worker is what actually applies blueprints — it must see
+  # the same mount as the server (mirrors docker-compose.test.yml).
+  authentik-worker:
+    volumes:
+      - ./infra/authentik/blueprints/cf-google-init.yaml:/blueprints/cf/cf-google-init.yaml:ro
