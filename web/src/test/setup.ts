@@ -8,6 +8,7 @@ vi.stubEnv('VITE_AUTHENTIK_AUTHORIZE_URL', 'https://authentik.test/application/o
 vi.stubEnv('VITE_AUTHENTIK_TOKEN_URL', 'https://authentik.test/application/o/token/')
 vi.stubEnv('VITE_AUTHENTIK_LOGOUT_URL', 'https://authentik.test/application/o/revoke/')
 vi.stubEnv('VITE_AUTHENTIK_CLIENT_ID', 'character-foundry-spa')
+vi.stubEnv('VITE_AUTHENTIK_GOOGLE_SOURCE_SLUG', 'google')
 
 // jsdom does not implement matchMedia, but Sonner / next-themes both call it
 // when the Toaster mounts. Provide a minimal stub so rendering AppLayout in

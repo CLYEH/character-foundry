@@ -4,13 +4,15 @@ import { ALICE } from './index'
 
 /**
  * Drive the OAuth Authorization Code + PKCE flow end-to-end through the
- * UI. Mirrors what the LoginPage button starts:
+ * UI. Mirrors what the LoginPage password button starts:
  *
  *   1. Navigate to /login
- *   2. Click "Sign in with Google"
- *   3. Authentik shows its default-authentication-flow stages (no upstream
- *      Google source is configured in the test blueprint, so the flow
- *      falls through to identification + password)
+ *   2. Click "使用帳號密碼登入" (the password fallback entry — T-068
+ *      split the page into three entries; the "使用 Google 登入" button
+ *      now goes through Authentik's source-init redirect to Google,
+ *      which the e2e blueprint doesn't seed)
+ *   3. Authentik shows its default-authentication-flow stages
+ *      (identification + password) per `cf-e2e-bootstrap.yaml`
  *   4. The provider runs the implicit-consent authorization flow (per
  *      `cf-e2e-bootstrap.yaml`), so there is NO consent screen to click —
  *      Authentik redirects straight back to /auth/callback with the code.
@@ -31,7 +33,7 @@ export async function oauthLoginViaUi(
   user: { email: string; password: string } = ALICE,
 ): Promise<void> {
   await page.goto('/login')
-  await page.getByRole('button', { name: '使用 Google 登入' }).click()
+  await page.getByRole('button', { name: '使用帳號密碼登入' }).click()
 
   // Identification stage. Authentik's ak-stage-identification renders the
   // label as a sibling <span> (not <label for>), so getByLabel misses —

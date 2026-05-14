@@ -97,6 +97,51 @@ export function buildAuthorizeUrl(opts: { challenge: string; state: string }): s
   return `${authentik.authorizeUrl}?${params.toString()}`
 }
 
+/**
+ * Wrap a regular Authentik authorize URL in a source-init redirect so the
+ * user lands directly on the upstream IdP (e.g. Google) instead of the
+ * identification stage. Authentik's `/source/oauth/login/<slug>/` view
+ * stashes `next` in the session, kicks off the source's OAuth flow, and
+ * (after IdP callback + user match) redirects back to `next`, where the
+ * normal Auth Code + PKCE handoff resumes. PKCE verifier / state are
+ * unchanged from the password path — same `stashPkceState` already
+ * happened in the caller before this URL is consumed.
+ *
+ * The source-init path lives at the same `/oauth/` mount as the authorize
+ * endpoint, so we derive the prefix by stripping the trailing
+ * `/application/o/authorize/` segment from `authorizeUrl`. This avoids
+ * adding a second env var for the source-init base while staying robust
+ * to deployments that move Authentik off the default `/oauth/` prefix.
+ *
+ * Returns `null` when `sourceSlug` is empty — the caller is expected to
+ * hide the shortcut button in that case (see `VITE_AUTHENTIK_GOOGLE_
+ * SOURCE_SLUG=` in .env.example).
+ *
+ * Trust boundary: `next` is honoured by Authentik's source-init view, so
+ * `authorizeUrl` MUST stay derived from `authentik.*` config (today it's
+ * always `buildAuthorizeUrl(...)` output) — never pass user- or
+ * query-controlled input as `authorizeUrl`, or a hostile `next` could
+ * redirect the post-IdP-callback hop off-origin. Authentik's own
+ * allowed-redirect validation is the backstop, but this code must not
+ * lean on it.
+ */
+export function buildSourceInitUrl(authorizeUrl: string, sourceSlug: string): string | null {
+  const slug = sourceSlug.trim()
+  if (!slug) return null
+  const marker = '/application/o/authorize/'
+  const idx = authorizeUrl.indexOf(marker)
+  if (idx === -1) {
+    throw new OauthError(
+      'invalid_authorize_url',
+      `buildSourceInitUrl: authorize URL "${authorizeUrl}" does not contain "${marker}"`,
+    )
+  }
+  const prefix = authorizeUrl.slice(0, idx)
+  return `${prefix}/source/oauth/login/${encodeURIComponent(slug)}/?next=${encodeURIComponent(
+    authorizeUrl,
+  )}`
+}
+
 async function postForm(url: string, form: URLSearchParams): Promise<OauthTokenResponse> {
   const res = await fetch(url, {
     method: 'POST',
