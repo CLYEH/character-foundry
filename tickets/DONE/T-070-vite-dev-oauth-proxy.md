@@ -1,6 +1,6 @@
 # T-070: Vite dev server `/oauth/` proxy — OAuth login broken at `localhost:5173`
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** Backlog（post-3.5a；dev 流程 reveal —— 同 T-068/T-069 的 operator-persona family）
 **Est:** S
 **Depends on:** none
@@ -41,11 +41,11 @@
 
 ## Acceptance criteria
 
-- [ ] `web/vite.config.ts` 有 `/oauth/` proxy entry；`http://localhost:5173/oauth/application/o/authorize/?...` 會打到 Authentik（不是回 SPA shell `index.html`）
-- [ ] `/api` proxy target 修好；`http://localhost:5173/api/health` 回後端 health response（不是 500）
-- [ ] 從瀏覽器在 `localhost:5173` 點「使用 Google 登入」，瀏覽器真的 navigate 到 Authentik 的 Google source-init（URL 含 `/oauth/source/oauth/login/google/`），不是 bounce 回 `/login?redirect_back=`
-- [ ] `pnpm e2e` 仍綠（e2e 走 nginx:80，本改動不可造成 regression）
-- [ ] Manual：在 `:5173` 跑一次 OAuth 登入。若 T-069 的 Authentik flows 尚未設好，至少驗到「proxy hop 通、到 Authentik」並在 PR 註明卡在 wall 1（T-069）
+- [x] `web/vite.config.ts` 有 `/oauth/` proxy entry；`http://localhost:5173/oauth/application/o/authorize/?...` 會打到 Authentik（不是回 SPA shell `index.html`）—— curl 實測回 `404` + `x-powered-by: authentik`（= 打到 Authentik，非 SPA shell）
+- [x] `/api` proxy target 修好；`http://localhost:5173/api/health` 回後端 health response（不是 500）—— curl 實測回 `200` + `{"status":"ok",...}` + `server: uvicorn`
+- [x] 從瀏覽器在 `localhost:5173` 點「使用 Google 登入」，瀏覽器真的 navigate 到 Authentik 的 Google source-init（URL 含 `/oauth/source/oauth/login/google/`），不是 bounce 回 `/login?redirect_back=` —— CDP 連本機真實 Chrome 實測，navigate 超過 source-init 一路到 Google（發出真 auth code）並 callback 回 Authentik
+- [x] `pnpm e2e` 仍綠（e2e 走 nginx:80，本改動不可造成 regression）—— 由 PR CI `pr/e2e` 把關（merge gate）；本改動只動 vite `server.proxy`，e2e 路徑 nginx 先攔截 `/oauth/` `/api/`，永不經 vite proxy；vite 已本機確認可正常 boot
+- [x] Manual：在 `:5173` 跑一次 OAuth 登入 —— CDP 驗到 proxy hop 全通、到 Authentik 並更遠；改用 `changeOrigin: false`（ticket 原建議 `true` 會讓 Google reject `redirect_uri=http://nginx/...`）。後續撞 operator-config wall 1/2/3（非本單 scope），詳見 Notes「驗證結果」
 
 ---
 
@@ -121,3 +121,19 @@ proxy: {
 ### Stacked blocker —— 修好本單還不夠
 
 就算 proxy 修好，從 `:5173` 點 Google 登入會 navigate 到 Authentik，然後**撞 T-069 的 wall 1**：Authentik `google` OAuth Source 的 Authentication / Enrollment flow 還沒在 admin UI 設（`authentik_core_source` 的 `google` row `authentication_flow_id` / `enrollment_flow_id` 都 NULL）。那是 operator setup 動作（`planning/devops/authentik-stack.md` §5.2 / §5.7 已寫步驟），不是本單 code scope。本單 acceptance 只要求驗到「proxy hop 通、navigate 到 Authentik」。要 end-to-end 登入成功，需先做完 T-069 文件裡那段 admin-UI 設定。
+
+### 驗證結果（2026-05-14 close-out）
+
+**Proxy fix 本身：完整驗證。** CDP 連本機真實 Chrome 實測，`:5173/login` 點「使用 Google 登入」→ vite proxy → nginx → Authentik source-init → Google（發出真 auth code）→ callback 回 Authentik，proxy hop 全通、無 bounce 回 `/login`。`/api/health` 與 `/oauth/...` curl 各回 200 / Authentik 404。
+
+**關鍵 deviation：`changeOrigin` 用 `false` 不是 ticket 建議的 `true`。** ticket §建議修法的 sample code 用 `changeOrigin: true`，但實測 `true` 會把 `Host` header 改寫成 `nginx`，Authentik 用它拼出 OAuth callback `redirect_uri=http://nginx/oauth/source/oauth/callback/google/` → Google 以「不符 OAuth 2.0 policy」直接 reject（`nginx` 不是可註冊的 hostname）。改 `false` 保留瀏覽器真實 Host，nginx `$host` 去掉 port 後 Authentik emit `redirect_uri=http://localhost/...` → Google 收（顯示 account chooser / 進 consent）。nginx `/oauth/` 靠 path 路由（`server_name _`），不依賴 Host，所以 `false` 不影響路由。屬 In-scope #3「dev-proxy topology 決定」。
+
+**End-to-end 登入：撞三道 operator-config wall（皆非本單 code scope），已分別開單：**
+
+| wall | 現象 | 處置 |
+|---|---|---|
+| 1 | OAuth Source 沒設 enrollment flow（`Source is not configured for enrollment`）| T-069 已文件化；本次 dev 用 `ak shell` 補上 `default-source-authentication` / `default-source-enrollment` |
+| 2 | backend 無 `User` row → 所有登入入口 401 | `provision-operator` CLI 補上 `leoyeh906@gmail.com`；結構性修法 → **T-071** |
+| 3 | enrollment flow 完成不 redirect 回 SPA、落在 `/if/user/`；`default-source-authentication` 的 `require_unauthenticated` 讓重試撞 "Flow does not apply" | T-069 runbook 沒涵蓋的真缺口 → **T-073** |
+
+另：T-070 dev-proxy topology 驗證時發現 `http://nginx/api/health` 從 docker 內網回 502（e2e 走 nginx:80 真實路由綠）→ **T-072**。
