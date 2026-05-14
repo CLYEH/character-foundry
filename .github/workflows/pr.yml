@@ -281,6 +281,11 @@ jobs:
           VITE_AUTHENTIK_TOKEN_URL=/oauth/application/o/token/
           VITE_AUTHENTIK_LOGOUT_URL=/oauth/application/o/revoke/
           VITE_AUTHENTIK_CLIENT_ID=character-foundry-spa
+          # T-068: SPA login Google direct-shortcut. Set explicitly (not
+          # relying on the config.ts default) so the oauth-login e2e's
+          # /source/oauth/login/google/ assertion isn't coupled to a
+          # source-file fallback.
+          VITE_AUTHENTIK_GOOGLE_SOURCE_SLUG=google
           EOF
 
       - name: Start stack
