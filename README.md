@@ -121,7 +121,7 @@ pnpm -C web install
 pnpm -C web dev                                  # → http://localhost:5173
 ```
 
-`web/vite.config.ts` 已經把 `/api/*` proxy 到 `localhost:8000`。
+`web/vite.config.ts` 的 dev proxy 會自動偵測執行環境（`/.dockerenv`）：host-native 跑 `pnpm dev` 時 `/api/*` proxy 到 `localhost:8000`、`/oauth/*` 到 `localhost`；在 `web` 容器內跑（`docker compose up`）則改用 compose service name（`api:8000` / `nginx`）。⚠ OAuth 登入流程另需 `nginx` + `authentik-server` 也 up——上面那行 `docker compose up` 沒帶它們，純 FE hot-reload 不受影響。
 
 ### 跑測試
 
