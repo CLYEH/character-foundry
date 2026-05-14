@@ -2,6 +2,7 @@
 
 Usage:
     python -m app.cli create-user --email a@b.com --password ... --name Alice
+    python -m app.cli provision-operator --email op@b.com --name Operator
     python -m app.cli seed-e2e
 
 Phase 1 has no self-serve registration (DECISIONS §6 B4), so user accounts
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import secrets
 import sys
 
 from sqlalchemy import select
@@ -78,6 +80,34 @@ def _run_create_user(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _provision_operator(email: str, name: str, team_name: str) -> User:
+    """Create a backend `User` row for a real OAuth operator.
+
+    Operators authenticate via Authentik (Google, or the password fallback) —
+    `api/app/api/deps.py::_resolve_oauth` resolves them by email, so the row
+    just needs to exist. `password_hash` is NOT NULL, so we store the hash of
+    a random token that is never printed or recorded: the legacy JWT-login
+    path is effectively dead for this user, which is the intent — operators
+    are OAuth-only. Use `create-user` instead when a real password break-glass
+    credential is wanted.
+    """
+    return await _create_user(
+        email=email,
+        password=secrets.token_urlsafe(32),
+        name=name,
+        team_name=team_name,
+    )
+
+
+def _run_provision_operator(args: argparse.Namespace) -> int:
+    user = asyncio.run(_provision_operator(email=args.email, name=args.name, team_name=args.team))
+    print(
+        f"provisioned operator {user.id} ({user.email}) in team {args.team} "
+        "— OAuth-only, no password login"
+    )
+    return 0
+
+
 async def _seed_e2e() -> list[tuple[str, str]]:
     """Create the E2E test users if they don't exist. Returns (email, action) pairs."""
     session_factory = async_session_factory()
@@ -129,6 +159,17 @@ def build_parser() -> argparse.ArgumentParser:
     create_user.add_argument("--name", required=True)
     create_user.add_argument("--team", default="default", help="Team name (default: 'default')")
     create_user.set_defaults(func=_run_create_user)
+
+    provision_operator = subparsers.add_parser(
+        "provision-operator",
+        help="Create a backend User row for an OAuth operator (no password — OAuth-only)",
+    )
+    provision_operator.add_argument("--email", required=True)
+    provision_operator.add_argument("--name", required=True)
+    provision_operator.add_argument(
+        "--team", default="default", help="Team name (default: 'default')"
+    )
+    provision_operator.set_defaults(func=_run_provision_operator)
 
     seed_e2e = subparsers.add_parser(
         "seed-e2e",
