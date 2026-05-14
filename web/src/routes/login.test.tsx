@@ -70,9 +70,11 @@ describe('LoginPage', () => {
     const target = new URL(assignSpy.mock.calls[0][0] as string)
     expect(target.origin + target.pathname).toBe('https://authentik.test/if/flow/cf-google-init/')
 
-    // `next` rides inside the flow-executor `?query=` param, not as a
-    // top-level query arg — see buildSourceInitUrl for why.
-    const next = new URLSearchParams(target.searchParams.get('query') ?? '').get('next')
+    // `next` is a plain query param on the interface URL — the flow
+    // interface bundles it into the executor `?query=` itself, so the
+    // SPA must not pre-wrap it (T-075). Guard against regressing to that.
+    expect(target.searchParams.get('query')).toBeNull()
+    const next = target.searchParams.get('next')
     expect(next).not.toBeNull()
     const nextUrl = new URL(next!)
     expect(nextUrl.origin + nextUrl.pathname).toBe(

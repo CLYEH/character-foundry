@@ -95,20 +95,21 @@ describe('buildSourceInitUrl', () => {
   const authorize =
     '/oauth/application/o/authorize/?response_type=code&client_id=character-foundry-spa&state=ST'
 
-  // The `query` param carries an inner `next=<authorizeUrl>` querystring
-  // (Authentik's flow-executor convention); decode it once to inspect.
-  const nextFromQuery = (url: string): string | null =>
-    new URLSearchParams(new URL(url, 'https://app.test').searchParams.get('query') ?? '').get(
-      'next',
-    )
+  // `next` is a plain query param on the flow-interface URL — the
+  // interface frontend bundles it into the executor API's `?query=`
+  // itself, so the SPA must NOT pre-wrap it (T-075).
+  const nextParam = (url: string): string | null =>
+    new URL(url, 'https://app.test').searchParams.get('next')
 
-  it('wraps a relative authorize URL in the cf-google-init flow executor with next=', () => {
+  it('wraps a relative authorize URL in the cf-google-init flow interface with next=', () => {
     const url = buildSourceInitUrl(authorize, 'google')
     expect(url).not.toBeNull()
     // URL is relative so parse with a dummy base.
     const parsed = new URL(url!, 'https://app.test')
     expect(parsed.pathname).toBe('/oauth/if/flow/cf-google-init/')
-    expect(nextFromQuery(url!)).toBe(authorize)
+    expect(nextParam(url!)).toBe(authorize)
+    // Must NOT be double-bundled under a `query` param (the T-075 bug).
+    expect(parsed.searchParams.get('query')).toBeNull()
   })
 
   it('preserves the absolute origin when the authorize URL is absolute', () => {
@@ -119,7 +120,7 @@ describe('buildSourceInitUrl', () => {
     expect(parsed.origin + parsed.pathname).toBe(
       'https://authentik.test/oauth/if/flow/cf-google-init/',
     )
-    expect(nextFromQuery(url!)).toBe(absolute)
+    expect(nextParam(url!)).toBe(absolute)
   })
 
   it('returns null when the source slug is empty or whitespace (button hidden)', () => {

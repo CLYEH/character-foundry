@@ -158,6 +158,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | T-072 | nginx `/api/health` docker 內網 502 — `http://nginx/api/health` 從 network 內回 502（e2e 走 nginx:80 真實路由綠，疑為 `/health` path-specific 小問題）。T-070 dev-proxy topology 驗證 reveal | TODO |
 | T-073 | Authentik source enrollment `next`-redirect 缺口 — 真人 operator 首登走 enrollment flow 完成後落在 `/if/user/`、不 redirect 回 SPA，重試又撞 `require_unauthenticated` 的 "Flow does not apply"。operator-amendment（補 `authentik-stack.md` §5.2）。T-070 dev 測試 wall 3 reveal | DONE |
 | T-074 | Authentik flow-executor `next` open-redirect — `?query=next=https://evil.com` 在登入完成後會被 redirect 出站；Authentik core `_flow_done` 的 `PLAN_CONTEXT_REDIRECT` path 不驗證 `next`。既有行為、每條 flow-executor URL 都有，非 T-073 引入。修法：綁 expression policy 驗證 same-origin。T-073 security review defer | TODO |
+| T-075 | T-073 regression — `buildSourceInitUrl` 把 `next` 包成 `?query=next=` 多包一層；flow interface 前端會自己把 `location.search` bundle 進 executor 的 `?query=`，結果 executor 拿到 `{query: "next=X"}` 沒有 `next` key → `_prepare_flow` 還是 fallback `/if/user/`。修法：改產 plain `?next=`。T-073 AC#4 CDP 測試抓到 | IN REVIEW（PR；fix code-traced + unit-tested，live CDP 待驗）|
 
 #### Sprint 3.5b / 3.5c — 未開單（3.5a ship 完再開）
 

@@ -122,16 +122,22 @@ const GOOGLE_INIT_FLOW_SLUG = 'cf-google-init'
  * then forwards to the source-init view. See the blueprint header +
  * T-073 for the full trace.
  *
- * `?query=` is Authentik's flow-executor convention for threading an
- * upstream query string into the flow — the executor parses it and
- * stores each param in the session. We put `next=<authorizeUrl>` there,
- * hence the double-encoding (inner `next=…` querystring, then the whole
- * thing as the `query` param value).
+ * `next` rides as a PLAIN query param on the flow-*interface* URL. Do
+ * NOT pre-wrap it in `?query=`: the interface frontend already bundles
+ * the whole `window.location.search` into the executor API's `?query=`
+ * itself (`FlowInterface*.js`: `flowsExecutorGet({ query:
+ * location.search.substring(1) })`). So `?next=X` on the interface URL
+ * arrives at the executor as `?query=next=X`, which `dispatch()` parses
+ * into `SESSION_KEY_GET = {next: X}`. Pre-wrapping it (`?query=next=X` —
+ * what T-073 originally shipped) double-bundles to `{query: "next=X"}`,
+ * the `next` key is lost, and `_prepare_flow` falls back to `/if/user/`
+ * (the T-075 regression). The executor *API* path does want `?query=` —
+ * but the SPA hits the interface, not the API.
  *
- * The flow executor lives at the same `/oauth/` mount as the authorize
+ * The flow interface lives at the same `/oauth/` mount as the authorize
  * endpoint, so we derive the prefix by stripping the trailing
  * `/application/o/authorize/` segment from `authorizeUrl`. This avoids a
- * second env var for the executor base while staying robust to
+ * second env var for the interface base while staying robust to
  * deployments that move Authentik off the default `/oauth/` prefix.
  *
  * Returns `null` when `sourceSlug` is empty — the caller hides the
@@ -161,8 +167,7 @@ export function buildSourceInitUrl(authorizeUrl: string, sourceSlug: string): st
     )
   }
   const prefix = authorizeUrl.slice(0, idx)
-  const query = new URLSearchParams({ next: authorizeUrl }).toString()
-  return `${prefix}/if/flow/${GOOGLE_INIT_FLOW_SLUG}/?${new URLSearchParams({ query }).toString()}`
+  return `${prefix}/if/flow/${GOOGLE_INIT_FLOW_SLUG}/?${new URLSearchParams({ next: authorizeUrl }).toString()}`
 }
 
 async function postForm(url: string, form: URLSearchParams): Promise<OauthTokenResponse> {
