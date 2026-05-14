@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildAuthorizeUrl,
+  buildSourceInitUrl,
   computeChallenge,
   consumePkceState,
   exchangeCodeForToken,
@@ -87,6 +88,54 @@ describe('buildAuthorizeUrl', () => {
     } finally {
       Object.defineProperty(window, 'location', { configurable: true, value: original })
     }
+  })
+})
+
+describe('buildSourceInitUrl', () => {
+  const authorize =
+    '/oauth/application/o/authorize/?response_type=code&client_id=character-foundry-spa&state=ST'
+
+  it('wraps a relative authorize URL in /oauth/source/oauth/login/<slug>/ with next=', () => {
+    const url = buildSourceInitUrl(authorize, 'google')
+    expect(url).not.toBeNull()
+    // URL is relative so parse with a dummy base.
+    const parsed = new URL(url!, 'https://app.test')
+    expect(parsed.pathname).toBe('/oauth/source/oauth/login/google/')
+    expect(parsed.searchParams.get('next')).toBe(authorize)
+  })
+
+  it('preserves the absolute origin when the authorize URL is absolute', () => {
+    const absolute = `https://authentik.test${authorize}`
+    const url = buildSourceInitUrl(absolute, 'google')
+    expect(url).not.toBeNull()
+    const parsed = new URL(url!)
+    expect(parsed.origin + parsed.pathname).toBe(
+      'https://authentik.test/oauth/source/oauth/login/google/',
+    )
+    expect(parsed.searchParams.get('next')).toBe(absolute)
+  })
+
+  it('returns null when the source slug is empty or whitespace (button hidden)', () => {
+    expect(buildSourceInitUrl(authorize, '')).toBeNull()
+    expect(buildSourceInitUrl(authorize, '   ')).toBeNull()
+  })
+
+  it('encodes slugs that contain URL-unsafe characters', () => {
+    const url = buildSourceInitUrl(authorize, 'oidc/main')
+    expect(url).not.toBeNull()
+    const parsed = new URL(url!, 'https://app.test')
+    expect(parsed.pathname).toBe('/oauth/source/oauth/login/oidc%2Fmain/')
+  })
+
+  it('throws OauthError when the authorize URL lacks the standard segment', () => {
+    let caught: unknown
+    try {
+      buildSourceInitUrl('/oauth/some/other/path/?x=1', 'google')
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(OauthError)
+    expect((caught as OauthError).code).toBe('invalid_authorize_url')
   })
 })
 

@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { Navigate, useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
+import { authentik } from '@/config'
 import {
   buildAuthorizeUrl,
+  buildSourceInitUrl,
   computeChallenge,
   generateState,
   generateVerifier,
@@ -11,6 +13,8 @@ import {
   stashPkceState,
 } from '@/lib/oauth-client'
 import { useAuthStore } from '@/stores/authStore'
+
+const ADMIN_PATH = '/oauth/if/admin/'
 
 function safeRedirectBack(raw: string | null): string {
   if (!raw) return '/'
@@ -23,27 +27,41 @@ function safeRedirectBack(raw: string | null): string {
   return '/'
 }
 
+type Entry = 'google' | 'password'
+
 export default function LoginPage() {
   const [params] = useSearchParams()
   const redirectBack = safeRedirectBack(params.get('redirect_back'))
   const isAuthenticated = useAuthStore((s) => !!s.accessToken)
-  const [starting, setStarting] = useState(false)
+  const [starting, setStarting] = useState<Entry | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   if (isAuthenticated) return <Navigate to={redirectBack} replace />
 
-  const handleSignIn = async () => {
-    setStarting(true)
+  const googleSlug = authentik.googleSourceSlug.trim()
+
+  const startFlow = async (entry: Entry) => {
+    setStarting(entry)
     setError(null)
     try {
       const verifier = generateVerifier()
       const challenge = await computeChallenge(verifier)
       const state = generateState()
       stashPkceState(verifier, state, redirectBack === '/' ? null : redirectBack)
-      window.location.assign(buildAuthorizeUrl({ challenge, state }))
+      const authorizeUrl = buildAuthorizeUrl({ challenge, state })
+      // Google path wraps the authorize URL in Authentik's source-init
+      // redirect so the user lands on Google directly; password path goes
+      // to the identification page where username/password can be entered.
+      // Both end up at /auth/callback with `code` + `state`, where the
+      // same PKCE verifier is consumed — security posture is identical.
+      const target =
+        entry === 'google'
+          ? (buildSourceInitUrl(authorizeUrl, googleSlug) ?? authorizeUrl)
+          : authorizeUrl
+      window.location.assign(target)
     } catch {
       setError('無法開始登入流程，請稍後重試')
-      setStarting(false)
+      setStarting(null)
     }
   }
 
@@ -51,26 +69,53 @@ export default function LoginPage() {
     <section className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
         <h1 className="text-2xl font-semibold">登入</h1>
-        <p className="text-sm text-muted-foreground">
-          使用公司 Google 帳號登入 Character Foundry。
-        </p>
+        <p className="text-sm text-muted-foreground">選擇登入方式進入 Character Foundry。</p>
       </header>
-      <Button
-        type="button"
-        variant="outline"
-        size="lg"
-        onClick={handleSignIn}
-        disabled={starting}
-        aria-label="使用 Google 登入"
-      >
-        <GoogleMark />
-        {starting ? '前往 Google 登入…' : '使用 Google 登入'}
-      </Button>
+
+      <div className="flex flex-col gap-3">
+        {googleSlug && (
+          <Button
+            type="button"
+            variant="default"
+            size="lg"
+            onClick={() => startFlow('google')}
+            disabled={starting !== null}
+            aria-label="使用 Google 登入"
+          >
+            <GoogleMark />
+            {starting === 'google' ? '前往 Google 登入…' : '使用 Google 登入'}
+          </Button>
+        )}
+
+        <Button
+          type="button"
+          variant="outline"
+          size="lg"
+          onClick={() => startFlow('password')}
+          disabled={starting !== null}
+          aria-label="使用帳號密碼登入"
+        >
+          {starting === 'password' ? '前往登入頁…' : '使用帳號密碼登入'}
+        </Button>
+      </div>
+
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
         </p>
       )}
+
+      <footer className="mt-2 flex justify-end">
+        <a
+          href={ADMIN_PATH}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="text-xs text-muted-foreground hover:text-foreground"
+          aria-label="開啟 Authentik 管理介面（Dev）"
+        >
+          Dev →
+        </a>
+      </footer>
     </section>
   )
 }

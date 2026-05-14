@@ -12,11 +12,21 @@ test.describe('auth flow', () => {
     await expect(userMenu).toContainText(ALICE.name)
   })
 
-  test('login page renders only the Google sign-in button', async ({ page }) => {
+  test('login page renders the three entries (Google / password / dev), no inline form', async ({
+    page,
+  }) => {
+    // T-068 split /login into three entries. The inline email/password form
+    // is still absent — the password entry routes through Authentik's
+    // identification page, not a local form.
     await page.goto('/login')
     await expect(page.getByRole('button', { name: '使用 Google 登入' })).toBeVisible()
-    await expect(page.getByLabel('Email')).toHaveCount(0)
-    await expect(page.getByLabel('密碼')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '使用帳號密碼登入' })).toBeVisible()
+    await expect(page.getByRole('link', { name: /Authentik 管理介面/ })).toHaveAttribute(
+      'href',
+      '/oauth/if/admin/',
+    )
+    // No inline credential form — the page is buttons + a dev link only.
+    await expect(page.getByRole('textbox')).toHaveCount(0)
   })
 
   test('logout clears the session and protected routes redirect to /login', async ({
