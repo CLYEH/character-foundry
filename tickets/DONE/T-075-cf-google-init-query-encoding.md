@@ -1,10 +1,10 @@
 # T-075: T-073 regression — SPA wraps the cf-google-init URL in the wrong encoding layer, `next` never reaches the executor
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** Backlog（post-3.5a；T-073 regression fix — T-073 AC#4 CDP 測試抓到）
 **Est:** XS
 **Depends on:** none（T-073 已 merge）
-**Related:** T-073（本單修它 ship 的 bug）
+**Related:** T-073（本單修它 ship 的 bug）、T-076（同 CDP 驗證 reveal 的下一道牆 — flow interface CORS）
 
 ---
 
@@ -50,11 +50,21 @@ T-073 的 `buildSourceInitUrl` 產 `/if/flow/cf-google-init/?query=next=X`，int
 
 ## Acceptance criteria
 
-- [ ] `buildSourceInitUrl` 產 `/oauth/if/flow/cf-google-init/?next=<single-encoded authorize URL>`
-- [ ] CDP re-verify：fresh session（清 SPA storage + `authentik_session` cookie）→ `:5173/login` → 「使用 Google 登入」→ 走完 → **落在 SPA Dashboard，不是 `/if/user/`**
-- [ ] `oauth-client.test.ts` / `login.test.tsx` / `oauth-login.spec.ts` 更新成斷言新 URL 結構，全綠
-- [ ] `authentik-stack.md` §5.2.1 SPA URL shape + 驗證步驟修正
-- [ ] CI 全綠
+- [x] `buildSourceInitUrl` 產 `/oauth/if/flow/cf-google-init/?next=<single-encoded authorize URL>`
+- [x] CDP 驗證 encoding fix 正確 —— network log 確認 SPA 導到正確的 `/oauth/if/flow/cf-google-init/?next=...`、flow interface 也發出格式正確的 `flows/executor/cf-google-init/?query=next%3D%252Foauth...` 呼叫。**完整走到 Dashboard 被 wall 4（flow interface XHR CORS）擋住 → 拆 T-076**（本單 scope 只到 encoding 修對；end-to-end 是 T-073+T-075+T-076 合起來）
+- [x] `oauth-client.test.ts` / `login.test.tsx` / `oauth-login.spec.ts` 更新成斷言新 URL 結構（含「不得有 `query` param」regression guard），unit 全綠
+- [x] `authentik-stack.md` §5.2.1 SPA URL shape + 驗證步驟修正
+- [ ] CI 全綠（PR #100 auto-loop 驗）
+
+---
+
+## Resolution（2026-05-15）
+
+**Encoding fix 確認正確。** T-073 把 `next` 包成 `?query=next=`，但 flow interface 前端（`FlowInterface-2024.12.5.js`）會自己把 `window.location.search` bundle 進 executor 的 `?query=` —— 多包一層 → executor 拿到 `{query: "next=X"}` 沒有 `next` key。改成 plain `?next=` 後，CDP network log 確認 flow interface 發出的 executor 呼叫是正確的 `flows/executor/cf-google-init/?query=next%3D%252Foauth%252Fapplication...`。
+
+**但 CDP 驗證同時 reveal 了下一道牆（wall 4）：** flow interface 載得起來、executor 呼叫格式也對，但那些 XHR 打的是 Authentik 的絕對 `base_url`（`http://localhost/oauth/api/...`，無 `:5173`），跟 SPA 所在的 `http://localhost:5173` 跨來源 → 被 CORS preflight 擋掉 → interface 卡在 `Loading…`。這是 dev-`:5173`-only（prod/e2e 同源無此問題），是 T-073「走 flow interface」撞 T-070 dev-proxy topology 的後果。**拆 T-076 處理**，使用者 2026-05-15 拍板「先 ship T-075、再做 T-076」。
+
+**踩過的坑（記給後人）：** 前幾輪 CDP 測試其實是打到 **stale 的 pre-T-073 SPA code** —— dev `web` 容器的 Vite dev server 因 Windows→Docker bind-mount file-watcher 沒抓到變更，一直 serve 舊版（`curl :5173/src/lib/oauth-client.ts` 看得到舊 code）。`docker compose restart web` 讓 Vite cold-start 重掃 source 才 serve 到正確版本（cold-start 要 >60s）。OAuth/login 改動用 CDP 驗證前，先確認 Vite 真的 serve 到當前 code。
 
 ---
 
