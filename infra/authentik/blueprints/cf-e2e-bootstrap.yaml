@@ -125,6 +125,47 @@ entries:
         - !Find [authentik_core.user, [username, cf-e2e-alice]]
         - !Find [authentik_core.user, [username, cf-e2e-bob]]
 
+  # ── Relax default-source-authentication for re-login (T-078) ──────
+  # The Authentik out-of-box `default-source-authentication` flow
+  # carries `authentication: require_unauthenticated` — when the SPA
+  # logs out (which only revokes its own refresh token), Authentik's
+  # `authentik_session` cookie survives. On the NEXT Google login, the
+  # Google source callback dispatches through this flow, and
+  # `FlowPlanner.plan()` rejects with "Flow does not apply to current
+  # user" because the still-authenticated session matches no anonymous
+  # user. Operator dead-ends on Authentik's "Permission denied" page.
+  #
+  # Flipping `authentication` to `none` lets the same flow accept both
+  # logged-out and already-logged-in users. For an already-authenticated
+  # user whose Google session resolves to the SAME backend user,
+  # `UserLoginStage` is a no-op — safe and exactly the T-078 wall 6
+  # use case.
+  #
+  # ⚠ Where this gets subtle: an already-authenticated user (A) whose
+  # browser's *Google* session resolves to a DIFFERENT Workspace user
+  # (B) will see `enroll_email_link` swap the active Authentik session
+  # from A to B (UserLoginStage performs the switch when the matched
+  # user differs from `request.user`). Phase 1 risk is bounded because:
+  # (i) the operator pool is one person on a non-shared laptop, (ii)
+  # the OAuth Source restricts to one Workspace tenant via `hd=` (see
+  # `planning/devops/authentik-stack.md` §5.2), and (iii) backend
+  # `_resolve_oauth` re-anchors identity off the freshly-issued OAuth
+  # access token's email claim — so a session swap by itself can't
+  # spoof a different backend user, the SPA would have to also obtain
+  # B's access token. A future multi-tenant or kiosk deployment SHOULD
+  # bind a policy here that rejects when `request.user.is_authenticated
+  # and pending_user != request.user`, OR clone this flow per-source
+  # and keep `require_unauthenticated` on the sources that need it.
+  #
+  # Identifiers-by-slug updates an existing flow in place. Authentik
+  # treats blueprint entries as idempotent upserts, so this stays a
+  # no-op on subsequent applies.
+  - model: authentik_flows.flow
+    identifiers:
+      slug: default-source-authentication
+    attrs:
+      authentication: none
+
   # ── SPA OAuth2 provider (PKCE, implicit consent) ───────────────────
   # `authorization_flow`: implicit-consent skips the "Allow Access" click so
   # Playwright doesn't need to handle a consent screen. Prod uses explicit
