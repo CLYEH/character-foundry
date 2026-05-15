@@ -137,7 +137,7 @@ Authentik server 暴露在 nginx `/oauth/` 路徑（或 subdomain `auth.characte
    - **Consumer secret**: `${GOOGLE_OAUTH_CLIENT_SECRET}` from `.env`
    - **Scopes**: `openid profile email`
    - **User matching mode**: `Link to a user with identical email address`（Workspace 同 email 自動匹配既有 user，避免分裂帳號）
-   - **Authentication flow**: `default-source-authentication`（matched user 登入時走這條；**漏設的話連 `email_link` 匹配成功的既有 user 都登不進去**）
+   - **Authentication flow**: `default-source-authentication`（matched user 登入時走這條；**漏設的話連 `email_link` 匹配成功的既有 user 都登不進去**）。⚠ **2026-05-15 T-078**：這條 flow 的 `authentication` 欄要從 Authentik 出廠的 `require_unauthenticated` 改成 `none` —— SPA logout 只 revoke OAuth refresh token，Authentik 的 `authentik_session` cookie 會留下，下次 Google 登入走進這條 flow 時 `FlowPlanner.plan()` 會以 "Flow does not apply to current user" 拒絕已 authenticated 的 operator（T-078 wall 6）。Dev 端 admin UI 改完即可；CI / e2e 由 `infra/authentik/blueprints/cf-e2e-bootstrap.yaml` 的 `authentik_flows.flow` upsert 強制成 `none`，blueprint apply 即生效。本 codebase 只用一條 OAuth Source（Workspace Google），這條 flow 沒有「必須斷未 authenticated」的功能需求；未來加第二條 source 又有此需求時，clone 一條 source-specific 的 auth flow，不要把這條再鎖回 `require_unauthenticated`。
    - **Enrollment flow**: `default-source-enrollment`（沒 matched user 時走這條自動建新 Authentik user；**漏設就是 dev 測試踩到的 `authentik Logo / Bad Request / Source is not configured for enrollment`**）
    - **⚠ Workspace domain restriction**: `Additional scopes` 或在 Authentik enrollment flow 加 policy 限定 `hd=<your-workspace-domain>`（例：`hd=character-foundry.com`）。**這條看似多餘但必填**：「Link to a user with identical email address」相依「upstream IdP 已驗 email」這個假設；Workspace 內 tenant-restricted account 提供這保證，**但 consumer Google 不**。今天只有 Workspace 沒事；未來操作者多接一條 OAuth Source（例：personal Google / GitHub）就會撞 classic account-takeover-by-email-claim — 攻擊者用 victim 的 `victim@example.com` alias 註一個 consumer Google，登入後 link 到 victim 既有 Authentik user。先把 `hd=` 鎖在 Workspace tenant 上 anchor 這個 trust assumption；之後任何「let me also enable X login」PR 必須直面這條
 
@@ -402,6 +402,7 @@ M3.5 ship 前 backup 流程進 `operations.md`，包含：
 
 - [ ] §5.1 admin 首登完成、akadmin 密碼進 1Password
 - [ ] §5.2 Google OAuth Source 設好（含 Authentication flow + Enrollment flow）；登出 admin 後 login 頁有 Google 按鈕；用 Workspace 帳號登入成功
+- [ ] §5.2 T-078 fix：`default-source-authentication.authentication = none` 已套用。**Apply path 依環境而異**——dev：`ak shell` 改一次；CI / e2e：自動套用（`cf-e2e-bootstrap.yaml` 由 `docker-compose.test.yml` 掛起來的 blueprint upsert）；**prod：不在 e2e blueprint 範圍**，setup 時必 admin-UI 改 `default-source-authentication.authentication`（或在 prod 自己的 blueprint dir codify 一條 same shape 的 `authentik_flows.flow` upsert）。驗收：logout 後同瀏覽器再 Google 登入可達 Dashboard、不撞 "Flow does not apply"
 - [ ] §5.2.1 `cf-google-init` blueprint 有 apply（`BlueprintInstance.status == successful`）；flow executor 回 `xak-flow-redirect` → `/oauth/source/oauth/login/google/`；真人 operator 首登 redirect 回 SPA（不落在 `/if/user/`）
 - [ ] §5.3 5 條 scope（`character:read` / `character:write` / `task:read` / `task:cancel` / `usage:read`）都建好，name 逐字對齊
 - [ ] §5.4 5 個 application（1 SPA + 4 agent）+ 對應 provider 都建好；client_id 逐字對齊 `app/auth/mcp_clients.py`

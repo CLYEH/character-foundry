@@ -23,6 +23,20 @@ export function UserMenu() {
 
   if (!user) return null
 
+  // T-078 deliberately keeps logout SPA-local — revoke the refresh
+  // token, clear the store, and let `ProtectedRoute` bounce to /login
+  // on the next render. The lingering `authentik_session` cookie is no
+  // longer a re-login blocker now that the Google source's
+  // authentication flow (`default-source-authentication`) has had its
+  // `require_unauthenticated` policy relaxed; see
+  // `planning/devops/authentik-stack.md` §5.2 + the cf-e2e-bootstrap
+  // blueprint entry that codifies the relaxation. A previous T-078
+  // iteration tried to chain logout through Authentik's OIDC
+  // `end_session_endpoint` to also kill the Authentik session, but the
+  // flow-interface hung intermittently at `ak-loading` and the dev
+  // origin flipped from `:5173` to `:80` after the redirect, both
+  // breaking the UX promise of "logout always lands you back on the
+  // SPA's /login".
   const handleLogout = async () => {
     await signOutServer()
     useAuthStore.getState().logout()

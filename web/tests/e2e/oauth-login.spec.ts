@@ -35,6 +35,44 @@ test.describe('oauth login smoke', () => {
     expect(response.status()).toBe(200)
   })
 
+  // T-078 behavioral contract — the SPA-local half: logout clears the
+  // zustand store and lands the user on `/login`, even though the
+  // Authentik session cookie deliberately survives (the shipped T-078
+  // fix relaxes `default-source-authentication` so re-login through
+  // the surviving session is fine; SPA logout itself stays minimal).
+  //
+  // ⚠ CI gap to be aware of: the original bug surfaces on the GOOGLE
+  // source path (`default-source-authentication.require_unauthenticated`
+  // rejecting a logged-in re-login). This spec drives the PASSWORD
+  // fallback path which dispatches through `default-authentication-flow`
+  // — already `authentication=none` before T-078 — so it would not
+  // have caught the bug. Re-login coverage on Google lives in the
+  // operator-driven CDP harness (memory
+  // `feedback_verify_oauth_flow_via_cdp_before_ship`); attempting it
+  // here is also brittle because the surviving Authentik session
+  // causes the password path to silently skip identification +
+  // password and round-trip straight back to `/auth/callback`, which
+  // the standard `oauthLoginViaUi` helper can't transparently absorb.
+  // Keep this test focused on the assertion the SPA side actually
+  // owns: logout → /login + zustand cleared.
+  test('logout lands the user on /login and clears the zustand store', async ({ page }) => {
+    await oauthLoginViaUi(page, ALICE)
+    await expect(page).toHaveURL('/')
+
+    await page.getByRole('button', { name: '使用者選單' }).click()
+    await page.getByRole('menuitem', { name: '登出' }).click()
+
+    // T-078 keeps logout SPA-local: `signOutServer` revokes the
+    // refresh token, the zustand store clears, and ProtectedRoute
+    // bounces to `/login` on the next render. No redirect through
+    // Authentik flow interface, no origin flip.
+    await page.waitForURL(/\/login(\?.*)?$/, { timeout: 30_000 })
+
+    const cleared = await readAuthStorage(page)
+    expect(cleared?.state?.accessToken).toBeFalsy()
+    expect(cleared?.state?.tokenSource).toBeFalsy()
+  })
+
   // T-073 acceptance: Google entry hands off to the cf-google-init flow
   // interface — NOT the bare /source/oauth/login/google/, whose view
   // silently drops `?next=` (see buildSourceInitUrl). cf-google-init.yaml
