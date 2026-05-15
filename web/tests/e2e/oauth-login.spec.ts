@@ -53,9 +53,7 @@ test.describe('oauth login smoke', () => {
   // this spec fails. The Google path itself is covered by the
   // operator-driven CDP harness on `:9222` (memory
   // `feedback_verify_oauth_flow_via_cdp_before_ship`).
-  test('logout clears the SPA session so re-login works in the same browser', async ({
-    page,
-  }) => {
+  test('logout clears the SPA session so re-login works in the same browser', async ({ page }) => {
     await oauthLoginViaUi(page, ALICE)
     await expect(page).toHaveURL('/')
 
