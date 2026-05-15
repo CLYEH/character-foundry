@@ -149,6 +149,7 @@ Authentik server 暴露在 nginx `/oauth/` 路徑（或 subdomain `auth.characte
 ### 5.2.1 Source-init `next`-propagation — 走 `cf-google-init` flow，不要直連 source-init URL
 
 > **2026-05-14: operator persona pass retrofit (T-073)** — 補 §5.2 的 wall 3：source enrollment / authentication flow 完成後不 redirect 回 SPA，operator 首登 dead-end 在 `/if/user/`。
+> **2026-05-14: T-075** — 修 T-073 的 SPA URL 包錯一層（`?query=` vs plain `?next=`）；下面 SPA URL shape + 驗證步驟已是 T-075 修正後的版本。
 
 SPA 的「使用 Google 登入」**不能**直接導到 Authentik 的 `/oauth/source/oauth/login/<slug>/?next=<authorize URL>`。Authentik 2024.12.5 的 OAuth `OAuthRedirect` view（`authentik/sources/oauth/views/redirect.py`）**靜默忽略 `?next=`** —— 它從不把 `next` 寫進 session。`next` 只有在 `SESSION_KEY_GET` 被填好時才會被 honor，而那個 key 只由 **flow executor 的 dispatch**（`authentik/flows/views/executor.py:179`）寫入，bare 的 OAuth source-init path 不會。所以 Google callback 回到 `SourceFlowManager._prepare_flow` 時 `SESSION_KEY_GET[next]` 是空的，`final_redirect` fallback 到 `authentik_core:if-user`（`/if/user/`）—— operator 卡在 Authentik user 頁。（SAML source 沒這問題，因為 `authentik/sources/saml/views.py:160` 有顯式寫 `SESSION_KEY_GET`；OAuth source path 沒有對等實作。）
 
@@ -156,11 +157,14 @@ SPA 的「使用 Google 登入」**不能**直接導到 Authentik 的 `/oauth/so
 
 **修法 —— `cf-google-init` launcher flow（blueprint codified）：**
 
-SPA 改導到 `/oauth/if/flow/cf-google-init/?query=next=<authorize URL>`（`?query=` 是 Authentik flow-executor 把 upstream querystring 帶進 flow 的慣例）。這條 flow 只有一個 **RedirectStage**（static mode → `/oauth/source/oauth/login/google/`）：
+SPA 改導到 `/oauth/if/flow/cf-google-init/?next=<authorize URL>` —— `next` 是**普通 query param、單層編碼**。這條 flow 只有一個 **RedirectStage**（static mode → `/oauth/source/oauth/login/google/`）：
 
 ```
-SPA → /oauth/if/flow/cf-google-init/?query=next=<authorize URL>
-    → FlowExecutorView.dispatch 寫 SESSION_KEY_GET={next: ...}
+SPA → /oauth/if/flow/cf-google-init/?next=<authorize URL>
+    → flow interface 前端把 location.search 整條 bundle 進 executor API
+      的 ?query=（FlowInterface*.js: flowsExecutorGet({query: location
+      .search.substring(1)})）→ executor dispatch QueryDict 出 {next: ...}
+      → 寫 SESSION_KEY_GET={next: ...}
     → RedirectStage → /oauth/source/oauth/login/google/
     → Google → callback → _prepare_flow 讀 SESSION_KEY_GET（中間沒有
       flow-executor dispatch，所以還在）→ 把 PLAN_CONTEXT_REDIRECT
@@ -168,9 +172,15 @@ SPA → /oauth/if/flow/cf-google-init/?query=next=<authorize URL>
     → _flow_done() 優先 honor PLAN_CONTEXT_REDIRECT → 回 SPA authorize URL
 ```
 
+> ⚠ **兩層 API 對 `next` 的傳遞慣例不同（T-073 踩過、T-075 修）：**
+> - **Flow executor API**（`/api/v3/flows/executor/<slug>/`）讀 `?query=<urlencoded querystring>`。
+> - **Flow interface**（`/if/flow/<slug>/`，SPA 實際打的）吃**普通 query params**（`?next=X`），由前端自己 bundle 進 executor 的 `?query=`。
+>
+> SPA 一定是打 interface。所以 SPA URL 用 plain `?next=`，**不要**自己先包成 `?query=next=` —— 那樣會 double-bundle 成 `{query: "next=X"}`，executor 拿不到 `next` key，`_prepare_flow` 還是 fallback 到 `/if/user/`（T-075 修的就是這個）。
+
 flow / stage / binding 全部 codify 在 `infra/authentik/blueprints/cf-google-init.yaml`（純結構物件，無 secret / `!Env`）。Dev 由 `docker-compose.override.yml` 單檔 mount、e2e 由 `docker-compose.test.yml` 整個 dir mount 各自帶進去。**這就是「把 flow 設定 codify 一次解決 DB reset 重來」的落地**；OAuth Source 物件本身（§5.2）仍是 admin-UI / `ak shell` 管理（codify 它需要把 `GOOGLE_OAUTH_*` plumb 進 Authentik container env，T-073 刻意不做以保持 surgical）。
 
-**SPA 端對應改動：** `web/src/lib/oauth-client.ts` 的 `buildSourceInitUrl` 改成產 `cf-google-init` flow-executor URL（非 bare source-init）。`VITE_AUTHENTIK_GOOGLE_SOURCE_SLUG` 從此只當「按鈕顯不顯示」的 gate；實際 source 由 blueprint 固定。
+**SPA 端對應改動：** `web/src/lib/oauth-client.ts` 的 `buildSourceInitUrl` 改成產 `/oauth/if/flow/cf-google-init/?next=<authorize URL>`（非 bare source-init、也非 `?query=` 包裝）。`VITE_AUTHENTIK_GOOGLE_SOURCE_SLUG` 從此只當「按鈕顯不顯示」的 gate；實際 source 由 blueprint 固定。
 
 **Verification：**
 
@@ -181,18 +191,18 @@ flow / stage / binding 全部 codify 在 `infra/authentik/blueprints/cf-google-i
       b=B.objects.get(name='cf-google-init'); print(b.status, bool(b.last_applied_hash))"
    # 預期：successful True
    ```
-2. **Flow executor 回 redirect challenge**：
+2. **Flow executor API 回 redirect challenge**：
    ```bash
-   # `query` 的值是雙層編碼：內層 `next=<authorize URL>` 是一條 querystring，
-   # 整條再被當成 `query` 參數值編碼一次（`buildSourceInitUrl` 用兩個
-   # URLSearchParams 做這件事）。下面 `%252Ffoo` 是 `/foo` 雙層編碼後的
-   # 樣子，`/foo` 只是 authorize URL 的簡化替身。
+   # 注意：這是直接打 executor API（要 ?query=），不是 SPA 走的 interface 路徑。
+   # `?query=` 的值是一條 urlencoded querystring；`next%3D%252Ffoo` 解一層成
+   # `next=%2Ffoo`，executor 內 QueryDict 再解一層成 {next: '/foo'}。
    curl -s 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3D%252Ffoo' \
      -H 'Accept: application/json'
    # 預期 body 含 "component": "xak-flow-redirect", "to": "/oauth/source/oauth/login/google/"
+   # 同一個 request 的 session 寫入 authentik/flows/get（=SESSION_KEY_GET）= {'next': '/foo'}
    ```
-   同一個 request 的 session 應已寫入 `authentik/flows/get`（= `SESSION_KEY_GET`），值為 `{'next': '/foo'}`。
-3. **真人 operator 首登 end-to-end**（AC #4 —— 需真 Google 帳號，手動）：fresh browser（清掉 `authentik_session` cookie 模擬無 session）→ `:5173/login` → 「使用 Google 登入」→ Google → enrollment（選 username）→ **redirect 回 SPA → Dashboard**，不落在 `/if/user/`。沿用 T-070 的 CDP harness。
+   ⚠ 這只驗 executor API 那層；SPA 走 interface（`?next=`、前端自己 bundle），interface 那條只能靠 §3 的真實瀏覽器測。
+3. **真人 operator 首登 end-to-end**（AC #4 —— 需真 Google 帳號 + 真瀏覽器，手動）：fresh browser（清掉 `authentik_session` cookie 模擬無 session）→ `:5173/login` → 「使用 Google 登入」→ Google → enrollment（選 username）→ **redirect 回 SPA → Dashboard**，不落在 `/if/user/`。沿用 CDP harness（memory `reference_local_chrome_cdp_connection`）。**這條是唯一能驗到 interface→executor 完整鏈的測試** —— OAuth/login 改動 ship 前務必先跑（memory `feedback_verify_oauth_flow_via_cdp_before_ship`）。
 
 ### 5.3 定義 5 條 scope
 

@@ -36,14 +36,15 @@ test.describe('oauth login smoke', () => {
   })
 
   // T-073 acceptance: Google entry hands off to the cf-google-init flow
-  // executor — NOT the bare /source/oauth/login/google/, whose view
+  // interface — NOT the bare /source/oauth/login/google/, whose view
   // silently drops `?next=` (see buildSourceInitUrl). cf-google-init.yaml
   // is in the e2e blueprint dir, so the flow exists here and its
   // RedirectStage forwards to the source-init URL — which 404s in CI
   // since no `google` source is seeded. We assert (a) the SPA handoff URL
-  // carries `next` inside the flow-executor `?query=` param, and (b) the
-  // flow forwards to /source/oauth/login/google/ — which proves the
-  // blueprint actually applied (Authentik swallows blueprint errors
+  // carries `next` as a PLAIN query param (T-075: pre-wrapping it in
+  // `?query=` double-bundles and the executor loses the `next` key), and
+  // (b) the flow forwards to /source/oauth/login/google/ — which proves
+  // the blueprint actually applied (Authentik swallows blueprint errors
   // silently, so this is the only automated check that it is valid).
   test('Google entry navigates through the cf-google-init flow to source-init', async ({
     page,
@@ -56,10 +57,11 @@ test.describe('oauth login smoke', () => {
     )
     await page.getByRole('button', { name: '使用 Google 登入' }).click()
 
-    // (a) SPA handoff: /if/flow/cf-google-init/?query=next=<authorize URL>
+    // (a) SPA handoff: /if/flow/cf-google-init/?next=<authorize URL>
     const flowUrl = new URL((await flowRequest).url())
     expect(flowUrl.pathname).toContain('/if/flow/cf-google-init/')
-    const next = new URLSearchParams(flowUrl.searchParams.get('query') ?? '').get('next')
+    expect(flowUrl.searchParams.get('query')).toBeNull() // not double-bundled
+    const next = flowUrl.searchParams.get('next')
     expect(next).toBeTruthy()
     expect(next).toContain('/application/o/authorize/')
     expect(next).toContain('code_challenge_method=S256')

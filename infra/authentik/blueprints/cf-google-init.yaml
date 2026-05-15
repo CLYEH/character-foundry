@@ -18,7 +18,13 @@
 #
 # THE FIX — route the Google button through this one-stage flow instead
 # of the bare source-init URL:
-#   SPA → /oauth/if/flow/cf-google-init/?query=next=<authorize URL>
+#   SPA → /oauth/if/flow/cf-google-init/?next=<authorize URL>
+#       → the flow INTERFACE frontend bundles location.search into the
+#         executor API's ?query= itself (FlowInterface*.js:
+#         flowsExecutorGet({ query: location.search.substring(1) })) — so
+#         the SPA passes `next` as a PLAIN param, NOT pre-wrapped in
+#         ?query= (pre-wrapping double-bundles to {query: "next=X"} and
+#         the executor loses the `next` key — the T-075 regression)
 #       → FlowExecutorView.dispatch writes SESSION_KEY_GET={next: ...}
 #       → RedirectStage (static) → /oauth/source/oauth/login/google/
 #       → Google → callback → SourceFlowManager._prepare_flow reads
