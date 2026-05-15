@@ -402,7 +402,7 @@ M3.5 ship 前 backup 流程進 `operations.md`，包含：
 
 - [ ] §5.1 admin 首登完成、akadmin 密碼進 1Password
 - [ ] §5.2 Google OAuth Source 設好（含 Authentication flow + Enrollment flow）；登出 admin 後 login 頁有 Google 按鈕；用 Workspace 帳號登入成功
-- [ ] §5.2 T-078 fix：`default-source-authentication.authentication = none` 已套用（`ak shell` 改 dev、blueprint upsert 蓋 CI / prod）；logout 後同瀏覽器再 Google 登入可達 Dashboard、不撞 "Flow does not apply"
+- [ ] §5.2 T-078 fix：`default-source-authentication.authentication = none` 已套用。**Apply path 依環境而異**——dev：`ak shell` 改一次；CI / e2e：自動套用（`cf-e2e-bootstrap.yaml` 由 `docker-compose.test.yml` 掛起來的 blueprint upsert）；**prod：不在 e2e blueprint 範圍**，setup 時必 admin-UI 改 `default-source-authentication.authentication`（或在 prod 自己的 blueprint dir codify 一條 same shape 的 `authentik_flows.flow` upsert）。驗收：logout 後同瀏覽器再 Google 登入可達 Dashboard、不撞 "Flow does not apply"
 - [ ] §5.2.1 `cf-google-init` blueprint 有 apply（`BlueprintInstance.status == successful`）；flow executor 回 `xak-flow-redirect` → `/oauth/source/oauth/login/google/`；真人 operator 首登 redirect 回 SPA（不落在 `/if/user/`）
 - [ ] §5.3 5 條 scope（`character:read` / `character:write` / `task:read` / `task:cancel` / `usage:read`）都建好，name 逐字對齊
 - [ ] §5.4 5 個 application（1 SPA + 4 agent）+ 對應 provider 都建好；client_id 逐字對齊 `app/auth/mcp_clients.py`
