@@ -34,8 +34,15 @@ export default defineConfig({
         rewrite: (p) => p.replace(/^\/api/, ''),
       },
       // Mirror prod nginx: forward /oauth/ to Authentik with the prefix kept.
-      // The SPA's OAuth URLs are relative (/oauth/...) on purpose to stay
-      // same-origin like prod; without this entry they hit the SPA fallback.
+      // This proxy still serves the SPA's *fetch* calls to Authentik
+      // (TOKEN/LOGOUT URLs, kept relative) so they stay same-origin with
+      // the `:5173` SPA. The *navigation* to Authentik (AUTHORIZE_URL and
+      // the cf-google-init flow URL derived from it) is ABSOLUTE to
+      // Authentik's real origin since T-076 — it does NOT go through this
+      // proxy. Why: Authentik flow-interface pages bootstrap with XHRs to
+      // their absolute `base_url`; loading them via this proxy (`:5173`)
+      // makes those XHRs cross-origin (`:5173` → `:80`) and CORS-blocked.
+      // See .env.example `VITE_AUTHENTIK_AUTHORIZE_URL` for the full why.
       // changeOrigin stays false (unlike /api): Authentik derives the OAuth
       // callback redirect_uri from the inbound Host, so the Host must remain
       // the browser's real origin (localhost:5173). changeOrigin:true would
