@@ -277,6 +277,12 @@ jobs:
           # T-057: frontend SPA reads these via import.meta.env at runtime
           # (vite dev server inside docker). All same-origin so nginx
           # reverse-proxies to authentik-server; no CORS to deal with.
+          # T-076: AUTHORIZE_URL stays RELATIVE here on purpose — CI is
+          # single-origin (everything behind nginx:80), so relative works
+          # and is host-agnostic. `.env.example` deliberately diverges: it
+          # uses an ABSOLUTE URL for the `:5173` dev split (SPA on :5173,
+          # Authentik on :80). Do NOT "sync" the two — the divergence is
+          # intentional. See .env.example `VITE_AUTHENTIK_AUTHORIZE_URL`.
           VITE_AUTHENTIK_AUTHORIZE_URL=/oauth/application/o/authorize/
           VITE_AUTHENTIK_TOKEN_URL=/oauth/application/o/token/
           VITE_AUTHENTIK_LOGOUT_URL=/oauth/application/o/revoke/

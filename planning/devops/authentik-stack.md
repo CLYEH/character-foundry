@@ -150,6 +150,7 @@ Authentik server 暴露在 nginx `/oauth/` 路徑（或 subdomain `auth.characte
 
 > **2026-05-14: operator persona pass retrofit (T-073)** — 補 §5.2 的 wall 3：source enrollment / authentication flow 完成後不 redirect 回 SPA，operator 首登 dead-end 在 `/if/user/`。
 > **2026-05-14: T-075** — 修 T-073 的 SPA URL 包錯一層（`?query=` vs plain `?next=`）；下面 SPA URL shape + 驗證步驟已是 T-075 修正後的版本。
+> **2026-05-15: T-076** — 修 wall 4：dev `:5173` 下 flow interface 的 bootstrap XHR 跨來源被 CORS 擋。修法是 `VITE_AUTHENTIK_AUTHORIZE_URL` 改**絕對**（指 Authentik 真實 origin），詳見下方「§5.2.1a」。CDP 已驗證 fresh-session Google 登入 end-to-end 走到 Dashboard。
 
 SPA 的「使用 Google 登入」**不能**直接導到 Authentik 的 `/oauth/source/oauth/login/<slug>/?next=<authorize URL>`。Authentik 2024.12.5 的 OAuth `OAuthRedirect` view（`authentik/sources/oauth/views/redirect.py`）**靜默忽略 `?next=`** —— 它從不把 `next` 寫進 session。`next` 只有在 `SESSION_KEY_GET` 被填好時才會被 honor，而那個 key 只由 **flow executor 的 dispatch**（`authentik/flows/views/executor.py:179`）寫入，bare 的 OAuth source-init path 不會。所以 Google callback 回到 `SourceFlowManager._prepare_flow` 時 `SESSION_KEY_GET[next]` 是空的，`final_redirect` fallback 到 `authentik_core:if-user`（`/if/user/`）—— operator 卡在 Authentik user 頁。（SAML source 沒這問題，因為 `authentik/sources/saml/views.py:160` 有顯式寫 `SESSION_KEY_GET`；OAuth source path 沒有對等實作。）
 
@@ -203,6 +204,27 @@ flow / stage / binding 全部 codify 在 `infra/authentik/blueprints/cf-google-i
    ```
    ⚠ 這只驗 executor API 那層；SPA 走 interface（`?next=`、前端自己 bundle），interface 那條只能靠 §3 的真實瀏覽器測。
 3. **真人 operator 首登 end-to-end**（AC #4 —— 需真 Google 帳號 + 真瀏覽器，手動）：fresh browser（清掉 `authentik_session` cookie 模擬無 session）→ `:5173/login` → 「使用 Google 登入」→ Google → enrollment（選 username）→ **redirect 回 SPA → Dashboard**，不落在 `/if/user/`。沿用 CDP harness（memory `reference_local_chrome_cdp_connection`）。**這條是唯一能驗到 interface→executor 完整鏈的測試** —— OAuth/login 改動 ship 前務必先跑（memory `feedback_verify_oauth_flow_via_cdp_before_ship`）。
+
+### 5.2.1a flow interface CORS — `VITE_AUTHENTIK_AUTHORIZE_URL` 要絕對（dev `:5173`）
+
+> **2026-05-15: T-076** — 修 wall 4。
+
+§5.2.1 修好 `next` 傳遞後，CDP 驗證 reveal 下一道牆：dev `:5173` 下 SPA 走 `/oauth/if/flow/cf-google-init/`（vite proxy → nginx → Authentik）載得起 flow interface HTML，但 interface 前端的 bootstrap XHR（`core/brands/current`、`root/config`、`flows/executor/...`）打的是 Authentik 的**絕對 `base_url`** `http://localhost/oauth/api/...`（port 80）—— 跟 SPA 所在 origin `http://localhost:5173` 跨來源 → CORS preflight 被擋 → interface 卡在 `Loading…`、RedirectStage 永遠沒機會跑。
+
+**為什麼 `base_url` 是 `http://localhost`（無 `:5173`）：** `core/views/interface.py` 用 `request.build_absolute_uri()` 算 `base_url`，而 T-070 讓 nginx 用 `$host`（去 port）→ Authentik 看到 `Host: localhost`。`$host` 去 port 是 T-070 為了 Google `redirect_uri` 刻意設的，不能動。
+
+**修法：`VITE_AUTHENTIK_AUTHORIZE_URL` 改絕對**（dev = `http://localhost/oauth/application/o/authorize/`）：
+
+- SPA 的「使用 Google 登入」與「帳密」入口都是**導航**到 authorize URL（或從它 derive 的 `cf-google-init` flow URL）。authorize URL 絕對 → 導航直接到 Authentik 真實 origin `:80` → flow interface 從 `:80` 載 → 它的 XHR 打 `http://localhost/oauth/api/...` 同源 → 無 CORS。
+- `redirect_uri` 仍是 `window.location.origin`（SPA 在 `:5173`）→ `http://localhost:5173/auth/callback` → 登完回到 SPA。
+- `VITE_AUTHENTIK_TOKEN_URL` / `LOGOUT_URL` 維持**相對** —— 它們是 SPA 從 `:5173` 發的 `fetch`，相對路徑同源、走 vite `/oauth/` proxy 正確。只有「導航去的」URL 需要絕對。
+- 零前端 code 改動（`buildAuthorizeUrl` / `buildSourceInitUrl` / 帳密 path 都已能吃絕對 URL）。詳見 `.env.example` 的 `VITE_AUTHENTIK_AUTHORIZE_URL` 註解。
+
+**這是 dev-`:5173`-only。** Prod / CI e2e 整套同 origin（`nginx:80`），相對或絕對都同源、無 CORS —— CI `pr.yml` 自己寫的 `.env` 維持相對即可。
+
+**既有 dev `.env` 要手動更新：** `.env` 是 gitignored，每個 operator 自己一份。本單只改 committed 的 `.env.example`；既有 dev 環境要把自己 `.env` 的 `VITE_AUTHENTIK_AUTHORIZE_URL` 改成絕對，然後 `docker compose up -d web`（不是 `restart` —— `restart` 不重讀 `env_file`）。
+
+> **Verification：** CDP fresh-session 跑 `:5173/login` → 「使用 Google 登入」→ 全程在 `:80` 跑（CDP console 無 CORS error）→ Google → callback → `default-source-authentication` → authorize → token → **落在 SPA Dashboard（`:5173/`，heading 我的角色）**。T-076 已這樣驗過。
 
 ### 5.3 定義 5 條 scope
 

@@ -1,10 +1,10 @@
 # T-076: Authentik flow interface XHR is CORS-blocked on the `:5173` dev origin — flow stuck at "Loading…"
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** Backlog（post-3.5a；dev-topology wall — T-075 CDP 驗證 reveal，同 T-070 family）
 **Est:** S
 **Depends on:** T-075（encoding fix 先 land；本單疊在它之上）
-**Related:** T-073（引入「走 flow interface」這條路）、T-070（dev proxy topology，本單是它的延伸）、T-075（encoding fix）
+**Related:** T-073（引入「走 flow interface」這條路）、T-070（dev proxy topology，本單是它的延伸）、T-075（encoding fix）、T-077（同 CDP 驗證 reveal 的 wall 5）、T-078（使用者實測 reveal 的 wall 6）
 
 ---
 
@@ -64,11 +64,29 @@ plan 時三條都評估；偏好不破壞 T-070、不增 prod 表面積的那條
 
 ## Acceptance criteria
 
-- [ ] CDP re-verify：fresh session → `:5173/login` → 「使用 Google 登入」→ flow interface **不卡 `Loading…`**、RedirectStage 有跑 → Google → callback → **落在 SPA Dashboard**
-- [ ] CDP console 無 CORS error
-- [ ] T-070 的 Google `redirect_uri` 行為不變、proxy hop 仍通
-- [ ] CI e2e（同源路徑）維持綠
-- [ ] 對應 planning doc（§5.2.1 或 T-070 的 dev-proxy 說明）更新
+- [x] CDP re-verify：fresh session → `:5173/login` → 「使用 Google 登入」→ flow interface **不卡 `Loading…`**、RedirectStage 有跑 → Google → callback → **落在 SPA Dashboard** —— CDP run `r2` 實測：全程在 `:80` 跑，executor call 回 200，Google → callback → `default-source-authentication` → authorize → token → `http://localhost:5173/`，heading「我的角色」
+- [x] CDP console 無 CORS error —— `r2` console 乾淨；對照 `r1`（修法前）滿是 `blocked by CORS policy`
+- [x] T-070 的 Google `redirect_uri` 行為不變、proxy hop 仍通 —— 沒碰 nginx / vite proxy `changeOrigin`；導航改走 `:80` 絕對 URL，`redirect_uri` 仍由 `window.location.origin`（`:5173`）derive
+- [ ] CI e2e（同源路徑）維持綠 —— PR auto-loop 驗（CI `pr.yml` 自己寫 `.env`、維持相對 `authorizeUrl`，單源不受影響）
+- [x] 對應 planning doc 更新 —— `authentik-stack.md` 新增 §5.2.1a、`.env.example` + `vite.config.ts` 註解
+
+---
+
+## Resolution（2026-05-15）
+
+**採候選修法 1 的最小形式：`VITE_AUTHENTIK_AUTHORIZE_URL` 改絕對**（dev = `http://localhost/oauth/application/o/authorize/`）。
+
+評估三條候選後：候選 2（nginx CORS headers）會在共用的 `nginx.conf` 製造 prod/dev 分歧；候選 3（相對 `base_url`）不可行 —— Django `build_absolute_uri` 永遠回絕對。候選 1 最乾淨：authorize URL 絕對 → SPA 的「使用 Google 登入」與「帳密」兩個入口都直接導航到 Authentik 真實 origin `:80` → flow interface + 它的 bootstrap XHR 同源、無 CORS。`redirect_uri` 仍是 `:5173`（由 `window.location.origin` derive），登完回 SPA。`TOKEN_URL` / `LOGOUT_URL` 維持相對（SPA 從 `:5173` 發的 `fetch`，同源 + vite proxy 正確）。**零前端 code 改動** —— `buildAuthorizeUrl` / `buildSourceInitUrl` / 帳密 path 都已能吃絕對 URL。
+
+落地：`.env.example` 的 `VITE_AUTHENTIK_AUTHORIZE_URL` 改絕對 + 詳細註解；`vite.config.ts` `/oauth` proxy 註解、`authentik-stack.md` §5.2.1a 同步。CI `pr.yml` 自己寫的 `.env` 維持相對（CI 單源、相對也同源 —— 不必動，動了反而有絕對-URL 對不上 CI host 的風險；`pr.yml` 加了交叉引用註解說明 divergence 是刻意的）。
+
+**Trust boundary 有重新確認過：** `buildSourceInitUrl` docstring 標 `authorizeUrl` 會成為 post-callback redirect target、且「effectively NO backstop」。改絕對後 `next` 從相對路徑變成 fully-qualified `http://localhost/...`，理論上「`next` 能表達的東西」變寬 —— 但仍安全，因為 `authorizeUrl` 永遠是 config-derived（`buildAuthorizeUrl` 的輸出），不是 user input。那條 invariant（config-derived、never user input）沒變、仍 load-bearing。
+
+**CDP 驗證連環 reveal 下游兩道牆（皆非 T-076 scope，已開單）：**
+- **wall 5（T-077）** —— operator `leoyeh906` 不在 `cf-agent-default` group → `Character Foundry SPA` application 的 policy binding 在 authorize endpoint 擋下。dev 已手動把 operator 加進 group；runbook 缺口開 T-077。
+- **wall 6（T-078）** —— 使用者實測：logout 後無法 re-login。SPA logout 不結束 Authentik session → re-login 撞 `default-source-authentication` 的 `require_unauthenticated`。T-073 早預告、本次確認，開 T-078。
+
+T-076 自身 scope（flow interface CORS）已驗證完成 —— fresh-session Google 登入 end-to-end 通。
 
 ---
 
