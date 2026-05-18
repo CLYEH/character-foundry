@@ -283,6 +283,78 @@ def test_oauth_existing_user_row_is_not_re_provisioned(
     assert _count_users(database_url, seeded_user["email"]) == 1
 
 
+def test_oauth_mixed_case_existing_row_is_matched_not_duplicated(
+    client: TestClient,
+    _preload_jwks_cache: JWKSCache,
+    make_oauth_token: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+) -> None:
+    """Codex round-2 P2: when an existing `users` row was created via the
+    `provision-operator` / `create-user` CLI with mixed-case email (e.g.
+    `Leo@Omniguider.com`), an OAuth login with the canonical lowercase form
+    MUST resolve to that row — not auto-provision a second row alongside.
+    Lookup uses `LOWER(email)` so the stored casing doesn't matter.
+    """
+    monkeypatch.setenv(_ALLOWED_DOMAINS_ENV, "omniguider.com")
+    mixed_case_existing = "Leo@Omniguider.com"
+
+    # Insert directly via SQL to bypass any future canonicalization in CLI —
+    # we explicitly want the historical mixed-case row shape the comment
+    # warns about.
+    async def _insert_mixed_case() -> str:
+        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                team_id = (
+                    await conn.execute(text("SELECT id FROM teams WHERE name='default'"))
+                ).scalar_one()
+                await conn.execute(
+                    text(
+                        "INSERT INTO users (team_id, name, email, password_hash) "
+                        "VALUES (:t, :n, :e, :h)"
+                    ),
+                    {
+                        "t": team_id,
+                        "n": "Leo Mixed Case",
+                        "e": mixed_case_existing,
+                        "h": "$2b$12$irrelevant_for_oauth_only_path",
+                    },
+                )
+                row = (
+                    await conn.execute(
+                        text("SELECT id FROM users WHERE email = :e"),
+                        {"e": mixed_case_existing},
+                    )
+                ).one()
+                return str(row[0])  # type: ignore[no-any-return]
+        finally:
+            await engine.dispose()
+
+    existing_id = asyncio.run(_insert_mixed_case())
+
+    token = make_oauth_token(
+        scopes=["character:read"],
+        client_id="claude-code",
+        email="leo@omniguider.com",  # lowercase, as Google delivers
+    )
+    resp = client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    # The id is the canonical identity check — confirms we matched the
+    # existing mixed-case row and didn't auto-provision a new lowercase
+    # row alongside it. The response email string itself is normalized by
+    # pydantic's EmailStr validator (which lowercases the domain part but
+    # preserves local-part casing), so it isn't a useful identity assertion.
+    assert resp.json()["user"]["id"] == existing_id
+
+    # Exactly one row total — no duplicate inserted at the lowercase variant.
+    assert _count_users(database_url, mixed_case_existing) == 1
+    assert _count_users(database_url, "leo@omniguider.com") == 0
+
+
 def test_oauth_email_case_drift_does_not_create_duplicate_rows(
     client: TestClient,
     _preload_jwks_cache: JWKSCache,

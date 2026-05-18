@@ -12,7 +12,7 @@ from typing import Annotated, Any
 import jwt as pyjwt
 from fastapi import Depends, Header, Request
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import JWTExpired, JWTInvalid, verify_access_token
@@ -123,7 +123,18 @@ async def _resolve_oauth(
     # as case-insensitive; matching that behaviour is the safer default.
     email = claims.email.lower()
 
-    result = await db.execute(select(User).where(User.email == email))
+    # Case-insensitive lookup (Codex round-2 P2) — without it, an existing
+    # mixed-case row created via the `provision-operator` / `create-user`
+    # CLI (e.g. `--email Leo@Omniguider.com`) wouldn't match the lowercased
+    # OAuth claim, the miss-branch would run auto_provision, and the insert
+    # would succeed with the lowercase variant alongside the mixed-case
+    # original — silently splitting one operator across two rows. Comparing
+    # `LOWER(email)` against the already-lowercased token form matches
+    # whichever casing the existing row was stored with. Phase 1 has O(10)
+    # users so the seq-scan cost is irrelevant; a functional index on
+    # `lower(email)` is the right scale-out lever and lives in a schema
+    # migration outside T-071 scope.
+    result = await db.execute(select(User).where(func.lower(User.email) == email))
     user = result.scalar_one_or_none()
     if user is None:
         # Authentik knows the email but we don't have a CF User row yet.
