@@ -23,7 +23,8 @@
 
 ### CI guardrail 1 — Scope coverage check
 - Script：`api/scripts/check_scope_coverage.py`
-- 邏輯：解析 `app/routes/` 下所有 `@router.<method>(...)` decorator，斷言 handler signature 內有 `Depends(require_scope(...))`
+- 邏輯：解析 `api/app/api/routes/` 下所有 `@router.<method>(...)` decorator，斷言 handler signature 內有 `Depends(require_scope(...))`
+  > ⚠ 真實 route tree 在 `api/app/api/routes/`（不是 `api/app/routes/`）。實作 script 時必須以實際路徑為準，否則 scan 空樹仍會 exit 0、靜默禁用本 gate（Codex review #106 P1 抓到的失誤模式）
 - Whitelist（不需要 scope）：`/health`、`/v1/auth/*`、`/storage/*`、`/v1/meta`（per api-shape §5.9 + auth flow）
 - 缺漏 → exit 1，列出 file:line + missing endpoint
 - 走 `ruff` 或 `mypy` 不適合（這是 semantic check 不是 syntactic），獨立 script

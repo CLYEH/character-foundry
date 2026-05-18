@@ -28,7 +28,7 @@
   - 走 `app/auth/scopes.py` 的同一條 path 解 `Authorization: Bearer <token>` → JWT 或 OAuth → 拿 `(user, scopes, client_id)`
   - tool 宣告 `scopes=[...]` → MCP server 入口檢查 token 帶足 scope，不足 → MCP error
 - M2M（Client Credentials）token 與 delegation（Auth Code + PKCE）token 走同一條解析，差別只在 `user` 是 None vs 有值
-- Client_id 不在 `app/auth/mcp_clients.py` allowlist → MCP error（與 T-054 一致）
+- **Allowlist 強制只套 OAuth path**：OAuth token 的 `client_id` 不在 `app/auth/mcp_clients.py` allowlist → MCP error（與 T-054 一致）；**legacy JWT path（dual-stack 期間）不走 allowlist 檢查**——JWT 是既有人 session 的 bearer，沒有 `client_id` 概念，強行套 allowlist 會把 JWT 路徑整條鎖死，違反 T-054 dual-stack 並存的設計。等 JWT path 在 M3.5 ship 後完全移除，allowlist 才會是唯一 gate
 
 ### Smoke tool — `hello.world`
 - 純為驗證 transport / auth / progress 三件事正常運作
@@ -130,5 +130,5 @@ hello_world = MCPTool(
 - **為什麼 SDK 版本 pin 進 pyproject 而非 lock file**：lock file 會自動算最新解，但 PR #2038 是 minimum requirement——必須在 pyproject 層宣告下限，避免 lock 重生時掉到舊版
 - **smoke test 為什麼要真的收 progress notification**：PR #2038 fix 的就是 `related_request_id` 漏帶導致 notification 在 streamable HTTP 下走錯 stream，SDK 自家 unit test 是用 in-memory transport 跑的、不會 reproduce 真實多 client 場景。本單 smoke 用真 streamable HTTP TestClient 連線，確保 notification 真的抵達
 - **MCP error vs HTTP status**：MCP server 不回 HTTP 401 / 403——streamable HTTP 連線本身 200，是 inner JSON-RPC envelope 帶 `error` 物件。Auth 失敗時 server 回 MCP error，client 端 SDK 自己解析
-- **client_id 從哪來**：OAuth token claim 內帶 `client_id`；JWT path 是 user 自己的 session，`client_id = "internal-jwt"`（保留字串，不算進 allowlist 但 hello.world 不檢查）
+- **client_id 從哪來**：OAuth token claim 內帶 `client_id`，allowlist 對它強制；JWT path 是 user 自己的 session（沒有 `client_id` 概念），request context 內 `client_id = None`，allowlist 檢查直接 skip。M3.5 ship 後 JWT path 移除 → 全部 request 都有 `client_id` → allowlist 變成唯一 gate。本單 acceptance criteria「JWT token 呼 `hello.world` 回 200」就是這條 skip 行為的 spec lock-in（Codex review #106 P2 抓到 ticket 早期版本把這條寫得自相矛盾，已 reconcile）
 - **dual-stack 為什麼仍要支援 JWT**：M3.5b 期間 SPA 仍可能用 JWT 登入；MCP server 是 agent surface 但 dev 期間可能有人用 SPA 的 JWT token 呼 MCP 驗東西。完整移除 JWT path 是 M3.5 ship 後的 cleanup

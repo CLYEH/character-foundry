@@ -104,7 +104,7 @@ Wave B 第 3 張：把 motion 領域全部 MCP tool 落地。motion.generate 是
 
 - `api/app/mcp/tools/motion.py` (new) — 6 個 tool（1 packaged generate + 5 CRUD）
 - `api/app/mcp/schemas/motion.py` (new) — preset enum build-time 拉自 meta
-- `api/app/routes/motions.py` (edit) — 補 `require_scope`
+- `api/app/api/routes/motions.py` (edit) — 補 `require_scope`
 - `api/tests/mcp/tools/test_motion_generate.py` (new)
 - `api/tests/mcp/tools/test_motion_crud.py` (new)
 - `tickets/T-086-mcp-tool-motion-generate-and-crud.md` (new — 本單)

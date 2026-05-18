@@ -64,7 +64,7 @@
 - `planning/backend/oauth-mcp-integration.md` §3.3 加 reference：「packaging 判斷依本表」
 
 ### CI sanity check（optional，可在 T-081 落地時順便加進 lint）
-- script 解析 endpoint-mcp-mapping.md 內 markdown table，與 `app/routes/` 實際 endpoint 對照，缺漏 / 多列 → warn（非 hard fail，本單交付 doc 為主）
+- script 解析 endpoint-mcp-mapping.md 內 markdown table，與 `api/app/api/routes/` 實際 endpoint 對照，缺漏 / 多列 → warn（非 hard fail，本單交付 doc 為主）
 
 **Not in scope:**
 - 實作 packaging tool（T-084 / T-085 / T-086）
@@ -122,7 +122,7 @@
 
 - **為什麼是 doc 而非 code constant**：mapping 同時是 spec（給人讀）+ source of truth（給 Wave B ticket 抄 bundles）+ review reference（PR 時對照）。Code constant 重複 doc 內容、且 Wave B ticket 寫的時候沒有 code 可 import。先 doc 後 code 是對的順序
 - **為什麼 packaging 判斷不只看「≥2 endpoint」**：oauth-mcp-integration §3.3 的規則是 baseline，但有些 single-endpoint 場景 packaging 也合理（如 `motion.generate` 是 1 個 POST + task polling 是同一個 agent 心智單位）。表格 §2 的 reason 欄位寫清楚每個 packaging 決定的理由
-- **既有 endpoint 但未列入 api-shape.md §5 的怎麼處理**：grep `app/routes/` 對照 §5，若有 drift（implementation 多了 endpoint 但 spec 沒寫），本單只列入 mapping 並在 §6 標註「待 api-shape.md 補 spec」，不在本單修 spec
+- **既有 endpoint 但未列入 api-shape.md §5 的怎麼處理**：grep `api/app/api/routes/` 對照 §5，若有 drift（implementation 多了 endpoint 但 spec 沒寫），本單只列入 mapping 並在 §6 標註「待 api-shape.md 補 spec」，不在本單修 spec
 - **未來新 endpoint 怎麼維護本表**：CONTRIBUTING.md 或 `tickets/_TEMPLATE.md` 之後加一條「新增 endpoint 必同步 endpoint-mcp-mapping.md」，本單不改 template（避免 scope 擴散），由後續 process ticket 處理
 - **`/v1/auth/*` 為什麼整條黑名單**：OAuth flow 是 human / agent 各自處理（agent 走 client credentials，human 走 SPA），agent 不需要看 login flow；露 `/v1/auth/login` 給 agent 也沒意義（agent 不會 username/password）
 - **`character.export` 為什麼 packaging 而非 1:1**：export 是 trigger + 等 task + 拿 signed URL 三步，agent 一條 tool 包完所有交付。download 本身不進 MCP（signed URL agent 拿到後自己 fetch，per §4）

@@ -95,7 +95,7 @@ Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image 
 
 - `api/app/mcp/tools/alias.py` (new) — 5 個 tool（1 packaged add + 4 CRUD）
 - `api/app/mcp/schemas/alias.py` (new) — reuse `app/schemas/alias.py` MaskInput
-- `api/app/routes/aliases.py` (edit) — 補 `require_scope`
+- `api/app/api/routes/aliases.py` (edit) — 補 `require_scope`
 - `api/tests/mcp/tools/test_alias_add.py` (new)
 - `api/tests/mcp/tools/test_alias_crud.py` (new)
 - `tickets/T-085-mcp-tool-alias-add-and-crud.md` (new — 本單)
