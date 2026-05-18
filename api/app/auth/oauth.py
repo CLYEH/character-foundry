@@ -97,6 +97,12 @@ class OAuthClaims:
     client_id: str
     scopes: frozenset[str]
     email: str | None
+    # OIDC `name` claim (delivered when `profile` scope is granted). Surfaced
+    # for first-login auto-provisioning (T-071) so the backend `users.name`
+    # can mirror the operator's profile name instead of falling back to the
+    # email local part. `None` when the token has no `name` claim — M2M
+    # tokens always, delegated tokens whose mapping omits `profile`.
+    name: str | None
     # `is_m2m` is a best-effort signal — Authentik marks client_credentials
     # tokens with `sub == client_id` and no email claim. Downstream callers
     # (e.g. `get_current_user`) use it to decide whether to resolve a User
@@ -486,6 +492,10 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
     if email is not None and not isinstance(email, str):
         email = None
 
+    name = payload.get("name")
+    if name is not None and not isinstance(name, str):
+        name = None
+
     # M2M vs delegated is a property of the allowlist entry, not the token —
     # `get_allowed_scopes` returns `None` for delegated clients (consent-time
     # scope) and a frozenset for capped M2M clients. Reading allowlist policy
@@ -499,6 +509,7 @@ async def verify_oauth_token(token: str, *, cache: JWKSCache | None = None) -> O
         client_id=client_id,
         scopes=token_scopes,
         email=email,
+        name=name,
         is_m2m=is_m2m,
     )
 

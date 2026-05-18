@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -16,6 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import JWTExpired, JWTInvalid, verify_access_token
 from app.auth.oauth import OAuthClaims, is_authentik_token, verify_oauth_token
+from app.auth.provisioning import (
+    auto_provision_oauth_user,
+    is_email_allowed_for_auto_provision,
+)
 from app.auth.scopes import CANONICAL_SCOPES
 from app.core.errors import (
     auth_expired,
@@ -29,6 +34,8 @@ from app.models.user import User
 from app.prompt.reconciler import PromptReconciler, get_prompt_reconciler
 from app.storage.backend import StorageBackend
 from app.storage.local import LocalFilesystemBackend
+
+_logger = logging.getLogger(__name__)
 
 
 def get_storage() -> StorageBackend:
@@ -108,10 +115,31 @@ async def _resolve_oauth(
     result = await db.execute(select(User).where(User.email == claims.email))
     user = result.scalar_one_or_none()
     if user is None:
-        # Authentik knows the email but we don't have a CF User row — either
-        # the user hasn't completed first-login provisioning yet or the email
-        # was deleted on our side. Treat as invalid so we don't leak existence.
-        raise auth_invalid_token()
+        # Authentik knows the email but we don't have a CF User row yet.
+        # T-071: auto-provision the row on first login, gated on a
+        # backend domain allowlist (defense in depth — Authentik's own
+        # `hd=` gate is upstream, see `planning/devops/authentik-stack.md`
+        # §5.2 / §5.7.2). Unknown domains stay 401 so we don't leak
+        # existence of arbitrary verified Google identities into our DB.
+        domain = claims.email.rpartition("@")[2]
+        if not is_email_allowed_for_auto_provision(claims.email):
+            _logger.warning(
+                "oauth_auto_provision_denied",
+                extra={
+                    "email_domain": domain,
+                    "client_id": claims.client_id,
+                },
+            )
+            raise auth_invalid_token()
+        user = await auto_provision_oauth_user(email=claims.email, name=claims.name)
+        _logger.info(
+            "oauth_user_auto_provisioned",
+            extra={
+                "user_id": str(user.id),
+                "email_domain": domain,
+                "client_id": claims.client_id,
+            },
+        )
     return user.id
 
 
