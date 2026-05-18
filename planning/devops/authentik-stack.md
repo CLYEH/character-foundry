@@ -153,6 +153,7 @@ Authentik server 暴露在 nginx `/oauth/` 路徑（或 subdomain `auth.characte
 > **2026-05-14: operator persona pass retrofit (T-073)** — 補 §5.2 的 wall 3：source enrollment / authentication flow 完成後不 redirect 回 SPA，operator 首登 dead-end 在 `/if/user/`。
 > **2026-05-14: T-075** — 修 T-073 的 SPA URL 包錯一層（`?query=` vs plain `?next=`）；下面 SPA URL shape + 驗證步驟已是 T-075 修正後的版本。
 > **2026-05-15: T-076** — 修 wall 4：dev `:5173` 下 flow interface 的 bootstrap XHR 跨來源被 CORS 擋。修法是 `VITE_AUTHENTIK_AUTHORIZE_URL` 改**絕對**（指 Authentik 真實 origin），詳見下方「§5.2.1a」。CDP 已驗證 fresh-session Google 登入 end-to-end 走到 Dashboard。
+> **2026-05-18: T-074** — `next`-propagation 預設可被武器化成 open redirect（Authentik core `_flow_done` 信 `PLAN_CONTEXT_REDIRECT` 不驗 host）。修法是加一條 ExpressionPolicy 綁在 `cf-google-init` flow，plan time 檢查 `next` 是相對或同 host，否則拒。詳見下方「§5.2.1b」。
 
 SPA 的「使用 Google 登入」**不能**直接導到 Authentik 的 `/oauth/source/oauth/login/<slug>/?next=<authorize URL>`。Authentik 2024.12.5 的 OAuth `OAuthRedirect` view（`authentik/sources/oauth/views/redirect.py`）**靜默忽略 `?next=`** —— 它從不把 `next` 寫進 session。`next` 只有在 `SESSION_KEY_GET` 被填好時才會被 honor，而那個 key 只由 **flow executor 的 dispatch**（`authentik/flows/views/executor.py:179`）寫入，bare 的 OAuth source-init path 不會。所以 Google callback 回到 `SourceFlowManager._prepare_flow` 時 `SESSION_KEY_GET[next]` 是空的，`final_redirect` fallback 到 `authentik_core:if-user`（`/if/user/`）—— operator 卡在 Authentik user 頁。（SAML source 沒這問題，因為 `authentik/sources/saml/views.py:160` 有顯式寫 `SESSION_KEY_GET`；OAuth source path 沒有對等實作。）
 
@@ -227,6 +228,108 @@ flow / stage / binding 全部 codify 在 `infra/authentik/blueprints/cf-google-i
 **既有 dev `.env` 要手動更新：** `.env` 是 gitignored，每個 operator 自己一份。本單只改 committed 的 `.env.example`；既有 dev 環境要把自己 `.env` 的 `VITE_AUTHENTIK_AUTHORIZE_URL` 改成絕對，然後 `docker compose up -d web`（不是 `restart` —— `restart` 不重讀 `env_file`）。
 
 > **Verification：** CDP fresh-session 跑 `:5173/login` → 「使用 Google 登入」→ 全程在 `:80` 跑（CDP console 無 CORS error）→ Google → callback → `default-source-authentication` → authorize → token → **落在 SPA Dashboard（`:5173/`，heading 我的角色）**。T-076 已這樣驗過。
+
+### 5.2.1b `next` 必須 same-origin — 防 open redirect
+
+> **2026-05-18: T-074** — 補 §5.2.1 留下的 open-redirect 漏洞。
+
+§5.2.1 把 `next` 端到端串起來：SPA → cf-google-init flow → `SESSION_KEY_GET` → callback `_prepare_flow` → `PLAN_CONTEXT_REDIRECT` → `_flow_done()`。`_flow_done()` 看到 `PLAN_CONTEXT_REDIRECT` 就 `redirect()` 過去，**完全不驗 host**（`authentik/flows/views/executor.py:380-383` 有顯式 comment：「The context `redirect` variable can only be set by an expression policy or authentik itself, so we don't check if its an absolute URL or a relative one」）。
+
+→ `/oauth/if/flow/cf-google-init/?next=https://evil.com` 在使用者走完登入後，會被導到 `evil.com`。Evil.com 拿不到 code / token（OAuth `redirect_uri` 仍由 provider 那邊定），但仍是經典 open redirect（phishing landing、cookie 設定、瀏覽器層攻擊跳板等）。
+
+> ⚠ 同一漏洞存在於 **每一條 flow-executor URL**（`default-source-authentication` / `default-source-enrollment` / `default-authentication-flow` 都一樣），不只 `cf-google-init`。是 Authentik core 既有行為、T-073 沒引入也沒加劇。
+
+**修法 —— 在 `cf-google-init` flow 上綁一條 ExpressionPolicy（blueprint codified）：**
+
+`infra/authentik/blueprints/cf-google-init.yaml` 新增（三個物件）：
+
+1. **`authentik_policies_expression.expressionpolicy` `cf-google-init-next-validation`**：plan time 從 `http_request.session["authentik/flows/get"]` 讀 `next`，pure relative（無 scheme/netloc）OR 同 host（`urlparse(next).netloc.lower() == http_request.get_host().lower()`，case-insensitive per RFC 3986 §3.2.2）就放行，否則 `ak_message()` 拒。protocol-relative `//evil.com` / 反斜線變體 `/\evil.com` 在 urlparse 前 explicit-reject。**rejection 同時 `_deny()` 把 `SESSION_KEY_GET` 清空**（見「_flow_done fallback」）。
+2. **`authentik_flows.flowstagebinding` 改 attrs**：`evaluate_on_plan: true` + `re_evaluate_policies: true`，讓 stage 政策同時在 plan time 跑 + stage 執行前 re-evaluate（覆蓋 race，見下）。
+3. **兩條 `authentik_policies.policybinding`**：一條 target=flow（plan-time 主要路徑，rejection 觸發 `FlowNonApplicableException` → `handle_invalid_flow` 把 `ak_message` 顯示成 `ak-stage-access-denied`），一條 target=binding-redirect（race protection，rejection 移除 stage、session 已被 `_deny()` 清過所以 fallback 安全）。
+
+**為什麼需要 race protection（stage-level 再 evaluate）：** Authentik executor `dispatch()`（`/authentik/flows/views/executor.py:179`）**無條件** `request.session[SESSION_KEY_GET] = get_params`，在 `if not self.plan` 之前。一旦 plan 已在 session 緩存（第一次 hit 用 legit `next` 成功 plan），第二次 hit 用 evil `next` 會**只覆蓋 SESSION_KEY_GET、不重 plan**（policy 不重跑）；RedirectStage 用緩存 plan 走完，`_prepare_flow` 後 `PLAN_CONTEXT_REDIRECT` 被 baked 成新的 evil 值。**ReevaluateMarker** 是 close 這條 race 的機制：stage 即將執行前重跑 policy，新 SESSION_KEY_GET 被讀到、拒。同一個 session 連跑 hit 1（legit）→ hit 2（evil），hit 2 必被擋。
+
+**為什麼 `_deny()` 要清 SESSION_KEY_GET（不只是回 False）：** Policy 拒了之後 stage 被從 plan 拿掉、plan 空 → executor 直接呼 `_flow_done()`（executor.py:380-393）。`_flow_done` 有**自己一條 open-redirect surface**：若 `PLAN_CONTEXT_REDIRECT` 沒設，就讀 `SESSION_KEY_GET[next]` 然後 `redirect_with_qs(next)`，只要 `is_url_absolute()` 回 False。Authentik 的 `is_url_absolute` 只查 `bool(urlparse(url).netloc)`，所以：
+
+- `/\evil.com`：netloc 空 → False → emit `Location: /\evil.com` → 瀏覽器（Chrome/Firefox/IE）把 `\` 當 `/` 解析 → 跨 origin 到 evil.com
+- `javascript:alert(1)`：netloc 空 → False → `redirect_with_qs("javascript:alert(1)")` → Django `reverse("javascript:alert(1)")` 撞 `NoReverseMatch` → 500
+
+兩條都是 policy 本意要防的 bypass。`_deny()` 清掉 `SESSION_KEY_GET["next"]` 後，`_flow_done` 的 fallback 改讀 `""`，落到 hardcoded 預設 `authentik_core:root-redirect`（reverse 到 `/if/user/`），安全。
+
+**Trust invariants（policy 安全度依賴）：** `http_request.get_host()` 回的是 nginx 推上來的 `$host`（見 §2.1 的 `proxy_pass http://authentik_upstream;` + `proxy_set_header Host $host;`）。policy 同 host 檢查的有效性依賴：
+
+- **`ALLOWED_HOSTS` 在 prod 必須**顯式 pin 到 deployment domain（不能 `*`）。Django `get_host()` 會驗 `ALLOWED_HOSTS`，未 pin → 任意 Host header 都通過。
+- **nginx 必須 override（不是 append）進來的 `X-Forwarded-*` headers**。**今天已經做了** —— 見 `infra/nginx/nginx.conf` line 76-78 `proxy_set_header X-Forwarded-For $remote_addr; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host;`（`proxy_set_header` 是 replace 不是 append），跟註解 line 58-60 對齊。Authentik 預設 `USE_X_FORWARDED_HOST` 沒開、本 stack 沒設 `AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS`，所以 `get_host()` 走 `Host` header（nginx 已用 `$host` 覆蓋）—— 安全。**未來若改 nginx 改成 append-style（`$proxy_add_x_forwarded_for` 風格）或打開 Authentik trusted proxy + `USE_X_FORWARDED_HOST`**，attacker controlled `X-Forwarded-Host` 就能繞過這條 policy。Prod nginx config 動到 X-Forwarded-* 區塊時 trip 這條 review。
+- 這兩條任一被打破 → policy collapse 成形同虛設。Prod ship 前在 deploy checklist 驗證 `ALLOWED_HOSTS` 已 pin（X-Forwarded-* 那條已被 codified 在 nginx.conf）。
+
+`FlowPlanner.plan()` 評 flow-level policy 在 RedirectStage 之前；policy 拒就整個 plan 中止，operator 看 `ak-stage-access-denied` 含 `ak_message` 文字。SPA 正常路徑（`next` 是同 host 的 authorize URL，T-076 後絕對形式也是 `http://localhost/oauth/application/o/authorize/...`）不受影響。
+
+**為什麼只綁 `cf-google-init`、不綁 Authentik 內建 flow：** `cf-google-init` 是本專案 codify 的 launcher，binding 行為跟著它跑、blast radius 局限在 SPA 走的這條路徑。把 same-origin policy 推到 `default-source-authentication` / `default-source-enrollment` / `default-authentication-flow` 會改變 Authentik 內建 flow 對所有 future use case（多 IdP、admin 後台、其他 SPA）的行為，需要獨立 validation pass —— 留給 **T-079**（已開單，post-3.5a backlog）。攻擊者改打 `/oauth/if/flow/default-authentication-flow/?next=evil.com` 仍可命中漏洞，但 phishing 入口比這條 launcher 不顯眼，且不在 SPA 「使用 Google 登入」攻擊鏈上。
+
+**Verification：**
+
+```bash
+# 1) 正當 SPA 用法：相對 next → xak-flow-redirect（pass）
+curl -s 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3D%252Foauth%252Fapplication%252Fo%252Fauthorize%252F' \
+  -H 'Accept: application/json' | jq .component
+# 預期: "xak-flow-redirect"
+
+# 2) 同 host 絕對 URL（post-T-076 SPA 用法）→ xak-flow-redirect（pass）
+curl -s 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3Dhttp%253A%252F%252Flocalhost%252Foauth%252Fapplication%252Fo%252Fauthorize%252F' \
+  -H 'Accept: application/json' | jq .component
+# 預期: "xak-flow-redirect"
+
+# 3) 攻擊：跨 origin → ak-stage-access-denied（block）
+curl -s 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3Dhttps%253A%252F%252Fevil.com' \
+  -H 'Accept: application/json' | jq '{component, error_message}'
+# 預期: component=ak-stage-access-denied, error_message="Refusing next URL outside same origin: https://evil.com"
+
+# 4) 攻擊：protocol-relative → block
+curl -s 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3D%252F%252Fevil.com' \
+  -H 'Accept: application/json' | jq .component
+# 預期: "ak-stage-access-denied"
+
+# 5) 攻擊：反斜線變體 → block
+curl -s 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3D%252F%255Cevil.com' \
+  -H 'Accept: application/json' | jq .component
+# 預期: "ak-stage-access-denied"
+# （無防護則 _flow_done fallback 會 emit Location: /\evil.com，瀏覽器當 //evil.com 解）
+
+# 6) 攻擊：userinfo trick → block
+curl -s 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3Dhttp%253A%252F%252Flocalhost%2540evil.com%252Fpath' \
+  -H 'Accept: application/json' | jq .component
+# 預期: "ak-stage-access-denied"
+# （urlparse netloc='localhost@evil.com' != host 'localhost'，正確拒）
+
+# 7) 攻擊：javascript: scheme → block（且不會 500）
+curl -s 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3Djavascript%253Aalert%25281%2529' \
+  -H 'Accept: application/json' | jq .component
+# 預期: "ak-stage-access-denied"
+# （無防護則 _flow_done fallback redirect_with_qs 撞 NoReverseMatch 500）
+
+# 8) RACE：同一 session 連跑 legit → evil，evil 必被擋
+JAR=$(mktemp)
+curl -sc $JAR -b $JAR 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3D%252Foauth%252Fapplication%252Fo%252Fauthorize%252F' -H 'Accept: application/json' > /dev/null
+curl -sc $JAR -b $JAR 'http://localhost/oauth/api/v3/flows/executor/cf-google-init/?query=next%3Dhttps%253A%252F%252Fevil.com' -H 'Accept: application/json' | jq '{component, to}'
+rm -f $JAR
+# 預期: component="xak-flow-redirect", to="/oauth/" (session sanitised, 安全 fallback)
+# 注意：race path 故意 NOT 走 ak-stage-access-denied —— stage-binding rejection
+# 移除 stage 後走 _flow_done fallback，session 已被 _deny() 清過所以 fallback
+# 安全。完整解釋見 cf-google-init.yaml 的 dual-binding 註解。
+```
+
+Policy 物件直接看：
+
+```bash
+docker compose exec authentik-server ak shell -c \
+  "from authentik.policies.expression.models import ExpressionPolicy; \
+   from authentik.policies.models import PolicyBinding; \
+   from authentik.flows.models import Flow; \
+   f=Flow.objects.get(slug='cf-google-init'); \
+   bs=PolicyBinding.objects.filter(target=f); \
+   print('bindings:', bs.count(), [b.policy.name for b in bs])"
+# 預期: bindings: 1 ['cf-google-init-next-validation']
+```
 
 ### 5.3 定義 5 條 scope
 

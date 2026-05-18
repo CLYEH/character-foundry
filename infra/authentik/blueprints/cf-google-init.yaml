@@ -49,6 +49,40 @@
 # is still admin-UI / `ak shell` managed (§5.2 / §5.7); codifying it as a
 # blueprint needs GOOGLE_OAUTH_* plumbed into the Authentik container
 # env, deliberately left out of T-073 to keep this change surgical.
+#
+# ── T-074: `next` validation policy ─────────────────────────────────
+# The `next` query param we propagate end-to-end is, by Authentik core
+# design, an open redirect. authentik/flows/views/executor.py:380-383
+# `_flow_done()` honours `PLAN_CONTEXT_REDIRECT` without calling
+# `is_url_absolute()` — the explicit comment is "The context `redirect`
+# variable can only be set by an expression policy or authentik itself,
+# so we don't check if its an absolute URL or a relative one." But the
+# OAuth source path *does* let outside input reach there: the flow
+# executor writes `SESSION_KEY_GET={next: ...}` from the
+# attacker-controlled `?query=` (executor.py:179), the OAuth callback's
+# `SourceFlowManager._prepare_flow` bakes that `next` into
+# `PLAN_CONTEXT_REDIRECT`, and `_flow_done()` then `redirect()`s to it
+# verbatim. Without this policy, hitting
+# `/oauth/if/flow/cf-google-init/?next=https://evil.com` after a Google
+# login lands the operator on evil.com (no code/token leak, but classic
+# open redirect — phishing pivot).
+#
+# Mitigation: an ExpressionPolicy bound at the flow level (evaluated by
+# FlowPlanner.plan() before the RedirectStage runs) that reads the same
+# SESSION_KEY_GET[`next`] the OAuth path will later consume and rejects
+# the plan when `next` is neither relative nor same-host. SPA path is
+# unaffected: `next` is always the Authentik authorize URL on the
+# current host (see planning/devops/authentik-stack.md §5.2.1a — even
+# the dev `:5173` SPA navigates to the `:80` Authentik origin first).
+#
+# Scope: this binding is on `cf-google-init` only. The same
+# vulnerability exists on every flow-executor URL (default-source-
+# authentication, default-source-enrollment, default-authentication-
+# flow) — see T-074 ticket "Not in scope" + planning/devops/authentik-
+# stack.md §5.2.1's note. Extending the binding to those flows is
+# deferred: they're Authentik built-ins, and shipping a same-origin
+# policy onto them is a wider blast radius (any auth flow stops
+# honouring cross-origin `next`) that needs its own validation pass.
 
 version: 1
 metadata:
@@ -84,8 +118,193 @@ entries:
       target_static: /oauth/source/oauth/login/google/
       keep_context: true
 
+  # FlowStageBinding declared with an `id:` so the PolicyBinding below
+  # can `!KeyOf` it. `evaluate_on_plan: true` makes plan-time policy
+  # evaluation run for this binding (rejects early — flow plan never
+  # builds); `re_evaluate_policies: true` then attaches a
+  # `ReevaluateMarker` so the policy ALSO re-runs when the stage is
+  # about to execute (authentik/flows/markers.py:35-71). Both gates are
+  # needed: see the T-074 race comment below the policy entry.
   - model: authentik_flows.flowstagebinding
+    id: binding-redirect
     identifiers:
       target: !KeyOf flow
       stage: !KeyOf redirect-stage
       order: 0
+    attrs:
+      evaluate_on_plan: true
+      re_evaluate_policies: true
+
+  # ── T-074: `next` must be relative or same-host ───────────────────
+  # Reads the same `SESSION_KEY_GET[next]` ("authentik/flows/get"; see
+  # authentik/flows/views/executor.py:69,179) that the OAuth source
+  # callback will later turn into `PLAN_CONTEXT_REDIRECT`. `urlparse`
+  # is imported inline because Authentik's expression evaluator
+  # globals (authentik/lib/expression/evaluator.py BaseEvaluator
+  # ._globals) only expose `re`/`regex_match`/`ip_address` — no urllib
+  # helpers.
+  #
+  # Validation rules (in order):
+  #   1. No `next` set → pass (legitimate first-hit, no propagation).
+  #   2. SESSION_KEY_GET is not a dict-like → fail-closed (return
+  #      False, ak_message). Today executor.py writes a QueryDict
+  #      which subclasses dict, so this branch is defensive; if a
+  #      future Authentik stores something exotic, we reject rather
+  #      than silently let `next` propagate unchecked.
+  #   3. Protocol-relative / backslash variants (`//evil.com`,
+  #      `/\evil.com`, `\\evil.com`, `\/evil.com`) → reject before
+  #      `urlparse`. urlparse handles `//host` consistently but the
+  #      backslash variants are historically browser-quirky.
+  #   4. No scheme AND no netloc → relative path, can't escape origin
+  #      via Django's `redirect()` / `HttpResponseRedirect` (both
+  #      resolve relative to the current request's Host).
+  #   5. Scheme/netloc present → netloc must equal request Host
+  #      (case-insensitive per RFC 3986 §3.2.2). `request.get_host()`
+  #      validates against Django `ALLOWED_HOSTS` and (since nginx
+  #      doesn't strip incoming `X-Forwarded-Host` AND Authentik
+  #      doesn't have `USE_X_FORWARDED_HOST` enabled) returns the
+  #      nginx `$host` value (see planning/devops/authentik-stack.md
+  #      §2.1 + §5.2.1b for the trust invariants). Same-host check is
+  #      therefore meaningful as long as `ALLOWED_HOSTS` is pinned in
+  #      prod — required deployment invariant.
+  #   6. Anything else → reject + `ak_message()` for operator-visible
+  #      explanation in Authentik's `ak-stage-access-denied` page.
+  #
+  # ⚠ T-074 race — why this MUST also be re-evaluated at stage time:
+  # executor.py:179 `request.session[SESSION_KEY_GET] = get_params`
+  # runs UNCONDITIONALLY before the `if not self.plan` guard
+  # (executor.py:181). An attacker who can land a victim on
+  # `?next=/legit` (plan caches, policy passes), then a second hit
+  # with `?next=evil.com` overwrites SESSION_KEY_GET without rebuilding
+  # the plan — without re-evaluation, the cached plan walks straight
+  # through the RedirectStage and `_prepare_flow` later bakes the new
+  # evil `next` into `PLAN_CONTEXT_REDIRECT`. The ReevaluateMarker on
+  # binding-redirect (see flowstagebinding above) is what closes this:
+  # the second hit re-evaluates THIS policy against the overwritten
+  # SESSION_KEY_GET and removes the stage from the plan. Empirically
+  # reproduced + regression-verified during T-074 dev.
+  #
+  # ⚠ T-074 _flow_done fallback — why `_deny()` SANITIZES the session:
+  # When this policy removes the only stage from the plan, executor.py
+  # falls through to `_flow_done()` (executor.py:380-393), which has
+  # its OWN open-redirect surface: if `PLAN_CONTEXT_REDIRECT` isn't
+  # set, it reads `SESSION_KEY_GET[next]` and `redirect_with_qs(...)`
+  # to it as long as `is_url_absolute()` is False. Authentik's
+  # `is_url_absolute()` checks ONLY `bool(urlparse(url).netloc)`, so
+  # `/\evil.com` (netloc empty) passes through as "relative" and a
+  # browser navigation to `Location: /\evil.com` is interpreted by
+  # Chrome/Firefox/IE as `//evil.com` → cross-origin. And
+  # `javascript:alert(1)` (also netloc empty) hits `redirect_with_qs`
+  # which tries to `reverse("javascript:alert(1)")` and 500s. Both are
+  # bypasses of THIS policy's intent. The defence is: when we reject,
+  # also clear the bad `next` from session so `_flow_done`'s fallback
+  # branch reads "" and uses its hardcoded default
+  # ("authentik_core:root-redirect"), which `reverse()`s to /if/user/
+  # — same destination as if no `next` had been sent. Empirically
+  # reproduced + regression-verified during T-074 dev.
+  - model: authentik_policies_expression.expressionpolicy
+    id: next-validation-policy
+    identifiers:
+      name: cf-google-init-next-validation
+    attrs:
+      execution_logging: false
+      expression: |
+        from urllib.parse import urlparse
+
+        def _deny(msg):
+            # Reject + scrub SESSION_KEY_GET so `_flow_done()`'s
+            # fallback redirect can't replay the bad `next`. See the
+            # "_flow_done fallback" comment block above the policy.
+            ak_message(msg)
+            http_request.session["authentik/flows/get"] = {}
+            http_request.session.modified = True
+            return False
+
+        session_get = http_request.session.get("authentik/flows/get") or {}
+        if not isinstance(session_get, dict):
+            return _deny("Refusing: unexpected SESSION_KEY_GET type")
+        next_url = session_get.get("next", "")
+        if not next_url:
+            return True
+
+        # Protocol-relative + backslash variants — explicit-reject before parse.
+        if next_url[:2] in ("//", "/\\", "\\\\", "\\/"):
+            return _deny("Refusing protocol-relative next URL: " + next_url[:80])
+
+        # urlparse() doesn't raise on string input — it returns an empty
+        # parsed result for malformed strings. If `next_url` were ever a
+        # non-string (defensive only; the `if not next_url` guard above
+        # already requires truthy str), urlparse would TypeError and the
+        # binding's `failure_result: false` would fail-closed. No bare
+        # except wrapper here — it'd swallow debug signal for the
+        # one path that should never reach this line.
+        parsed = urlparse(next_url)
+
+        # Relative path (no scheme, no netloc) is safe.
+        if not parsed.scheme and not parsed.netloc:
+            return True
+
+        # Absolute URL — netloc must match the host Authentik is
+        # currently being requested under. Host comparison is
+        # case-insensitive (RFC 3986 §3.2.2) — a future client that
+        # uppercases would otherwise mysteriously break.
+        if parsed.netloc.lower() == http_request.get_host().lower():
+            return True
+
+        return _deny("Refusing next URL outside same origin: " + next_url[:80])
+
+  # Bind the policy at TWO levels — both are necessary:
+  #
+  # (a) Flow level (target=flow). FlowPlanner.plan() evaluates this
+  #     before building the plan. Rejection raises
+  #     `FlowNonApplicableException` (planner.py:255-280) which
+  #     `handle_invalid_flow` renders as `ak-stage-access-denied`
+  #     WITH the `ak_message` text. This is the first-request /
+  #     fresh-session attack path and gives operators a clear,
+  #     attributable rejection page.
+  #
+  # (b) FlowStageBinding level (target=binding-redirect). Catches the
+  #     T-074 same-session race: a cached plan + overwritten
+  #     SESSION_KEY_GET would NEVER re-evaluate the flow-level policy
+  #     (executor.py:181-183 skips `_initiate_plan()` when a plan is
+  #     cached). The `re_evaluate_policies=true` flag on the
+  #     FlowStageBinding above attaches a `ReevaluateMarker` that
+  #     re-runs THIS policy each time the stage is about to execute
+  #     (markers.py:35-71). Rejection at this level removes the stage
+  #     from the plan; the policy's `_deny()` ALSO sanitizes
+  #     SESSION_KEY_GET so the resulting empty-plan `_flow_done()`
+  #     fallback (executor.py:388-393) reads "" and uses its
+  #     hardcoded `authentik_core:root-redirect` default. The user
+  #     sees a safe bounce to `/oauth/` rather than the per-message
+  #     rejection page — that's the trade for race protection. The
+  #     race is itself an attacker-orchestrated multi-hit scenario;
+  #     primary single-hit UX still goes through (a).
+  #
+  # PolicyBinding.unique_together = (policy, target, order). See memory
+  # `authentik-blueprint-2024-12-gotchas` PolicyBinding gotcha: target
+  # + order in identifiers, everything else in attrs.
+  #
+  # `failure_result: false` is *only* consulted on PolicyException
+  # (authentik/policies/process.py — try/except around the evaluator).
+  # The expression's explicit `return False` paths are honoured directly
+  # by `PolicyEngine`. Setting it to false means: if the expression
+  # itself raises (e.g. KeyError on http_request, ImportError on
+  # urlparse), treat as deny — fail-closed.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf flow
+      order: 0
+    attrs:
+      policy: !KeyOf next-validation-policy
+      enabled: true
+      negate: false
+      failure_result: false
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf binding-redirect
+      order: 0
+    attrs:
+      policy: !KeyOf next-validation-policy
+      enabled: true
+      negate: false
+      failure_result: false
