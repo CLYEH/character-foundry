@@ -97,7 +97,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 ## Acceptance criteria
 
 - [ ] `character.create` packaged tool 註冊進 registry，bundles 與 T-083 §2 表完全一致
-- [ ] 全部 11 條 CRUD 1:1 tool 註冊進 registry
+- [ ] 全部 10 條 CRUD 1:1 tool 註冊進 registry（`list` / `get` / `get_manifest` / `rename` / `delete` / `restore` / `copy` / `fork` / `get_session` / `abandon_session`）
 - [ ] 每個 tool 的 `scopes` 通過 T-081 CI guardrail 2（⊆ union of bundle endpoint scopes）
 - [ ] `character.create` template mode + reference mode 各自一條 e2e test 綠（含 progress notification 驗證）
 - [ ] 失敗 path test 綠（checkpoint 失敗、reference upload 失敗、abandon 被呼）
@@ -109,7 +109,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## Files expected to touch
 
-- `api/app/mcp/tools/character.py` (new) — 13 個 tool（1 packaged create + 1 packaged export + 11 CRUD）
+- `api/app/mcp/tools/character.py` (new) — 12 個 tool（1 packaged create + 1 packaged export + 10 CRUD 1:1）
 - `api/app/mcp/schemas/character.py` (new) — input / output pydantic schema
 - `api/app/api/routes/characters.py` (edit) — 補 `require_scope` decorator（若 T-054 後續未套）
 - `api/app/api/routes/creation_sessions.py` (edit) — 同上
@@ -151,7 +151,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## MCP tool delta
 
-**新 tool（13 條）：**
+**新 tool（12 條 = 2 packaged + 10 CRUD 1:1）：**
 
 | Name | Type | Bundles | Scopes |
 |---|---|---|---|
