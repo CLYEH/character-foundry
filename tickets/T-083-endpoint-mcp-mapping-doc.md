@@ -59,6 +59,17 @@
 ### Decision log
 - 文件末段 §6「待決」清單若有：枚舉過程遇到無法判定的 endpoint（例：未來新增的 webhook 訂閱），列出來 ping 使用者 → 鎖入主表
 
+### M3.5b vs M4 切分（必寫進 §2 table 與 §4）
+
+每個 endpoint entry 必須額外標 `M3 status`（implemented in current backend route tree / **deferred to M4**），並對應 `MCP tool ticket`（T-084 / T-085 / T-086 / **M4-future**）。**M4 endpoints**（per `scope.md §1`「M3.5 不含 ZIP 下載 / Copy / Usage」+ `STATUS.md` Sprint 4 規劃）：
+- `GET /v1/characters/{id}/manifest`
+- `POST /v1/characters/{id}/copy`
+- `GET /v1/characters/{id}/export`
+- `GET /v1/exports/{id}/download`（額外 blacklisted from MCP per Q9）
+- `GET /v1/usage/me`
+
+這些 endpoint **不進 M3.5b MCP tool 範圍**（即使 api-shape.md §5 spec'd），由 M4 ticket 從 day 1 帶 scope decorator + MCP tool 條目（per scope.md §1 段尾）。Codex review #106 round-5 P1 抓到 T-084 早期版本誤包這 3 條 character endpoint，本單 mapping doc 必須避免後人再踩同坑。
+
 ### 與既有 doc 的雙向 link
 - `planning/backend/api-shape.md` §5 開頭加一行：`> Agent 視角的 endpoint → MCP tool 對應見 ../agent-interface/endpoint-mcp-mapping.md`
 - `planning/backend/oauth-mcp-integration.md` §3.3 加 reference：「packaging 判斷依本表」

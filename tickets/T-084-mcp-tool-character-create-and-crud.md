@@ -42,17 +42,15 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
   - Reference image 上傳失敗 → 已建 session 不會 leak，回 MCP error 同時呼 abandon-session（reuse 既有 endpoint）
 
 ### CRUD 1:1 wraps（同 ticket 一起出，share namespace）
+
+僅包現存 REST endpoint（M3 已實作的範圍），per `scope.md §1`「M3.5 不含 ZIP 下載 / Copy / Usage」。被排除的 M4 tools（`character.get_manifest` / `character.copy` / `character.export`）見下方 Not in scope，由 M4 ticket 從 day 1 帶 MCP 條目。
+
 - `character.list`：wraps `GET /v1/characters`，scope `character:read`
 - `character.get`：wraps `GET /v1/characters/{id}`，scope `character:read`
-- `character.get_manifest`：wraps `GET /v1/characters/{id}/manifest`，scope `character:read`
 - `character.rename`：wraps `PATCH /v1/characters/{id}`，scope `character:write`
 - `character.delete`：wraps `DELETE /v1/characters/{id}`（soft delete），scope `character:write`
 - `character.restore`：wraps `POST /v1/characters/{id}/restore`，scope `character:write`
 - `character.fork`：wraps `POST /v1/checkpoints/{id}/fork`，scope `character:write`
-- `character.copy`：wraps `POST /v1/characters/{id}/copy`（async），scope `character:write` + `task:read`
-  - 同 packaged：阻塞 + progress notification（copy 是長任務）
-- `character.export`（packaged，2 endpoints）：wraps `GET /v1/characters/{id}/export` + 等 task 完成 → 回 signed URL（不含 download，agent 拿 URL 自己抓）
-  - Scope `character:write` + `task:read`
 - `character.get_session`：wraps `GET /v1/creation-sessions/{id}`，scope `character:read`（debug / resume 用）
 - `character.abandon_session`：wraps `POST /v1/creation-sessions/{id}/abandon`，scope `character:write`
 
@@ -71,16 +69,14 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
   - checkpoint generation 失敗 → MCP error 含 phase=`running_checkpoint` + underlying AgentError
   - reference image 上傳失敗 → abandon session 被呼、無 leak
 - `api/tests/mcp/tools/test_character_crud.py`：
-  - 每個 CRUD tool 一條 happy path test
+  - 每個 CRUD tool 一條 happy path test（8 條）
   - scope 不足 → MCP error
-- `api/tests/mcp/tools/test_character_export.py`：
-  - 阻塞 + progress → 回 signed URL
-  - URL TTL 與既有 storage signed URL 一致（7d）
 
 **Not in scope:**
 - alias / motion tool（T-085 / T-086）
 - Last-Event-ID resumability（T-087；本單實作 progress notification 但不處理斷線重連）
 - 改 REST endpoint contract（純包裝既有 endpoint）
+- **M4 endpoints — `character.get_manifest` / `character.copy` / `character.export`（含 `character.export` 原本規劃的 packaging）**：對應 REST endpoint（`GET /v1/characters/{id}/manifest` / `POST /v1/characters/{id}/copy` / `GET /v1/characters/{id}/export`）皆未實作，per `STATUS.md` Sprint 4 規劃 + `planning/agent-interface/scope.md §1`「M3.5 不含 ZIP 下載 / Copy / Usage」。M4 ticket 從 day 1 帶 scope decorator + MCP tool 條目（per scope.md §1 段尾）。Codex review #106 round-5 抓到本單原版包了這三個 endpoint，違反「純包裝既有 endpoint」原則，已 reconcile
 
 ---
 
@@ -97,7 +93,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 ## Acceptance criteria
 
 - [ ] `character.create` packaged tool 註冊進 registry，bundles 與 T-083 §2 表完全一致
-- [ ] 全部 10 條 CRUD 1:1 tool 註冊進 registry（`list` / `get` / `get_manifest` / `rename` / `delete` / `restore` / `copy` / `fork` / `get_session` / `abandon_session`）
+- [ ] 全部 8 條 CRUD 1:1 tool 註冊進 registry（`list` / `get` / `rename` / `delete` / `restore` / `fork` / `get_session` / `abandon_session`；M4-deferred 的 `get_manifest` / `copy` / `export` 不在本單）
 - [ ] 每個 tool 的 `scopes` 通過 T-081 CI guardrail 2（⊆ union of bundle endpoint scopes）
 - [ ] `character.create` template mode + reference mode 各自一條 e2e test 綠（含 progress notification 驗證）
 - [ ] 失敗 path test 綠（checkpoint 失敗、reference upload 失敗、abandon 被呼）
@@ -109,7 +105,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## Files expected to touch
 
-- `api/app/mcp/tools/character.py` (new) — 12 個 tool（1 packaged create + 1 packaged export + 10 CRUD 1:1）
+- `api/app/mcp/tools/character.py` (new) — 9 個 tool（1 packaged create + 8 CRUD 1:1；M4-deferred 的 manifest/copy/export 不在本單）
 - `api/app/mcp/schemas/character.py` (new) — input / output pydantic schema
 - `api/app/api/routes/characters.py` (edit) — 補 `require_scope` decorator（若 T-054 後續未套）
 - `api/app/api/routes/creation_sessions.py` (edit) — 同上
@@ -117,7 +113,6 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 - `api/tests/mcp/tools/__init__.py` (new)
 - `api/tests/mcp/tools/test_character_create.py` (new)
 - `api/tests/mcp/tools/test_character_crud.py` (new)
-- `api/tests/mcp/tools/test_character_export.py` (new)
 - `tickets/T-084-mcp-tool-character-create-and-crud.md` (new — 本單)
 - `STATUS.md` (edit)
 
@@ -132,12 +127,9 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 | `GET /v1/characters` | `character:read` |
 | `POST /v1/characters` | `character:write` |
 | `GET /v1/characters/{id}` | `character:read` |
-| `GET /v1/characters/{id}/manifest` | `character:read` |
 | `PATCH /v1/characters/{id}` | `character:write` |
 | `DELETE /v1/characters/{id}` | `character:write` |
 | `POST /v1/characters/{id}/restore` | `character:write` |
-| `POST /v1/characters/{id}/copy` | `character:write` + `task:read` |
-| `GET /v1/characters/{id}/export` | `character:write` + `task:read` |
 | `POST /v1/checkpoints/{id}/fork` | `character:write` |
 | `GET /v1/creation-sessions/{id}` | `character:read` |
 | `POST /v1/creation-sessions/{id}/checkpoints` | `character:write` + `task:read` |
@@ -145,25 +137,24 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 | `POST /v1/creation-sessions/{id}/select-base` | `character:write` |
 | `POST /v1/creation-sessions/{id}/abandon` | `character:write` |
 
+> ⚠ M4 endpoints（`/v1/characters/{id}/manifest` / `/v1/characters/{id}/copy` / `/v1/characters/{id}/export`）**未實作**，由 M4 ticket 從 day 1 帶 scope decorator + MCP tool 條目（per scope.md §1）
+
 決策出處：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 
 ---
 
 ## MCP tool delta
 
-**新 tool（12 條 = 2 packaged + 10 CRUD 1:1）：**
+**新 tool（9 條 = 1 packaged + 8 CRUD 1:1）：**
 
 | Name | Type | Bundles | Scopes |
 |---|---|---|---|
 | `character.create` | packaged | 4 endpoints（session bootstrap） | `character:write` + `task:read` |
 | `character.list` | 1:1 | `GET /v1/characters` | `character:read` |
 | `character.get` | 1:1 | `GET /v1/characters/{id}` | `character:read` |
-| `character.get_manifest` | 1:1 | `GET /v1/characters/{id}/manifest` | `character:read` |
 | `character.rename` | 1:1 | `PATCH /v1/characters/{id}` | `character:write` |
 | `character.delete` | 1:1 | `DELETE /v1/characters/{id}` | `character:write` |
 | `character.restore` | 1:1 | `POST /v1/characters/{id}/restore` | `character:write` |
-| `character.copy` | 1:1（async） | `POST /v1/characters/{id}/copy` | `character:write` + `task:read` |
-| `character.export` | packaged | `GET /v1/characters/{id}/export` + task wait | `character:write` + `task:read` |
 | `character.fork` | 1:1 | `POST /v1/checkpoints/{id}/fork` | `character:write` |
 | `character.get_session` | 1:1 | `GET /v1/creation-sessions/{id}` | `character:read` |
 | `character.abandon_session` | 1:1 | `POST /v1/creation-sessions/{id}/abandon` | `character:write` |
@@ -179,8 +170,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
   - (a) **作為 `character.create` packaged tool 的內部 bundled step（本單範圍）**：建 session → 跑 1 次 checkpoint → select-base，agent 看到的是單一 tool call。當 `checkpoint_count > 1` 時 tool 內部迴圈呼此 endpoint
   - (b) **作為獨立 1:1 MCP tool**（如 `character.add_checkpoint`）：**本單不開**，避免 scope 爆。Agent 要多 checkpoint 一律走 (a) 的 `checkpoint_count` 參數，或自己拿 token 直打 REST endpoint。未來若 agent reveal「想對既有 session 補打 checkpoint 而不重啟整套 packaging」的需求，再另開 ticket 加 1:1 tool
   - 兩個用法並不矛盾：endpoint 在 REST 層永遠存在 + 套 `require_scope`；MCP 層只在 packaging 內呼，不另暴露為 standalone tool（Codex review #106 round-3 P2 抓到本段原文「沒進 packaged tool」與 §Bundles 列「is in packaged」字面矛盾，已 reconcile）
-- **progress notification 的 phase 字串約定**：所有 packaged tool 用同一組（`creating_session` / `uploading_references` / `running_checkpoint` / `selecting_base` / `exporting` / `copying`），agent 端可用 phase 來顯示給人看
+- **progress notification 的 phase 字串約定**：所有 packaged tool 用同一組（`creating_session` / `uploading_references` / `running_checkpoint` / `selecting_base`）。M4 加入 export / copy 時延伸 `exporting` / `copying`
 - **失敗 abandon 為什麼是本單而非 REST 層的事**：MCP tool 是「一件事」原子單位，失敗 cleanup 由 tool 內部處理；REST 端有 `POST /v1/creation-sessions/{id}/abandon` 可用，tool 失敗時呼即可，不必改 REST contract
 - **CRUD 不另開 `character.list_aliases`**：alias list 屬於 alias 領域，由 T-085 提供 `alias.list`（per character_id 過濾）
-- **`character.copy` 為什麼是 1:1 而非 packaged**：copy 只有 1 個 endpoint（copy 內部會做 base + aliases 複製，但 agent 視角是一個 trigger + 等結果）；packaging 的判準是「agent 需要連呼 ≥2 endpoint」，copy 不符合
-- **export signed URL 7d 與 OAuth token 1h 不同步**：per auth Q6 / agent-interface Q6 已決，signed URL 與 OAuth 解耦；本單照辦
+- **為什麼 M4-deferred 的 manifest / copy / export 不寫進本單「先包好等 REST 來」**：planning ticket 必須對應 implementable scope；REST 不存在就包 wrapper 等於 CI 永遠 fail（T-081 guardrail 1 scope coverage 會抓不到不存在 endpoint），純包裝原則被破壞。M4 ticket 從 day 1 就會帶 scope decorator + MCP tool 條目（per scope.md §1），M3.5b 不必預埋（Codex review #106 round-5 P1 抓到本單原版包了 3 個未實作 endpoint，已 reconcile）

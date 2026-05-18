@@ -174,7 +174,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | T-081 | MCP tool registry + 3 條 CI guardrails（scope coverage / tool scope consistency / allowlist consistency）| TODO |
 | T-082 | nginx `/mcp` proxy + `proxy_read_timeout ≥ 180s`（streamable HTTP SSE 不被剪斷）| TODO |
 | T-083 | api-shape §5 endpoint MCP review（whitelist / blacklist / packaging map，輸出 `planning/agent-interface/endpoint-mcp-mapping.md`）| TODO |
-| T-084 | MCP tool `character.create`（packaged）+ character CRUD 1:1 wraps（12 個 tool = 2 packaged + 10 CRUD）| TODO |
+| T-084 | MCP tool `character.create`（packaged）+ character CRUD 1:1 wraps（9 個 tool = 1 packaged + 8 CRUD；M4-deferred 的 manifest / copy / export 不在本單，由 M4 ticket 從 day 1 帶）| TODO |
 | T-085 | MCP tool `alias.add`（packaged）+ alias CRUD 1:1 wraps（5 個 tool）| TODO |
 | T-086 | MCP tool `motion.generate`（packaged, polymorphic）+ motion CRUD 1:1 wraps（6 個 tool）| TODO |
 | T-087 | MCP streamable HTTP `Last-Event-ID` resumability（i2v 長 task 斷線重連）| TODO |
