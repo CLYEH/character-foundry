@@ -3,7 +3,7 @@
 **Status:** TODO
 **Sprint:** 3.5b
 **Est:** S
-**Depends on:** none（與 T-080 / T-082 / T-083 並行；本單只交付 registry pattern + CI script，不依賴 MCP server 已 mount）
+**Depends on:** **T-080**（for `hello.world` migration step only — registry pattern + CI script 開發階段可與 T-080 / T-082 / T-083 純並行；最後把 T-080 落地的 `app/mcp/tools/hello.py` 改成走 registry 的 migration commit 必須等 T-080 merge 才能合進來。**Wave A 並行性僅微幅受影響**：本單與 T-082 / T-083 仍可全並行，只與 T-080 在「migration commit」這條晚一步耦合）
 **Related:** T-080（registry 由 MCP server 使用）、T-084 / T-085 / T-086（每張新 tool 都吃 registry pattern）、T-053（`mcp_clients.py` 已存在）
 
 ---
@@ -19,7 +19,8 @@
   - `MCPTool` dataclass：`name` (str) / `description` (str) / `scopes` (list[str]) / `bundles` (list[str]) / `input_schema` (pydantic BaseModel) / `output_schema` (pydantic BaseModel) / `handler` (callable)
   - module-level `REGISTRY: dict[str, MCPTool]` + `register(tool: MCPTool)` helper
   - import-time discovery：`app/mcp/tools/` 下的每個 module 自動 import 並 register
-- `app/mcp/tools/__init__.py`：list 所有 namespace module（character / alias / motion / hello），T-080 的 `hello.world` 改成走 registry 註冊（本單一併 migrate）
+- `app/mcp/tools/__init__.py`：list 所有 namespace module（character / alias / motion / hello）
+- **`hello.world` migration**：T-080 落地時用獨立 register call 即可（無 registry），本單 land 後追加一個 migration commit 把 `app/mcp/tools/hello.py` 改成 `register(MCPTool(...))` —— 這條 commit 等 T-080 merge 才能合進（per Depends-on 段註解）。本單 PR 不阻塞於 T-080，但 migration commit 是 follow-up
 
 ### CI guardrail 1 — Scope coverage check
 - Script：`api/scripts/check_scope_coverage.py`

@@ -175,7 +175,10 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 ## Notes
 
 - **為什麼 packaged `character.create` 是 4 個 endpoint 而非 3**：reference mode 才會呼 reference-images endpoint，template mode 跳過。Tool 內部分支，agent 不感知
-- **`checkpoint_count` 為什麼 default 1**：agent 場景多數一發即用；UI 場景（生 3-5 個讓人挑）是 human 行為。Agent 要多 checkpoint 自己加迴圈呼 `POST /v1/creation-sessions/{id}/checkpoints`（這個 endpoint 沒進 packaged tool 但走 CRUD 模式可考慮另開 `character.add_checkpoint` 1:1，本單先不開避免 scope 爆）
+- **`checkpoint_count` 為什麼 default 1**：agent 場景多數一發即用；UI 場景（生 3-5 個讓人挑）是 human 行為。Agent 要多 checkpoint 時自己加迴圈直接呼 REST endpoint `POST /v1/creation-sessions/{id}/checkpoints`。**Endpoint 本身有兩個用法**：
+  - (a) **作為 `character.create` packaged tool 的內部 bundled step（本單範圍）**：建 session → 跑 1 次 checkpoint → select-base，agent 看到的是單一 tool call。當 `checkpoint_count > 1` 時 tool 內部迴圈呼此 endpoint
+  - (b) **作為獨立 1:1 MCP tool**（如 `character.add_checkpoint`）：**本單不開**，避免 scope 爆。Agent 要多 checkpoint 一律走 (a) 的 `checkpoint_count` 參數，或自己拿 token 直打 REST endpoint。未來若 agent reveal「想對既有 session 補打 checkpoint 而不重啟整套 packaging」的需求，再另開 ticket 加 1:1 tool
+  - 兩個用法並不矛盾：endpoint 在 REST 層永遠存在 + 套 `require_scope`；MCP 層只在 packaging 內呼，不另暴露為 standalone tool（Codex review #106 round-3 P2 抓到本段原文「沒進 packaged tool」與 §Bundles 列「is in packaged」字面矛盾，已 reconcile）
 - **progress notification 的 phase 字串約定**：所有 packaged tool 用同一組（`creating_session` / `uploading_references` / `running_checkpoint` / `selecting_base` / `exporting` / `copying`），agent 端可用 phase 來顯示給人看
 - **失敗 abandon 為什麼是本單而非 REST 層的事**：MCP tool 是「一件事」原子單位，失敗 cleanup 由 tool 內部處理；REST 端有 `POST /v1/creation-sessions/{id}/abandon` 可用，tool 失敗時呼即可，不必改 REST contract
 - **CRUD 不另開 `character.list_aliases`**：alias list 屬於 alias 領域，由 T-085 提供 `alias.list`（per character_id 過濾）
