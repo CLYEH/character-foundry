@@ -283,6 +283,60 @@ def test_oauth_existing_user_row_is_not_re_provisioned(
     assert _count_users(database_url, seeded_user["email"]) == 1
 
 
+def test_oauth_email_case_drift_does_not_create_duplicate_rows(
+    client: TestClient,
+    _preload_jwks_cache: JWKSCache,
+    make_oauth_token: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+) -> None:
+    """Codex round-1 P2: a delegated identity whose token email casing varies
+    across logins (`Alice@…` then `alice@…`) must NOT auto-provision a
+    second `users` row. `users.email` is a plain unique `String` column
+    (not citext), so without canonicalization the second login would miss
+    the existing row and split one operator across two accounts.
+    `_resolve_oauth` lowercases the email at the auth-dep boundary.
+    """
+    monkeypatch.setenv(_ALLOWED_DOMAINS_ENV, "character-foundry.com")
+
+    canonical = "case-test@character-foundry.com"
+    mixed_case = "Case-Test@Character-Foundry.com"
+
+    first = client.get(
+        "/v1/auth/me",
+        headers={
+            "Authorization": "Bearer "
+            + make_oauth_token(
+                scopes=["character:read"],
+                client_id="claude-code",
+                email=mixed_case,
+                extra={"name": "Case Test"},
+            )
+        },
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["user"]["email"] == canonical
+
+    second = client.get(
+        "/v1/auth/me",
+        headers={
+            "Authorization": "Bearer "
+            + make_oauth_token(
+                scopes=["character:read"],
+                client_id="claude-code",
+                email=canonical,
+            )
+        },
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["user"]["email"] == canonical
+
+    # Exactly one row exists for the canonical form; the mixed-case attempt
+    # reused it rather than creating a duplicate.
+    assert _count_users(database_url, canonical) == 1
+    assert _count_users(database_url, mixed_case) == 0
+
+
 def test_oauth_long_name_claim_is_truncated_to_column_width(
     client: TestClient,
     _preload_jwks_cache: JWKSCache,

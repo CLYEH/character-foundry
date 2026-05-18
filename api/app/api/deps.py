@@ -112,7 +112,18 @@ async def _resolve_oauth(
     request.state.oauth_client_id = claims.client_id
     request.state.is_m2m = claims.is_m2m
 
-    result = await db.execute(select(User).where(User.email == claims.email))
+    # Canonicalize email at the auth-dep boundary (Codex round-1 P2). `users.
+    # email` is a plain unique String column (not citext), so case drift
+    # between successive Google logins (e.g. `Alice@x.com` vs `alice@x.com`)
+    # would otherwise miss the existing row and call auto_provision again,
+    # splitting one operator across two rows. Lowercasing once here makes
+    # both the lookup and the auto-provision insert agree on a single
+    # canonical form. RFC 5321 says local-part is technically case-sensitive,
+    # but real-world identity providers (Google, Microsoft, etc.) treat it
+    # as case-insensitive; matching that behaviour is the safer default.
+    email = claims.email.lower()
+
+    result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user is None:
         # Authentik knows the email but we don't have a CF User row yet.
@@ -121,8 +132,8 @@ async def _resolve_oauth(
         # `hd=` gate is upstream, see `planning/devops/authentik-stack.md`
         # §5.2 / §5.7.2). Unknown domains stay 401 so we don't leak
         # existence of arbitrary verified Google identities into our DB.
-        domain = claims.email.rpartition("@")[2]
-        if not is_email_allowed_for_auto_provision(claims.email):
+        domain = email.rpartition("@")[2]
+        if not is_email_allowed_for_auto_provision(email):
             _logger.warning(
                 "oauth_auto_provision_denied",
                 extra={
@@ -131,7 +142,7 @@ async def _resolve_oauth(
                 },
             )
             raise auth_invalid_token()
-        user = await auto_provision_oauth_user(email=claims.email, name=claims.name)
+        user = await auto_provision_oauth_user(email=email, name=claims.name)
         _logger.info(
             "oauth_user_auto_provisioned",
             extra={

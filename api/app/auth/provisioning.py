@@ -88,9 +88,7 @@ async def auto_provision_oauth_user(*, email: str, name: str | None) -> User:
         if team is None:
             # Migration drift — every env we run in has the `default` team
             # seeded by migration 002. Loud failure beats silent 401 here.
-            raise RuntimeError(
-                f"team {_DEFAULT_TEAM_NAME!r} not found — run alembic migrations"
-            )
+            raise RuntimeError(f"team {_DEFAULT_TEAM_NAME!r} not found — run alembic migrations")
         display_name = (name or "").strip() or email.split("@", 1)[0]
         # `users.name` is VARCHAR(100); upstream OIDC name claims can exceed
         # that. Trim rather than 500 on the insert.
@@ -106,9 +104,7 @@ async def auto_provision_oauth_user(*, email: str, name: str | None) -> User:
             await db.commit()
         except IntegrityError:
             await db.rollback()
-            existing = (
-                await db.execute(select(User).where(User.email == email))
-            ).scalar_one()
+            existing = (await db.execute(select(User).where(User.email == email))).scalar_one()
             _logger.info(
                 "oauth_auto_provision_race_resolved",
                 extra={"user_id": str(existing.id)},
