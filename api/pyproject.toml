@@ -85,13 +85,16 @@ dev = [
     # transitive `opentelemetry-instrumentation-requests` dep still imports
     # on startup. Python 3.12 venvs no longer install setuptools by default
     # (PEP 632), so a fresh `pip install -e ".[dev]"` lands an environment
-    # where semgrep itself can't import. Declaring setuptools as a dev dep
-    # makes the env robust regardless of when the pip cache invalidates.
-    # T-080 triggered the original CI red-CI by adding `mcp>=1.27.0` and
-    # busting the pyproject-keyed pip cache — exposing the pre-existing
-    # latent bug. Drop this when semgrep / opentelemetry stop needing
-    # pkg_resources.
-    "setuptools>=70",
+    # where semgrep itself can't import.
+    #
+    # Upper-bound `<81` is load-bearing: setuptools 81 (2026-04-30 release)
+    # finally completed the long-running `pkg_resources` removal — older
+    # versions deprecated it; 81+ removed the module outright. T-080 first
+    # pinned `setuptools>=70` and re-greened nothing because pip resolved
+    # 81.x and the import still failed. Cap below 81 until semgrep /
+    # opentelemetry stop needing pkg_resources; drop both bound and dep
+    # when that happens.
+    "setuptools>=70,<81",
 ]
 
 [build-system]
