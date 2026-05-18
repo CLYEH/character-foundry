@@ -7,20 +7,39 @@ client_id allowlist is enforced on the OAuth path only — legacy JWTs have
 no `client_id` concept, so applying the allowlist to them would lock out
 existing SPA sessions during the M3.5 migration window.
 
-Auth state is stashed in a `ContextVar` (`mcp_auth_context_var`) rather
-than the ASGI request scope so MCP tool handlers — invoked from inside the
+Auth state is stashed in a `ContextVar` (`mcp_auth_state_var`) rather than
+the ASGI request scope so MCP tool handlers — invoked from inside the
 JSON-RPC dispatch loop, several call frames removed from any ASGI request
 — can read it via `current_mcp_auth_context()`. Tools then call
 `require_mcp_scopes(...)` at entry to enforce the per-tool scope contract
 declared in their `MCPTool` registry entry (registry itself lands in T-081).
+
+The contextvar carries a discriminated union of three states:
+
+  • `None`         — no Authorization header sent. `require_mcp_scopes`
+                     raises AUTH_MISSING_TOKEN.
+  • `MCPAuthFailure(error=...)` — header present but verifier rejected
+                     it. `require_mcp_scopes` re-raises the verifier's
+                     `AgentErrorException`, preserving the original
+                     code (`AUTH_CLIENT_NOT_ALLOWED`,
+                     `AUTH_SCOPE_EXCEEDS_ALLOWLIST`,
+                     `AUTH_OAUTH_EXPIRED`, ...). Codex round-1 P2 flagged
+                     the earlier "collapse all failures to None"
+                     implementation as losing actionable error semantics
+                     for clients and operators; this discriminated union
+                     restores parity with the `/v1/*` dual-stack contract
+                     where every verifier code is distinguishable.
+  • `MCPAuthContext` — token verified. `require_mcp_scopes` checks
+                       per-tool scope and returns the context on pass.
 
 Per the ticket Note on "MCP error vs HTTP status": auth failures do NOT
 return HTTP 401/403. The streamable HTTP response stays 200 and the
 JSON-RPC envelope carries the error so MCP clients see a structured
 `CallToolResult` with `isError=True` — same surface as any other tool
 failure. To achieve that, the middleware NEVER blocks unauthenticated
-requests at the ASGI layer; it just leaves the contextvar empty and lets
-`require_mcp_scopes` raise a `ToolError` inside the tool handler.
+requests at the ASGI layer; it just installs the resolved state on the
+contextvar and lets `require_mcp_scopes` raise a `ToolError` inside the
+tool handler.
 """
 
 from __future__ import annotations
@@ -41,7 +60,9 @@ from app.auth.oauth import is_authentik_token, verify_oauth_token
 from app.auth.scopes import CANONICAL_SCOPES
 from app.core.errors import (
     AgentErrorException,
+    auth_expired,
     auth_insufficient_scope,
+    auth_invalid_token,
     auth_missing_token,
 )
 
@@ -66,21 +87,41 @@ class MCPAuthContext:
     is_m2m: bool
 
 
-mcp_auth_context_var: ContextVar[MCPAuthContext | None] = ContextVar(
-    "mcp_auth_context_var", default=None
+@dataclass(frozen=True)
+class MCPAuthFailure:
+    """Token verification failed with a specific verifier-level error.
+
+    Wraps the `AgentErrorException` the verifier raised so the tool layer
+    can re-raise it verbatim and preserve the original code — `AUTH_
+    CLIENT_NOT_ALLOWED` and `AUTH_OAUTH_EXPIRED` should look different
+    from `AUTH_MISSING_TOKEN` in the client's tool-error envelope, same
+    way they look different on the `/v1/*` REST surface.
+    """
+
+    error: AgentErrorException
+
+
+# Union of the three states the auth resolver can produce:
+#   None              → no token supplied
+#   MCPAuthFailure    → token rejected (preserve the verifier code)
+#   MCPAuthContext    → token verified
+mcp_auth_state_var: ContextVar[MCPAuthContext | MCPAuthFailure | None] = ContextVar(
+    "mcp_auth_state_var", default=None
 )
 
 
 def current_mcp_auth_context() -> MCPAuthContext | None:
-    """Read the current request's MCP auth context, or None if unauthenticated.
+    """Read the verified context for the current request, or None if absent.
 
-    Returns `None` both when no `Authorization` header was sent and when
-    the token failed verification — see `resolve_mcp_token` for why both
-    collapse to the same state. Tools that need auth call
-    `require_mcp_scopes` instead, which surfaces the missing-vs-invalid
-    distinction back to the caller via a structured AgentError code.
+    Returns the `MCPAuthContext` ONLY when the verifier succeeded. Returns
+    `None` both when no token was sent AND when verification failed — the
+    `MCPAuthFailure` state is intentionally invisible to this accessor so
+    accidental callers can't act on a half-resolved auth. Tools that need
+    to act on auth call `require_mcp_scopes` instead, which surfaces the
+    three states distinctly (missing / failed / insufficient).
     """
-    return mcp_auth_context_var.get()
+    state = mcp_auth_state_var.get()
+    return state if isinstance(state, MCPAuthContext) else None
 
 
 def _agent_error_payload(exc: AgentErrorException) -> str:
@@ -100,9 +141,14 @@ def require_mcp_scopes(*required_scopes: str) -> MCPAuthContext:
     """Tool-side gate: assert auth + scope, return the context, or raise.
 
     Call at the top of every MCP tool implementation. Raises a `ToolError`
-    whose `args[0]` is a JSON-serialized AgentError envelope when the
-    contextvar is empty (no/invalid token → AUTH_MISSING_TOKEN) or when
-    the token's scopes don't cover the required set (AUTH_INSUFFICIENT_SCOPE).
+    whose `args[0]` is a JSON-serialized AgentError envelope. The error
+    code depends on the auth state:
+
+      • No token sent              → AUTH_MISSING_TOKEN
+      • Token rejected by verifier → original verifier code
+                                     (AUTH_CLIENT_NOT_ALLOWED,
+                                      AUTH_OAUTH_EXPIRED, etc.)
+      • Token valid, scope missing → AUTH_INSUFFICIENT_SCOPE
 
     Unknown scope literals raise `ValueError` immediately — same defense
     as `app.auth.scopes.require_scope`, so a typo in a tool declaration
@@ -114,25 +160,30 @@ def require_mcp_scopes(*required_scopes: str) -> MCPAuthContext:
             f"require_mcp_scopes() called with non-canonical scope(s): {sorted(unknown)}. "
             f"Canonical scopes are: {sorted(CANONICAL_SCOPES)}."
         )
-    ctx = mcp_auth_context_var.get()
-    if ctx is None:
+    state = mcp_auth_state_var.get()
+    if state is None:
         raise ToolError(_agent_error_payload(auth_missing_token()))
+    if isinstance(state, MCPAuthFailure):
+        raise ToolError(_agent_error_payload(state.error))
     required = frozenset(required_scopes)
-    if not required <= ctx.scopes:
+    if not required <= state.scopes:
         raise ToolError(_agent_error_payload(auth_insufficient_scope()))
-    return ctx
+    return state
 
 
-async def resolve_mcp_token(token: str) -> MCPAuthContext | None:
+async def resolve_mcp_token(token: str) -> MCPAuthContext | MCPAuthFailure:
     """Verify the bearer token via the legacy JWT or Authentik OAuth path.
 
-    Returns `MCPAuthContext` on success and `None` on any verification
-    failure. The middleware does NOT distinguish "no token" from "invalid
-    token" at the ASGI layer — both surface to tools as an empty contextvar
-    so `require_mcp_scopes` can emit AUTH_MISSING_TOKEN as a structured
-    MCP error rather than an HTTP 401 (per ticket Note: "MCP server 不回
-    HTTP 401 / 403"). Logging happens at the verifier layer; this wrapper
-    only swallows the exception type.
+    Returns `MCPAuthContext` on success and `MCPAuthFailure` (wrapping the
+    verifier's `AgentErrorException`) on every failure path. Distinct from
+    "no token sent" — that case never reaches this function because the
+    middleware only calls it when an `Authorization: Bearer ...` header is
+    present.
+
+    Per ticket Note "MCP server 不回 HTTP 401 / 403" the middleware does
+    not raise from this state; instead it installs the result on the
+    contextvar and `require_mcp_scopes` surfaces the failure as a tool
+    error with the preserved code.
     """
     # Routing-only peek; signature is re-verified by the chosen path against
     # the correct key. Same pattern as `_peek_unverified_payload` in
@@ -141,21 +192,27 @@ async def resolve_mcp_token(token: str) -> MCPAuthContext | None:
         # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
         unverified: dict[str, Any] = pyjwt.decode(token, options={"verify_signature": False})
     except pyjwt.InvalidTokenError:
-        return None
+        # Malformed token shape — can't route to a verifier, so it's
+        # neither OAuth-invalid nor JWT-invalid specifically. Treat as
+        # generic AUTH_INVALID_TOKEN (matching the /v1/* dispatcher's
+        # behaviour for the same shape).
+        return MCPAuthFailure(error=auth_invalid_token())
 
     if is_authentik_token(unverified):
         try:
             claims = await verify_oauth_token(token)
         except AgentErrorException as exc:
-            # All token-shape failures funnel through AgentErrorException.
-            # Log at debug so the audit trail stays in the verifier layer
-            # (it already logs at warn/error); here we just collapse the
-            # symptom to a uniform "unauthenticated" state.
+            # Preserve the verifier's specific code — AUTH_CLIENT_NOT_ALLOWED,
+            # AUTH_SCOPE_EXCEEDS_ALLOWLIST, AUTH_OAUTH_EXPIRED, etc.
+            # Tools see the original semantic on tool-call failure
+            # rather than a flattened "missing token" symptom (Codex
+            # round-1 P2). The verifier already logs at warn/error;
+            # log here at debug so the audit trail isn't doubled.
             _logger.debug(
                 "mcp_oauth_token_rejected",
                 extra={"code": exc.error.code},
             )
-            return None
+            return MCPAuthFailure(error=exc)
         # M2M tokens are SANCTIONED on /mcp/* — `auth_m2m_wrong_surface`
         # only fires on `/v1/*` (T-054 `_resolve_oauth`). Headless agents
         # use the OAuth client_credentials grant against this surface.
@@ -172,13 +229,17 @@ async def resolve_mcp_token(token: str) -> MCPAuthContext | None:
     # allowlist becomes the sole client gate.
     try:
         payload = verify_access_token(token)
-    except (JWTExpired, JWTInvalid):
-        return None
+    except JWTExpired:
+        return MCPAuthFailure(error=auth_expired())
+    except JWTInvalid:
+        return MCPAuthFailure(error=auth_invalid_token())
     sub_raw = payload.get("sub")
     try:
         user_id = uuid.UUID(str(sub_raw))
     except (TypeError, ValueError):
-        return None
+        # Token verified but `sub` is not a UUID — treat as invalid,
+        # parallel to `_resolve_jwt`'s same branch in `app/api/deps.py`.
+        return MCPAuthFailure(error=auth_invalid_token())
     return MCPAuthContext(
         user_id=user_id,
         client_id=None,
@@ -235,12 +296,14 @@ class MCPAuthContextMiddleware:
             return
 
         token = _extract_bearer_from_scope(scope)
-        ctx: MCPAuthContext | None = None
-        if token:
-            ctx = await resolve_mcp_token(token)
+        state: MCPAuthContext | MCPAuthFailure | None
+        if token is None:
+            state = None
+        else:
+            state = await resolve_mcp_token(token)
 
-        var_token = mcp_auth_context_var.set(ctx)
+        var_token = mcp_auth_state_var.set(state)
         try:
             await self.app(scope, receive, send)
         finally:
-            mcp_auth_context_var.reset(var_token)
+            mcp_auth_state_var.reset(var_token)

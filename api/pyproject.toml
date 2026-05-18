@@ -81,6 +81,17 @@ dev = [
     # set is fetched at scan time so no local rule files live in the repo.
     "bandit[toml]>=1.7",
     "semgrep>=1.50",
+    # `setuptools` is needed at runtime by `pkg_resources`, which semgrep's
+    # transitive `opentelemetry-instrumentation-requests` dep still imports
+    # on startup. Python 3.12 venvs no longer install setuptools by default
+    # (PEP 632), so a fresh `pip install -e ".[dev]"` lands an environment
+    # where semgrep itself can't import. Declaring setuptools as a dev dep
+    # makes the env robust regardless of when the pip cache invalidates.
+    # T-080 triggered the original CI red-CI by adding `mcp>=1.27.0` and
+    # busting the pyproject-keyed pip cache — exposing the pre-existing
+    # latent bug. Drop this when semgrep / opentelemetry stop needing
+    # pkg_resources.
+    "setuptools>=70",
 ]
 
 [build-system]

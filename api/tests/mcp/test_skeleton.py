@@ -259,6 +259,51 @@ async def test_oauth_token_missing_scope_surfaces_mcp_error(
 
 
 # ---------------------------------------------------------------------------
+# Verifier error code preserved through the tool layer (Codex round-1 P2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_oauth_token_unknown_client_id_preserves_verifier_code(
+    _preload_jwks_cache: Any,
+    make_oauth_token: Callable[..., str],
+) -> None:
+    """Unknown client_id should surface as AUTH_CLIENT_NOT_ALLOWED, not
+    AUTH_MISSING_TOKEN.
+
+    Codex round-1 P2 against PR #107 flagged that the earlier
+    "collapse all verification failures to None" design dropped the
+    specific verifier code (`AUTH_CLIENT_NOT_ALLOWED`,
+    `AUTH_SCOPE_EXCEEDS_ALLOWLIST`, `AUTH_OAUTH_EXPIRED`, ...) on the
+    way to the tool layer. After the discriminated-state refactor the
+    code is preserved via `MCPAuthFailure(error=...)`. Without this
+    test the regression returns silently — anyone debugging "why is my
+    agent client failing?" would see a misleading "missing token"
+    instead of the actionable "your client_id isn't in the allowlist".
+    """
+    token = make_oauth_token(
+        client_id="unsanctioned-bot",  # NOT in ALLOWED_CLIENTS
+        scopes=["character:read"],
+        email=None,
+    )
+
+    async with mcp_runtime() as factory:
+        result, _progress = await _call_hello(
+            factory,
+            token=token,
+            arguments={"echo": "should-not-arrive"},
+        )
+
+    assert result.isError is True
+    text_blocks = [block for block in result.content if block.type == "text"]
+    assert text_blocks
+    _assert_agent_error_payload(
+        text_blocks[0].text,
+        expected_code="AUTH_CLIENT_NOT_ALLOWED",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Progress notification round-trip — the regression target for PR #2038
 # ---------------------------------------------------------------------------
 
