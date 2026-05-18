@@ -146,3 +146,21 @@ def test_provision_operator_duplicate_email_fails(clean_users: None, database_ur
     assert _run_cli(["provision-operator", "--email", "dup@example.com", "--name", "Dup"]) == 0
     with pytest.raises(SystemExit, match="already exists"):
         _run_cli(["provision-operator", "--email", "dup@example.com", "--name", "Dup"])
+
+
+def test_provision_operator_prints_group_membership_reminder(
+    clean_users: None, database_url: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T-077: backend row alone is insufficient — the SPA application
+    PolicyBinding gates on `cf-agent-default`. The CLI cannot add the
+    Authentik group itself (see authentik-stack.md §5.7.3.c), so its
+    contract is to remind the operator. A regression that drops this
+    reminder silently re-creates wall 5: operators get through CLI + Google
+    login but die at the authorize endpoint with no actionable signal."""
+    os.environ["DATABASE_URL"] = database_url
+
+    assert _run_cli(["provision-operator", "--email", "t77@example.com", "--name", "T77"]) == 0
+
+    out = capsys.readouterr().out
+    assert "cf-agent-default" in out
+    assert "§5.7.3" in out

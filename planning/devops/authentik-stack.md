@@ -107,6 +107,8 @@ Authentik server 暴露在 nginx `/oauth/` 路徑（或 subdomain `auth.characte
 > - `.env` 內 `AUTHENTIK_BOOTSTRAP_*` 暫時不設；首登走 recovery URL flow
 
 > **2026-05-14: operator persona pass retrofit (T-069)** — §5.2 補 OAuth Source 的 Authentication / Enrollment flow 設定、新增 §5.7「Provision a dev operator」。原 §5.7 / §5.8 順移為 §5.8 / §5.9。觸發：T-068 SPA 三入口登入的 dev 測試 reveal「真人 operator 從零登入」三道牆連環卡（見 `tickets/DONE/T-069-*.md`）。
+>
+> **2026-05-18: operator persona pass retrofit (T-077)** — §5.7 新增 §5.7.3「Operator group membership」、§5.9 checklist 同步補一條。觸發：T-076 CDP 驗證 reveal wall 5 —— §5.5 「把 user 加進 `cf-agent-default`」是給 agent client 寫的，operator-provisioning runbook 從沒提，新 operator 過了 Authentik 登入卻被 `/oauth/application/o/authorize/` 用 "Permission denied" 擋掉。
 
 ### 5.1 Admin 首登
 
@@ -410,6 +412,75 @@ docker compose exec api python -m app.cli provision-operator \
 
 > **⚠ password fallback 也要這層 backend row。** 別誤以為改走 T-068 的「帳密 fallback」入口就能繞過 backend `User` row —— 帳密 path 走的是 Authentik 的 identification+password flow，SPA 拿到的一樣是 **Authentik OAuth token**，一樣會到 `_resolve_oauth` 的 email lookup。Backend `User` row 對**所有**登入入口都是必要的，跟走哪個入口無關。CLI 預建 / 自動 first-login 兩條 path 都行。
 
+#### 5.7.3 Operator group membership — `cf-agent-default`（T-077，必做）
+
+§5.7.1 + §5.7.2 把 Authentik user 和 backend `User` row 都備妥後，operator 仍會在 SPA 的最後一跳（`/oauth/application/o/authorize/`）被擋下，畫面是 Authentik 原生「Permission denied — Request has been denied」。原因：**`Character Foundry SPA` application 有一條 PolicyBinding 綁 `cf-agent-default` group**（§5.5 / e2e blueprint `cf-e2e-bootstrap.yaml` 都看得到），enrollment flow 建出來的新 Authentik user 預設不在任何 group → policy 拒。
+
+§5.5 雖然寫了「把 Workspace 內每個會用 agent 的 user 加進 `cf-agent-default`」，但 §5.5 通篇是在講 **agent client** 的 group/policy 設定，操作者讀 §5.7 「provision a dev operator」時不會回頭去 §5.5 翻 group membership 這一步—— 這就是 T-077 wall 5 反覆踩到的原因。
+
+##### 5.7.3.a 主路徑：first-login 後手動加 group（搭配 T-071 auto-provisioning）
+
+T-071 後的預設 operator onboarding：
+
+```
+operator 開 SPA → 「使用 Google 登入」→ Google consent
+  → Authentik enrollment flow（operator 選 username，§5.7.1）
+  → callback → backend _resolve_oauth 自動建 User row（§5.7.2.a）
+  → SPA 試走 /oauth/application/o/authorize/
+  → ⛔ Permission denied（新 Authentik user 不在 cf-agent-default）
+```
+
+⚠ 這道牆 **T-071 解不了** —— T-071 補的是 backend `User` row，PolicyBinding 卡的是 Authentik-side group membership，兩層獨立。Operator 第一次撞牆後，**admin 必須手動補這步**，operator 重新登入才能進 SPA。
+
+修法（admin 操作，從 stack host 跑一次即可）：
+
+```bash
+# 把 <operator-email> 換成 operator 在 Authentik 的 email（= Google email，
+# 因為 enrollment flow 從 Google profile 帶入；同時也是 §5.7.2 backend
+# User row 的 email，three-way 對齊）。
+docker compose exec authentik-server ak shell -c \
+  "from authentik.core.models import User, Group; \
+   u = User.objects.get(email='<operator-email>'); \
+   g = Group.objects.get(name='cf-agent-default'); \
+   g.users.add(u); \
+   print(f'added {u.username} to cf-agent-default')"
+```
+
+預期 stdout：`added <username> to cf-agent-default`。Operator 在 SPA 重整 / 重按「使用 Google 登入」就能通過 authorize 走到 Dashboard。
+
+> **為什麼不用 admin UI：** admin UI 也可以（Directory → Groups → `cf-agent-default` → Users tab → Add），但 `ak shell` snippet 是可貼上的 single-line、不依賴點哪個 tab、可寫進 onboarding runbook，且跟 `cf-e2e-bootstrap.yaml` 用的 `users` FK 是同一個 attribute（見 memory `authentik_blueprint_2024_12_gotchas`：`users_obj` 是 read-only SerializerMethodField）。
+
+##### 5.7.3.b 旁路：pre-provision 時順手加 group
+
+若選擇 §5.7.2.b 的「pre-provision」path（admin 在 operator 第一次打 API 前就先建好 backend row，例：CI / 排好的 operator onboarding session），同一時間也可在 Authentik 端 pre-create user + 加 group，免去 §5.7.3.a 第一次撞牆後再回來補的循環：
+
+```bash
+# 1. 在 Authentik 端 pre-create user
+docker compose exec authentik-server ak shell -c \
+  "from authentik.core.models import User, Group; \
+   u, created = User.objects.get_or_create( \
+     email='<operator-email>', \
+     defaults={'username': '<operator-username>', 'name': '<operator-name>', 'is_active': True}); \
+   Group.objects.get(name='cf-agent-default').users.add(u); \
+   print('created' if created else 'exists', u.username)"
+
+# 2. 在 backend 端 pre-create User row（§5.7.2.b）
+docker compose exec api python -m app.cli provision-operator \
+  --email <operator-email> --name <operator-name>
+```
+
+如此 operator 第一次按「使用 Google 登入」就 end-to-end 通到 Dashboard，無中段 permission deny。
+
+##### 5.7.3.c 為什麼這步沒做進 `provision-operator` CLI
+
+評估過、不做。原因：
+
+1. **CLI 跑時 Authentik user 通常還不存在**（主路徑是 first-login 才 enroll），CLI 此時無對象可 `g.users.add(u)`；強塞會變成「先在 Authentik 端 create 再加 group」，等同要把 CLI 從「補 backend row」擴張到「同時管 Authentik directory」，scope 失控。
+2. **CLI 加 group 需要 Authentik admin API token**（或 `ak shell` exec），等於要把 `AUTHENTIK_API_TOKEN` 灌進 `api` container env，新增一條 prod secret 路徑只為了一個 break-glass CLI，不划算。
+3. **真正的「next operator 自動進 group」是上游機制問題**（OAuth Source / enrollment flow auto-bind to group），不是 CLI 的責任邊界。M3.5 ship 後若 operator 數量上升，再開單把這個自動化做進 enrollment flow blueprint（候選機制：source post-enrollment policy binding，或 enrollment flow 內加 group-add stage）。本單先保證 runbook 完整。
+
+退而求其次：`provision-operator` CLI 完成時在 stdout 印一條提醒，指 operator 回來看本節（§5.7.3.a）。
+
 ### 5.8 Backup / disaster recovery
 
 Phase 1 不寫 automated backup；§5 setup 走過一遍要 1 小時，DB 倒掉重設 = 1 小時 + 把 `.env` 內 secrets 拷回 1Password。
@@ -433,4 +504,5 @@ M3.5 ship 前 backup 流程進 `operations.md`，包含：
 - [ ] §5.6.3 access_token 是 JWT 格式（3 段 base64URL）
 - [ ] §5.7 真人 operator 兩層 user 都備妥：首次 Google 登入自動 enroll Authentik user + backend row（T-071 後預設由 first-login auto-provisioning 處理；要 pre-provision 才跑 `provision-operator` CLI）
 - [ ] §5.7.2.a auto-provisioning guardrail：`OAUTH_AUTO_PROVISION_ALLOWED_DOMAINS` 設成 Workspace tenant domain（例：`character-foundry.com`）；未設則所有 first-login 維持 401，operator 必須 `provision-operator` CLI 手動補
+- [ ] §5.7.3 operator 已加進 `cf-agent-default` group（first-login 後 admin 跑 `ak shell` snippet，或 pre-provision 時順手加）；驗收：operator 在 SPA 走完「使用 Google 登入」可達 Dashboard、不被 `/oauth/application/o/authorize/` 用 "Permission denied" 擋
 - [ ] `cf-test-agent` client_secret 進 1Password，未進 `.env.example`
