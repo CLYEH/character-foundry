@@ -35,9 +35,10 @@
 - 邏輯：load registry，對每個 `MCPTool`：
   - 解析 `tool.bundles`（格式 `"<METHOD> <PATH>"`）
   - 從 source code grep 對應 endpoint 的 `require_scope(...)` 宣告
-  - 斷言 `tool.scopes ⊆ union(endpoint scopes for endpoint in tool.bundles)`
+  - **若 `tool.bundles` 非空**：斷言 `tool.scopes ⊆ union(endpoint scopes for endpoint in tool.bundles)`
+  - **若 `tool.bundles` 為空**（MCP-only tool，如 `hello.world` smoke）：skip union check；改成只斷言 `tool.scopes ⊆ CANONICAL_SCOPES`（下一條）。理由：empty union = empty set，任何非空 scope 都會誤判 fail，誤擋合法 MCP-only tool（Codex review #106 round-2 P1 抓到）
   - 不一致 → exit 1（per oauth-mcp-integration §3.4）
-- 也斷言 `tool.scopes ⊆ CANONICAL_SCOPES`（per auth Q3 canonical 5 scope）
+- 也斷言 `tool.scopes ⊆ CANONICAL_SCOPES`（per auth Q3 canonical 5 scope）—— 此檢查對所有 tool（含 bundleless）都套
 - 進 `pr.yml` 同 job 或 sibling job
 
 ### CI guardrail 3 — Allowlist consistency
