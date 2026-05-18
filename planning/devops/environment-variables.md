@@ -107,6 +107,14 @@
 >
 > **`AUTHENTIK_SECRET_KEY` rotation footprint：** 轉這把 key 會 invalidate 所有 active session + pending recovery / invitation link（Django session signing + signer.Signer + JWE cookie 加密 全部走它）。**不會** rotate OIDC signing key（OIDC key 存在 Authentik 內部 cert store，`/certs` named volume 持久化，獨立輪換）。實務上等同「強制全 user 重登」，但不會 invalid 已發出的 access / refresh token。
 
+### 2.8a Backend OAuth auto-provisioning (T-071)
+
+| 變數 | 必填 | 範例 | 說明 | 敏感 |
+|---|---|---|---|---|
+| `OAUTH_AUTO_PROVISION_ALLOWED_DOMAINS` |  | `character-foundry.com,acme.example` | Comma-separated email domain allowlist；token email 的 domain 在這之中才會在 `_resolve_oauth` 第一次認到時自動建 backend `users` row。未設 / 留空 → fail-closed（每筆 first-login 維持 401）。詳見 `authentik-stack.md` §5.7.2.a | |
+
+> **Defense in depth with Authentik `hd=` gate。** §5.2 的 Google OAuth Source 已用 `hd=<workspace-domain>` 把上游鎖在 Workspace tenant；本 env var 是 backend 端的第二把鎖，防止 Authentik 端 misconfig（例：未來加第二條 OAuth Source 漏設 `hd=`）讓任意 verified Google 帳號在 DB 長出 row。設成跟 `hd=` 同樣的 domain 即可。
+
 ### 2.9 Google upstream IdP for Authentik (T-053)
 
 | 變數 | 必填 | 說明 | 敏感 |

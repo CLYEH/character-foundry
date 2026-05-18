@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
+import jwt as pyjwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -156,3 +161,122 @@ def second_user(database_url: str, seeded_user: dict[str, str]) -> dict[str, str
         _insert_user(database_url, email=email, name=name, password_hash=hash_password(password))
     )
     return {"email": email, "password": password, "name": name}
+
+
+# ---------------------------------------------------------------------------
+# Shared OAuth fixtures (T-054 + T-071). Moved here from test_dual_stack.py
+# so additional OAuth-path test files (auto-provisioning, future MCP tests)
+# can reuse the same synthetic Authentik JWT factory without duplicating
+# the RSA keypair, JWKS doc, or env-var wiring.
+# ---------------------------------------------------------------------------
+
+OAUTH_TEST_ISSUER = "https://auth.test.example/application/o/character-foundry-test/"
+OAUTH_TEST_AUDIENCE = "character-foundry-test"
+OAUTH_TEST_JWKS_URI = "https://auth.test.example/application/o/character-foundry-test/jwks/"
+OAUTH_TEST_KID = "cf-test-rsa-key-1"
+
+
+@pytest.fixture(scope="module")
+def _rsa_keypair() -> tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key, private_key.public_key()
+
+
+@pytest.fixture(scope="module")
+def _private_key_pem(_rsa_keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey]) -> bytes:
+    priv, _pub = _rsa_keypair
+    return priv.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+@pytest.fixture(scope="module")
+def _jwks_document(_rsa_keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey]) -> dict[str, Any]:
+    """A minimal JWKS doc describing our single test signing key."""
+    _priv, pub = _rsa_keypair
+    numbers = pub.public_numbers()
+
+    def _b64url_uint(n: int) -> str:
+        import base64
+
+        byte_len = (n.bit_length() + 7) // 8
+        return base64.urlsafe_b64encode(n.to_bytes(byte_len, "big")).rstrip(b"=").decode("ascii")
+
+    return {
+        "keys": [
+            {
+                "kty": "RSA",
+                "use": "sig",
+                "alg": "RS256",
+                "kid": OAUTH_TEST_KID,
+                "n": _b64url_uint(numbers.n),
+                "e": _b64url_uint(numbers.e),
+            }
+        ]
+    }
+
+
+@pytest.fixture
+def _oauth_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTHENTIK_ISSUER_URL", OAUTH_TEST_ISSUER)
+    monkeypatch.setenv("AUTHENTIK_AUDIENCE", OAUTH_TEST_AUDIENCE)
+    monkeypatch.setenv("AUTHENTIK_JWKS_URL", OAUTH_TEST_JWKS_URI)
+
+
+@pytest.fixture
+def _preload_jwks_cache(
+    _oauth_env: None,
+    _jwks_document: dict[str, Any],
+) -> Iterator[Any]:
+    """Install a JWKSCache pre-populated from `_jwks_document` so tests that
+    don't care about HTTP fetch behaviour avoid wiring respx for every case.
+    """
+    from app.auth.oauth import (
+        JWKSCache,
+        reset_jwks_cache_for_test,
+        set_jwks_cache_for_test,
+    )
+
+    cache = JWKSCache(OAUTH_TEST_JWKS_URI)
+    keys = {key_data["kid"]: pyjwt.PyJWK(key_data) for key_data in _jwks_document["keys"]}
+    cache.seed_keys_for_test(keys)
+    set_jwks_cache_for_test(cache)
+    try:
+        yield cache
+    finally:
+        reset_jwks_cache_for_test()
+
+
+@pytest.fixture
+def make_oauth_token(_private_key_pem: bytes) -> Any:
+    def _make(
+        *,
+        scopes: list[str] | None = None,
+        client_id: str = "claude-code",
+        email: str | None = "alice@example.com",
+        sub: str | None = None,
+        issuer: str = OAUTH_TEST_ISSUER,
+        audience: str = OAUTH_TEST_AUDIENCE,
+        expires_in: int = 3600,
+        kid: str = OAUTH_TEST_KID,
+        extra: dict[str, Any] | None = None,
+    ) -> str:
+        now = int(time.time())
+        payload: dict[str, Any] = {
+            "iss": issuer,
+            "aud": audience,
+            "iat": now,
+            "exp": now + expires_in,
+            "azp": client_id,
+            "sub": sub if sub is not None else (email or client_id),
+            "scope": " ".join(scopes) if scopes else "",
+        }
+        if email is not None:
+            payload["email"] = email
+        if extra:
+            payload.update(extra)
+        return pyjwt.encode(payload, _private_key_pem, algorithm="RS256", headers={"kid": kid})
+
+    return _make

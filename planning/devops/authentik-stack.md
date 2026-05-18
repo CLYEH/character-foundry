@@ -370,9 +370,32 @@ unset CF_TEST_AGENT_CLIENT_SECRET  # 用完即清
 
 → 這層**不需要手動指令**，flow 設好就自動。漏設 Enrollment flow 的後果見 §5.2（`Source is not configured for enrollment`）。
 
-#### 5.7.2 Backend `User` row（`provision-operator` CLI）
+#### 5.7.2 Backend `User` row — 兩條 path
 
-Authentik 認得 operator 不等於 backend 認得。`api/app/api/deps.py::_resolve_oauth` 拿到 Authentik token 後走 **email lookup**（`select(User).where(User.email == claims.email)`），backend `users` 表沒有對應 row 就 `auth_invalid_token()` → `/api/v1/auth/me` 回 401。`seed-e2e` 不涵蓋真人 operator，要手動建這層：
+從 T-071 起 backend 有**兩條** path 建出 `users` row：自動 first-login（**主路徑**）和 `provision-operator` CLI（**break-glass / pre-provision**）。
+
+##### 5.7.2.a 自動 first-login auto-provisioning（T-071，預設行為）
+
+`api/app/api/deps.py::_resolve_oauth` 拿到 Authentik 驗過的 delegated token、但 `users` 表沒有 `claims.email` 對應 row 時，**自動建一個**（email + name from OIDC claim、default team）並放行。沒有手動 CLI 步驟。
+
+**Guardrail（必設）：** `OAUTH_AUTO_PROVISION_ALLOWED_DOMAINS`（comma-separated email domain 清單）。Token email 的 domain 不在清單內 → 維持 401（`AUTH_INVALID_TOKEN`），不建 row。env var 沒設或留空 → fail-closed，**所有** first-login 都 401（=T-071 之前的行為）。
+
+> **為什麼要有 backend 這層 domain 閘門：** §5.2 的 Google OAuth Source `hd=<workspace-domain>` 已經是上游 gate，理論上 Authentik 不會放跨 tenant 的 Google 帳號進來。但 backend 不應該假設上游一定鎖好——defense in depth：(a) 未來加第二條 OAuth Source 忘記設 `hd=` → backend 仍守住；(b) Authentik admin 不小心改掉 `hd=` policy → backend 仍守住。allowlist 設成跟 Workspace tenant 同樣的 domain 即可（例：`OAUTH_AUTO_PROVISION_ALLOWED_DOMAINS=character-foundry.com`）。
+>
+> **不做 per-email allowlist：** domain-only 是刻意選擇——細粒度的 per-email 控制屬於 `provision-operator` CLI（或未來 admin UI）的範圍。env var 做成 email allowlist 等於把 user 名單塞進 ops config，不是好的責任分離。
+
+**Display name fallback：** OIDC `name` claim 有就用，沒有就退到 email local part（`alice@x.com` → `alice`）。超過 100 char 截斷以對齊 `users.name` VARCHAR(100)。Operator 想換 display name 走未來 admin UI（or `provision-operator` 預先建好）。
+
+**Race 處理：** 同一 email 兩個 first-login request 同時進來時，`users.email` unique constraint 會擋第二個 INSERT —— `auto_provision_oauth_user` catch `IntegrityError` 後 re-select 出 winning row。Caller 看到兩個 200，row 只有一條。
+
+##### 5.7.2.b `provision-operator` CLI（break-glass / pre-provision）
+
+T-071 後，CLI 從「唯一補 row 方法」退回**特定情境**用：
+
+- **Pre-provision**：在 operator 第一次打 API 之前先把 row 建好（例：CI 安排好測試用 operator，不想等首登 race）
+- **Domain 不在 allowlist 但個案要放行**：operator 用個人 email 而非 Workspace（不該常見，但 break-glass 路徑保留）
+- **Operator 一定要有特定 display name**：CLI 可指定 `--name`；自動 path 跟著 OIDC claim 走
+- **Debug**：手動建 row 隔離問題，看 `_resolve_oauth` 後續是 token / scope / domain 哪一段壞
 
 ```bash
 docker compose exec api python -m app.cli provision-operator \
@@ -385,9 +408,7 @@ docker compose exec api python -m app.cli provision-operator \
 
 > **為什麼是 `provision-operator` 而不是 `create-user`：** `create-user` 是給 JWT-login 帳密路徑用的，`--password` 必填。Operator 走 OAuth（Google，或 T-068 的 Authentik 帳密 fallback），backend `User` row 的 `password_hash` 對他的登入路徑沒有意義。`provision-operator` 建的 row 帶一個**隨機、不印出也不記錄**的 password hash —— backend JWT-login 路徑對這個 operator 等同停用，他只能走 OAuth。真的要給 operator 一條獨立帳密 break-glass 時才改用 `create-user`。
 
-> **⚠ password fallback 也要這層 backend row。** 別誤以為改走 T-068 的「帳密 fallback」入口就能繞過 backend `User` row —— 帳密 path 走的是 Authentik 的 identification+password flow，SPA 拿到的一樣是 **Authentik OAuth token**，一樣會到 `_resolve_oauth` 的 email lookup。Backend `User` row 對**所有**登入入口都是必要的，跟走哪個入口無關。
-
-> **Not in scope（留 M3.5b）：** `_resolve_oauth` 自動 first-login provisioning（Authentik 已驗的 user 第一次打 API 時自動建 backend row）—— `deps.py` 該行 comment 已暗示未來會做，但那是 dual-stack migration 的一塊，scope 比本節大。在那之前，新 operator 一律手動跑一次上面的 `provision-operator`。
+> **⚠ password fallback 也要這層 backend row。** 別誤以為改走 T-068 的「帳密 fallback」入口就能繞過 backend `User` row —— 帳密 path 走的是 Authentik 的 identification+password flow，SPA 拿到的一樣是 **Authentik OAuth token**，一樣會到 `_resolve_oauth` 的 email lookup。Backend `User` row 對**所有**登入入口都是必要的，跟走哪個入口無關。CLI 預建 / 自動 first-login 兩條 path 都行。
 
 ### 5.8 Backup / disaster recovery
 
@@ -410,5 +431,6 @@ M3.5 ship 前 backup 流程進 `operations.md`，包含：
 - [ ] §5.6.1 Google login flow 通
 - [ ] §5.6.2 `curl` client_credentials 拿到 access token、scope claim 含 5 條
 - [ ] §5.6.3 access_token 是 JWT 格式（3 段 base64URL）
-- [ ] §5.7 真人 operator 兩層 user 都備妥：首次 Google 登入自動 enroll Authentik user + `provision-operator` CLI 建好 backend `User` row
+- [ ] §5.7 真人 operator 兩層 user 都備妥：首次 Google 登入自動 enroll Authentik user + backend row（T-071 後預設由 first-login auto-provisioning 處理；要 pre-provision 才跑 `provision-operator` CLI）
+- [ ] §5.7.2.a auto-provisioning guardrail：`OAUTH_AUTO_PROVISION_ALLOWED_DOMAINS` 設成 Workspace tenant domain（例：`character-foundry.com`）；未設則所有 first-login 維持 401，operator 必須 `provision-operator` CLI 手動補
 - [ ] `cf-test-agent` client_secret 進 1Password，未進 `.env.example`
