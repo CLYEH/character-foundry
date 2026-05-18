@@ -13,6 +13,7 @@ import jwt as pyjwt
 from fastapi import Depends, Header, Request
 from redis.asyncio import Redis
 from sqlalchemy import func, select
+from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import JWTExpired, JWTInvalid, verify_access_token
@@ -134,8 +135,28 @@ async def _resolve_oauth(
     # users so the seq-scan cost is irrelevant; a functional index on
     # `lower(email)` is the right scale-out lever and lives in a schema
     # migration outside T-071 scope.
-    result = await db.execute(select(User).where(func.lower(User.email) == email))
-    user = result.scalar_one_or_none()
+    try:
+        result = await db.execute(select(User).where(func.lower(User.email) == email))
+        user = result.scalar_one_or_none()
+    except MultipleResultsFound:
+        # Codex round-3 P2: pre-existing case-variant duplicates in
+        # `users.email` (the case-sensitive String unique constraint allows
+        # `Alice@x.com` AND `alice@x.com` side-by-side) would otherwise 500
+        # the request. Catch and surface as AUTH_INVALID_TOKEN with a loud
+        # structured log — operator dedupes via SQL (decide which row owns
+        # the history, delete the other) or a future migration backfills a
+        # functional unique index on `lower(email)`. We deliberately do NOT
+        # silently pick one of the rows: that would risk logging the
+        # operator in as a different account than the token actually
+        # represents, which is worse than a 401 they can investigate.
+        _logger.error(
+            "oauth_lookup_multiple_email_variants",
+            extra={
+                "email_lowercased": email,
+                "client_id": claims.client_id,
+            },
+        )
+        raise auth_invalid_token() from None
     if user is None:
         # Authentik knows the email but we don't have a CF User row yet.
         # T-071: auto-provision the row on first login, gated on a

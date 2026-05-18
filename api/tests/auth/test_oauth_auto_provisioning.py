@@ -355,6 +355,73 @@ def test_oauth_mixed_case_existing_row_is_matched_not_duplicated(
     assert _count_users(database_url, "leo@omniguider.com") == 0
 
 
+def test_oauth_case_variant_duplicate_rows_return_401_not_500(
+    client: TestClient,
+    _preload_jwks_cache: JWKSCache,
+    make_oauth_token: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+) -> None:
+    """Codex round-3 P2: the case-insensitive lookup can match multiple
+    rows when the DB already contains case-variant duplicates (a data
+    integrity violation the case-sensitive String unique constraint
+    permits). `scalar_one_or_none` would raise `MultipleResultsFound` and
+    bubble as a 500; we catch it and return a controlled
+    `AUTH_INVALID_TOKEN` instead. Deliberately we do NOT pick one row
+    silently — logging an operator into the wrong account is worse than
+    a fail-loud 401 they can investigate.
+    """
+    monkeypatch.setenv(_ALLOWED_DOMAINS_ENV, "character-foundry.com")
+
+    # Insert two case-variant rows directly via SQL. The Python-level CLI
+    # wouldn't normally do this in one process (the second insert would
+    # collide with the first via the unique constraint on exact-equality
+    # match), but the case-sensitive unique constraint permits the pair —
+    # historical data from before round-1 / round-2 fixes could look like
+    # this.
+    async def _insert_both() -> None:
+        engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                team_id = (
+                    await conn.execute(text("SELECT id FROM teams WHERE name='default'"))
+                ).scalar_one()
+                for variant in ("Alice@character-foundry.com", "alice@character-foundry.com"):
+                    await conn.execute(
+                        text(
+                            "INSERT INTO users (team_id, name, email, password_hash) "
+                            "VALUES (:t, :n, :e, :h)"
+                        ),
+                        {
+                            "t": team_id,
+                            "n": "Alice variant",
+                            "e": variant,
+                            "h": "$2b$12$irrelevant_for_oauth_only_path",
+                        },
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_insert_both())
+
+    token = make_oauth_token(
+        scopes=["character:read"],
+        client_id="claude-code",
+        email="alice@character-foundry.com",  # lowercased — matches both via LOWER()
+    )
+    resp = client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["error"]["code"] == "AUTH_INVALID_TOKEN"
+
+    # Both rows still exist — the failure mode is read-only; no row was
+    # inserted, deleted, or modified. Operator can choose how to dedupe.
+    assert _count_users(database_url, "Alice@character-foundry.com") == 1
+    assert _count_users(database_url, "alice@character-foundry.com") == 1
+
+
 def test_oauth_email_case_drift_does_not_create_duplicate_rows(
     client: TestClient,
     _preload_jwks_cache: JWKSCache,
