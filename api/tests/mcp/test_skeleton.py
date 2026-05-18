@@ -352,6 +352,53 @@ async def test_progress_notification_reaches_client(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Malformed Authorization header → AUTH_INVALID_TOKEN (Codex round-2 P2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_malformed_authorization_header_surfaces_invalid_token() -> None:
+    """`Basic ...` or `Bearer ` with empty token → AUTH_INVALID_TOKEN, not
+    AUTH_MISSING_TOKEN.
+
+    Codex round-2 P2 against PR #107 flagged that an `Authorization` header
+    that's present but not a well-formed Bearer used to collapse into the
+    same "no token" symptom as a missing header. That broke parity with
+    `/v1/*`, where `_extract_bearer` in `app/api/deps.py` raises
+    `auth_invalid_token` for the same shape. Without this assertion the
+    fix could silently regress — `streamablehttp_client` initialises with
+    headers we control, so we set a bad Bearer directly and look for the
+    correct error code on the first tool call.
+
+    We can't use `_call_hello` because it formats `f"Bearer {token}"`;
+    here we need to set the raw header value. Drop down to the lower-level
+    streamable_http client + httpx call.
+    """
+    bad_header = "Bearer "  # well-formed scheme, empty token
+
+    async with mcp_runtime() as factory:
+        async with streamablehttp_client(
+            url=MCP_URL,
+            headers={"Authorization": bad_header},
+            httpx_client_factory=factory,
+        ) as (read_stream, write_stream, _get_session_id):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    name="hello.world",
+                    arguments={"echo": "garbage"},
+                )
+
+    assert result.isError is True
+    text_blocks = [block for block in result.content if block.type == "text"]
+    assert text_blocks
+    _assert_agent_error_payload(
+        text_blocks[0].text,
+        expected_code="AUTH_INVALID_TOKEN",
+    )
+
+
 def test_require_mcp_scopes_rejects_unknown_scope() -> None:
     """`require_mcp_scopes("character:write_typo")` should fail loud.
 
@@ -364,3 +411,104 @@ def test_require_mcp_scopes_rejects_unknown_scope() -> None:
 
     with pytest.raises(ValueError, match="non-canonical scope"):
         require_mcp_scopes("character:write_typo")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Delegated OAuth token → user_id resolution (Codex round-2 P1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delegated_oauth_token_resolves_user_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Delegated OAuth tokens route through `resolve_oauth_user_id` and
+    land a `user_id` on the resolved `MCPAuthContext`.
+
+    Codex round-2 P1 against PR #107 flagged that the earlier
+    "always `user_id=None` on the OAuth path" implementation broke
+    delegated-user semantics — any future tool that scopes data to
+    the calling user would see no user identity for human-driven
+    requests through `claude-code` / `vs-code` / `cursor`. After the
+    fix, M2M tokens still get `user_id=None` (sanctioned — no human
+    behind them), but delegated tokens (`is_m2m=False`) resolve via
+    the shared `app.auth.user_resolution.resolve_oauth_user_id`
+    helper to a backend `User.id`.
+
+    This is a focused unit test — patches the verifier + user
+    resolution so the assertion isolates the routing decision
+    (delegated → user-lookup branch) without spinning up a DB. The
+    end-to-end DB path is already covered by
+    `tests/auth/test_oauth_auto_provisioning.py` against `/v1/*`;
+    that suite exercises the same `resolve_oauth_user_id` helper
+    via `app.api.deps._resolve_oauth`.
+    """
+    import uuid
+
+    from app.auth.oauth import OAuthClaims
+    from app.mcp.auth import MCPAuthContext, resolve_mcp_token
+
+    expected_user_id = uuid.uuid4()
+    delegated_claims = OAuthClaims(
+        sub="auth0|leo",
+        client_id="claude-code",  # delegated client in ALLOWED_CLIENTS
+        scopes=frozenset({"character:read"}),
+        email="leo@example.com",
+        name="Leo",
+        is_m2m=False,
+    )
+
+    async def _fake_verify(token: str) -> OAuthClaims:
+        return delegated_claims
+
+    async def _fake_resolve_user_id(claims: OAuthClaims, db: Any) -> uuid.UUID:
+        # Make sure the helper actually got the verified claims through.
+        assert claims is delegated_claims
+        return expected_user_id
+
+    # We also need to stub the session factory — `resolve_mcp_token`
+    # opens an AsyncSession before calling the (already-mocked) user
+    # resolver, and the real factory requires `DATABASE_URL`. The fake
+    # session is never used because `resolve_oauth_user_id` is patched
+    # out, so a sentinel object is sufficient.
+    import contextlib
+
+    class _FakeSession:
+        pass
+
+    def _fake_factory() -> Any:
+        @contextlib.asynccontextmanager
+        async def _ctx() -> Any:
+            yield _FakeSession()
+
+        return _ctx
+
+    # `is_authentik_token` reads the env-var-driven issuer set; force it
+    # True so the OAuth branch fires regardless of unverified iss claim.
+    monkeypatch.setattr("app.mcp.auth.is_authentik_token", lambda _: True)
+    monkeypatch.setattr("app.mcp.auth.verify_oauth_token", _fake_verify)
+    monkeypatch.setattr("app.mcp.auth.resolve_oauth_user_id", _fake_resolve_user_id)
+    monkeypatch.setattr("app.mcp.auth.async_session_factory", _fake_factory)
+
+    # The token bytes themselves are irrelevant because the verifier is
+    # stubbed — the JWT-shape decode at the top of resolve_mcp_token only
+    # checks that the string is parseable, not signed.
+    import time
+
+    import jwt as pyjwt
+
+    fake_token = pyjwt.encode(
+        {"iss": "any", "sub": "any", "exp": int(time.time()) + 60},
+        "irrelevant-secret",
+        algorithm="HS256",
+    )
+
+    result = await resolve_mcp_token(fake_token)
+
+    assert isinstance(result, MCPAuthContext), (
+        f"Expected MCPAuthContext for delegated success, got {type(result).__name__}"
+    )
+    assert result.user_id == expected_user_id
+    assert result.client_id == "claude-code"
+    assert result.is_m2m is False
+    assert result.scopes == frozenset({"character:read"})

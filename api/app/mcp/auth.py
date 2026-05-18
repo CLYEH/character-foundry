@@ -58,6 +58,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.auth.jwt import JWTExpired, JWTInvalid, verify_access_token
 from app.auth.oauth import is_authentik_token, verify_oauth_token
 from app.auth.scopes import CANONICAL_SCOPES
+from app.auth.user_resolution import resolve_oauth_user_id
 from app.core.errors import (
     AgentErrorException,
     auth_expired,
@@ -65,6 +66,7 @@ from app.core.errors import (
     auth_invalid_token,
     auth_missing_token,
 )
+from app.db.session import async_session_factory
 
 _logger = logging.getLogger(__name__)
 
@@ -215,12 +217,40 @@ async def resolve_mcp_token(token: str) -> MCPAuthContext | MCPAuthFailure:
             return MCPAuthFailure(error=exc)
         # M2M tokens are SANCTIONED on /mcp/* — `auth_m2m_wrong_surface`
         # only fires on `/v1/*` (T-054 `_resolve_oauth`). Headless agents
-        # use the OAuth client_credentials grant against this surface.
+        # use the OAuth client_credentials grant against this surface and
+        # legitimately have no human user behind them, so `user_id=None`.
+        if claims.is_m2m:
+            return MCPAuthContext(
+                user_id=None,
+                client_id=claims.client_id,
+                scopes=claims.scopes,
+                is_m2m=True,
+            )
+        # Delegated token (Auth Code + PKCE) — a human is acting through
+        # an agent client. Resolve to a backend `User.id` via the shared
+        # `resolve_oauth_user_id` helper (same path `/v1/*` uses via
+        # `app.api.deps._resolve_oauth`). Without this, tools that scope
+        # data to the calling user would see `user_id=None` and either
+        # 500 or silently leak across users (Codex PR #107 round-2 P1).
+        # Opens a short-lived AsyncSession via `async_session_factory()`
+        # so we don't reuse a request-scoped session here — the MCP
+        # middleware runs before any FastAPI Depends, so there's no
+        # injected `db` to share.
+        try:
+            factory = async_session_factory()
+            async with factory() as db:
+                user_id = await resolve_oauth_user_id(claims, db)
+        except AgentErrorException as exc:
+            _logger.debug(
+                "mcp_oauth_user_resolution_failed",
+                extra={"code": exc.error.code, "client_id": claims.client_id},
+            )
+            return MCPAuthFailure(error=exc)
         return MCPAuthContext(
-            user_id=None,
+            user_id=user_id,
             client_id=claims.client_id,
             scopes=claims.scopes,
-            is_m2m=claims.is_m2m,
+            is_m2m=False,
         )
 
     # Legacy JWT path. No client_id concept — per ticket §"Token / scope
@@ -252,27 +282,42 @@ async def resolve_mcp_token(token: str) -> MCPAuthContext | MCPAuthFailure:
     )
 
 
-def _extract_bearer_from_scope(scope: Scope) -> str | None:
-    """Pull the bearer token from an ASGI scope's request headers.
+def _extract_authorization_header(scope: Scope) -> bytes | None:
+    """Return the raw `Authorization` header value, or None if absent.
 
-    ASGI headers are `list[tuple[bytes, bytes]]` with lowercase names.
-    Returns the raw token (no `Bearer ` prefix) or `None` if the header
-    is missing or malformed — uniform with `_extract_bearer` in
-    `app/api/deps.py`, just operating on raw bytes instead of a parsed
-    `Authorization` header string.
+    Distinct from `_parse_bearer` below so the middleware can tell
+    "no header at all" (→ AUTH_MISSING_TOKEN) apart from "header present
+    but malformed" (→ AUTH_INVALID_TOKEN). Codex round-2 P2 against PR
+    #107 flagged the earlier "either case collapses to None" behaviour
+    as breaking parity with `/v1/*`, where `_extract_bearer` raises
+    `auth_invalid_token` on a `Basic ...` or `Bearer ` (empty) header.
     """
     for key, value in scope.get("headers", []):
         if key == b"authorization":
-            try:
-                decoded = value.decode("latin-1")
-            except UnicodeDecodeError:
-                return None
-            parts = decoded.split(" ", 1)
-            if len(parts) == 2 and parts[0].lower() == "bearer":
-                token = parts[1].strip()
-                return token or None
-            return None
+            # ASGI scope headers are typed as Iterable[tuple[bytes, bytes]]
+            # in spec but mypy infers `Any` from the dynamic `.get(...)`,
+            # so the explicit `bytes(...)` widens-then-narrows back to
+            # the declared return type without copy if it already is one.
+            return bytes(value)
     return None
+
+
+def _parse_bearer(raw: bytes) -> str | None:
+    """Decode a known-present `Authorization` value into the bearer token.
+
+    Returns the token string on success or `None` if the header is not a
+    well-formed `Bearer <non-empty>` value. Callers distinguish this from
+    "header absent" via `_extract_authorization_header` returning None.
+    """
+    try:
+        decoded = raw.decode("latin-1")
+    except UnicodeDecodeError:
+        return None
+    parts = decoded.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    token = parts[1].strip()
+    return token or None
 
 
 class MCPAuthContextMiddleware:
@@ -295,12 +340,25 @@ class MCPAuthContextMiddleware:
             await self.app(scope, receive, send)
             return
 
-        token = _extract_bearer_from_scope(scope)
         state: MCPAuthContext | MCPAuthFailure | None
-        if token is None:
+        raw_header = _extract_authorization_header(scope)
+        if raw_header is None:
+            # No Authorization header sent at all.
             state = None
         else:
-            state = await resolve_mcp_token(token)
+            token = _parse_bearer(raw_header)
+            if token is None:
+                # Header present but not a well-formed Bearer (e.g.
+                # `Basic ...`, `Bearer ` with empty token, non-latin-1
+                # bytes). Surface as AUTH_INVALID_TOKEN — same code
+                # `/v1/*` returns for the equivalent shape (Codex
+                # round-2 P2). Without this, the failure would
+                # masquerade as AUTH_MISSING_TOKEN and clients /
+                # auth telemetry couldn't distinguish "client forgot
+                # to send a token" from "client sent garbage".
+                state = MCPAuthFailure(error=auth_invalid_token())
+            else:
+                state = await resolve_mcp_token(token)
 
         var_token = mcp_auth_state_var.set(state)
         try:
