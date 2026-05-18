@@ -105,6 +105,17 @@ def _run_provision_operator(args: argparse.Namespace) -> int:
         f"provisioned operator {user.id} ({user.email}) in team {args.team} "
         "— OAuth-only, no password login"
     )
+    # T-077: backend row alone is insufficient. The SPA application has a
+    # PolicyBinding to `cf-agent-default`; until the matching Authentik user
+    # is in that group, the operator hits "Permission denied" at the
+    # authorize endpoint. CLI can't do this itself (the Authentik user may
+    # not exist yet — enrollment creates it on first Google login), so
+    # surface the next step.
+    print(
+        "\nnext step (T-077): add the matching Authentik user to the "
+        "`cf-agent-default` group, or first-login will be denied at the "
+        "authorize endpoint. See planning/devops/authentik-stack.md §5.7.3."
+    )
     return 0
 
 
