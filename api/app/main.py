@@ -1,3 +1,6 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -17,10 +20,24 @@ from app.api.routes.reference_images import router as reference_images_router
 from app.api.routes.storage import router as storage_router
 from app.api.routes.tasks import router as tasks_router
 from app.core.errors import AgentErrorException, agent_error_handler
+from app.mcp.app import get_mcp_dispatcher, mcp_lifespan
 from app.middleware.error_handling import RequestIdMiddleware
 from app.prompt.errors import validation_mask_required
 
-app = FastAPI(title="Character Foundry API", version="0.1.0")
+
+# FastAPI lifespan drives the MCP streamable-HTTP session manager (T-080).
+# `app.mount("/mcp", ...)` below pulls in a Starlette sub-app whose own
+# lifespan does NOT auto-fire under mount; without this, the FastMCP
+# session manager never starts and every /mcp/ request errors out at
+# request time. Wrap `mcp_lifespan` so future lifespan needs (DB pool
+# warmup, etc.) compose cleanly.
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    async with mcp_lifespan():
+        yield
+
+
+app = FastAPI(title="Character Foundry API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(RequestIdMiddleware)
 app.add_exception_handler(AgentErrorException, agent_error_handler)
@@ -66,3 +83,17 @@ app.include_router(aliases_router)
 app.include_router(aliases_singular_router)
 app.include_router(prompt_router)
 app.include_router(motions_router)
+
+# MCP streamable HTTP server (T-080). Mounted as the last surface so
+# `/v1/*` route resolution is unambiguous. Per agent-interface Q7 sub-7a,
+# same-process FastAPI sub-app — shares DB session factory / AgentError /
+# task system with REST. Auth (dual-stack JWT + OAuth) is wrapped at the
+# sub-app's ASGI boundary; per-tool scope enforcement lives in each tool
+# implementation (T-080 ships only `hello.world`; T-081 introduces the
+# registry pattern).
+#
+# Mounted as a dispatcher — see `app.mcp.app._MCPDispatcher` docstring —
+# so the lifespan can rebuild the FastMCP on each startup without
+# re-mounting. `StreamableHTTPSessionManager.run()` is single-use; the
+# dispatcher decouples request dispatch from the rebuild lifecycle.
+app.mount("/mcp", get_mcp_dispatcher())
