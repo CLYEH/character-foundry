@@ -38,6 +38,17 @@ dependencies = [
     # T-017 reference-image upload route. Not a transitive dep of FastAPI
     # (CI stripped Python environments don't have it), so pin it explicitly.
     "python-multipart>=0.0.9",
+    # MCP Python SDK — streamable HTTP server backing /mcp (T-080). Pinned
+    # to >=1.27.0 because that's the first release containing PR #2038
+    # (merged 2026-02-18, first shipped in 1.27.0 on 2026-04-02), which
+    # fixes `ctx.report_progress()` dropping `related_request_id` on the
+    # streamable HTTP transport — without that fix, progress notifications
+    # from long-running tools (i2v in Sprint 3.5b Wave B) route to the wrong
+    # stream and clients never observe them. Do NOT downgrade; the smoke
+    # test in tests/mcp/test_skeleton.py asserts the notification actually
+    # arrives over real streamable HTTP and would silently flake on <1.27.
+    # PR: https://github.com/modelcontextprotocol/python-sdk/pull/2038
+    "mcp>=1.27.0",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +81,20 @@ dev = [
     # set is fetched at scan time so no local rule files live in the repo.
     "bandit[toml]>=1.7",
     "semgrep>=1.50",
+    # `setuptools` is needed at runtime by `pkg_resources`, which semgrep's
+    # transitive `opentelemetry-instrumentation-requests` dep still imports
+    # on startup. Python 3.12 venvs no longer install setuptools by default
+    # (PEP 632), so a fresh `pip install -e ".[dev]"` lands an environment
+    # where semgrep itself can't import.
+    #
+    # Upper-bound `<81` is load-bearing: setuptools 81 (2026-04-30 release)
+    # finally completed the long-running `pkg_resources` removal — older
+    # versions deprecated it; 81+ removed the module outright. T-080 first
+    # pinned `setuptools>=70` and re-greened nothing because pip resolved
+    # 81.x and the import still failed. Cap below 81 until semgrep /
+    # opentelemetry stop needing pkg_resources; drop both bound and dep
+    # when that happens.
+    "setuptools>=70,<81",
 ]
 
 [build-system]

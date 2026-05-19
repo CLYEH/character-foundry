@@ -27,18 +27,30 @@ from fastapi import Depends, Request
 
 from app.core.errors import auth_insufficient_scope, auth_missing_token
 
-# Phase 1's five canonical scopes. Any change here MUST be paired with the
-# matching change in Authentik admin UI's Scope Mapping list — see
-# `planning/devops/authentik-stack.md` §5.3. Adding / renaming / removing a
-# scope is not a T-054 edit; open a fresh ticket per
-# `planning/auth/open-questions.md` Q3 modification flow.
+# Phase 1's five canonical scopes — named constants so call sites
+# (`require_scope(...)`, `require_mcp_scopes(...)`, MCPTool registry
+# entries) reference these symbols rather than re-typing the literal
+# strings. `tests/arch/test_layering.py::test_oauth_scope_source_is_centralized`
+# rejects bare string literals matching these values anywhere outside
+# this module; using the named constants is the sanctioned path. Any
+# change here MUST be paired with the matching change in Authentik admin
+# UI's Scope Mapping list — see `planning/devops/authentik-stack.md`
+# §5.3. Adding / renaming / removing a scope is not a T-054 edit; open
+# a fresh ticket per `planning/auth/open-questions.md` Q3 modification
+# flow.
+SCOPE_CHARACTER_READ: Final[str] = "character:read"
+SCOPE_CHARACTER_WRITE: Final[str] = "character:write"
+SCOPE_TASK_READ: Final[str] = "task:read"
+SCOPE_TASK_CANCEL: Final[str] = "task:cancel"
+SCOPE_USAGE_READ: Final[str] = "usage:read"
+
 CANONICAL_SCOPES: Final[frozenset[str]] = frozenset(
     {
-        "character:read",
-        "character:write",
-        "task:read",
-        "task:cancel",
-        "usage:read",
+        SCOPE_CHARACTER_READ,
+        SCOPE_CHARACTER_WRITE,
+        SCOPE_TASK_READ,
+        SCOPE_TASK_CANCEL,
+        SCOPE_USAGE_READ,
     }
 )
 

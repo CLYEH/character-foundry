@@ -12,17 +12,12 @@ from typing import Annotated, Any
 import jwt as pyjwt
 from fastapi import Depends, Header, Request
 from redis.asyncio import Redis
-from sqlalchemy import func, select
-from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import JWTExpired, JWTInvalid, verify_access_token
 from app.auth.oauth import OAuthClaims, is_authentik_token, verify_oauth_token
-from app.auth.provisioning import (
-    auto_provision_oauth_user,
-    is_email_allowed_for_auto_provision,
-)
 from app.auth.scopes import CANONICAL_SCOPES
+from app.auth.user_resolution import resolve_oauth_user_id
 from app.core.errors import (
     auth_expired,
     auth_invalid_token,
@@ -103,87 +98,19 @@ async def _resolve_oauth(
         # downstream deps that would read it.
         raise auth_m2m_wrong_surface()
 
-    if not claims.email:
-        # Delegated token with no email claim is a misconfiguration on the
-        # Authentik provider mapping side; we can't resolve a User without
-        # it. Generic invalid_token (don't leak which claim was missing).
-        raise auth_invalid_token()
-
     request.state.token_scopes = claims.scopes
     request.state.oauth_client_id = claims.client_id
     request.state.is_m2m = claims.is_m2m
 
-    # Canonicalize email at the auth-dep boundary (Codex round-1 P2). `users.
-    # email` is a plain unique String column (not citext), so case drift
-    # between successive Google logins (e.g. `Alice@x.com` vs `alice@x.com`)
-    # would otherwise miss the existing row and call auto_provision again,
-    # splitting one operator across two rows. Lowercasing once here makes
-    # both the lookup and the auto-provision insert agree on a single
-    # canonical form. RFC 5321 says local-part is technically case-sensitive,
-    # but real-world identity providers (Google, Microsoft, etc.) treat it
-    # as case-insensitive; matching that behaviour is the safer default.
-    email = claims.email.lower()
-
-    # Case-insensitive lookup (Codex round-2 P2) — without it, an existing
-    # mixed-case row created via the `provision-operator` / `create-user`
-    # CLI (e.g. `--email Leo@Omniguider.com`) wouldn't match the lowercased
-    # OAuth claim, the miss-branch would run auto_provision, and the insert
-    # would succeed with the lowercase variant alongside the mixed-case
-    # original — silently splitting one operator across two rows. Comparing
-    # `LOWER(email)` against the already-lowercased token form matches
-    # whichever casing the existing row was stored with. Phase 1 has O(10)
-    # users so the seq-scan cost is irrelevant; a functional index on
-    # `lower(email)` is the right scale-out lever and lives in a schema
-    # migration outside T-071 scope.
-    try:
-        result = await db.execute(select(User).where(func.lower(User.email) == email))
-        user = result.scalar_one_or_none()
-    except MultipleResultsFound:
-        # Codex round-3 P2: pre-existing case-variant duplicates in
-        # `users.email` (the case-sensitive String unique constraint allows
-        # `Alice@x.com` AND `alice@x.com` side-by-side) would otherwise 500
-        # the request. Catch and surface as AUTH_INVALID_TOKEN with a loud
-        # structured log — operator dedupes via SQL (decide which row owns
-        # the history, delete the other) or a future migration backfills a
-        # functional unique index on `lower(email)`. We deliberately do NOT
-        # silently pick one of the rows: that would risk logging the
-        # operator in as a different account than the token actually
-        # represents, which is worse than a 401 they can investigate.
-        _logger.error(
-            "oauth_lookup_multiple_email_variants",
-            extra={
-                "email_lowercased": email,
-                "client_id": claims.client_id,
-            },
-        )
-        raise auth_invalid_token() from None
-    if user is None:
-        # Authentik knows the email but we don't have a CF User row yet.
-        # T-071: auto-provision the row on first login, gated on a
-        # backend domain allowlist (defense in depth — Authentik's own
-        # `hd=` gate is upstream, see `planning/devops/authentik-stack.md`
-        # §5.2 / §5.7.2). Unknown domains stay 401 so we don't leak
-        # existence of arbitrary verified Google identities into our DB.
-        domain = email.rpartition("@")[2]
-        if not is_email_allowed_for_auto_provision(email):
-            _logger.warning(
-                "oauth_auto_provision_denied",
-                extra={
-                    "email_domain": domain,
-                    "client_id": claims.client_id,
-                },
-            )
-            raise auth_invalid_token()
-        user = await auto_provision_oauth_user(email=email, name=claims.name)
-        _logger.info(
-            "oauth_user_auto_provisioned",
-            extra={
-                "user_id": str(user.id),
-                "email_domain": domain,
-                "client_id": claims.client_id,
-            },
-        )
-    return user.id
+    # User resolution (email canonicalisation, case-variant collision
+    # handling, first-login auto-provisioning) lives in the shared
+    # `app.auth.user_resolution.resolve_oauth_user_id` helper so the
+    # `/mcp/*` surface gets the same lookup behaviour without
+    # duplicating it (T-080 PR #107 Codex round-2 P1). See that
+    # function's docstring for the full set of error conditions —
+    # they all collapse to `AUTH_INVALID_TOKEN` here so the response
+    # can't leak DB state.
+    return await resolve_oauth_user_id(claims, db)
 
 
 def _resolve_jwt(
