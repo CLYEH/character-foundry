@@ -156,13 +156,15 @@ Rationale: api-shape §9 "建立 Character (模式 A / B)" flow is exactly these
 
 ```python
 bundles = [
-    "POST /v1/characters/{character_id}/aliases",
-    "POST /v1/characters/{character_id}/aliases/masks",  # inpaint mode: required; mixed mode: optional
+    "POST /v1/characters/{character_id}/aliases/masks",  # step 1 (inpaint required / mixed optional): upload mask FIRST, get mask_id
+    "POST /v1/characters/{character_id}/aliases",        # step 2: create alias; body carries { mask: { mask_id } } when applicable
 ]
 scopes = ["character:write", "task:read"]
 ```
 
-Rationale: alias creation has 4 input modes (`text` / `image` / `inpaint` / `mixed`). All modes hit endpoint 1; the mask upload (endpoint 2, character-scoped) is **required** for `inpaint` and **optional** for `mixed` — when an agent calls `alias.add(input_mode='mixed', mask_file=<bytes>)` the tool must still upload and bind the mask, or the resulting alias drops the mask signal entirely. `alias_service._validate_input_mode_matrix` and T-085's `mask_file: bytes | None = None` field both treat the mask the same way for these two modes. One packaged tool with a polymorphic `input_mode` argument absorbs the dispatch — agent gives the source bytes + mode and gets an `Alias`.
+Rationale: alias creation has 4 input modes (`text` / `image` / `inpaint` / `mixed`). The alias-create endpoint is always hit; the mask upload (character-scoped) is **required** for `inpaint` and **optional** for `mixed` — when an agent calls `alias.add(input_mode='mixed', mask_file=<bytes>)` the tool must still upload and bind the mask, or the resulting alias drops the mask signal entirely. `alias_service._validate_input_mode_matrix` and T-085's `mask_file: bytes | None = None` field both treat the mask the same way for these two modes.
+
+**Sequence is load-bearing:** when a `mask_file` is supplied, the tool must upload it **first** to get `mask_id`, then embed `{ mask: { mask_id } }` in the alias-create body (per `app/schemas/prompt.py::MaskInput`, which is the wire-level contract for the `mask` field). Reversing them either drops the mask signal or 422s the create request for inpaint mode. One packaged tool with a polymorphic `input_mode` argument absorbs the dispatch — agent gives the source bytes + mode and gets an `Alias`.
 
 > **Reference-image constraint for `image` / `mixed` modes:** Phase 1 has **no** way to upload a brand-new reference image at alias time — `/v1/creation-sessions/{id}/reference-images` requires `session.status == "in_progress"` and alias creation runs only after the Base is locked (session is `completed`). Agents calling `alias.add(input_mode='image' | 'mixed')` must pass `reference_image_ids` that were uploaded **during** the original Base creation session. The packaged tool's input schema must document this constraint and reject calls that try to inline new image bytes for these modes. See §6 Q-D7 for the backend gap and recommended M4 work.
 
