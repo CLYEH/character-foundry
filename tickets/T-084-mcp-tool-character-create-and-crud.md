@@ -110,8 +110,9 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 - `api/app/mcp/tools/character.py` (new) — 10 個 tool（1 packaged create + 9 CRUD 1:1；M4-deferred 的 manifest/copy/export 不在本單）
 - `api/app/mcp/schemas/character.py` (new) — input / output pydantic schema
 - `api/app/api/routes/characters.py` (edit) — 補 `require_scope` decorator（若 T-054 後續未套）
-- `api/app/api/routes/creation_sessions.py` (edit) — 同上
-- `api/app/api/routes/checkpoints.py` (edit) — 同上
+- `api/app/api/routes/creation_sessions.py` (edit) — 同上（GET/POST checkpoints / select-base / abandon / GET session）
+- `api/app/api/routes/reference_images.py` (edit) — 同上（`POST /v1/creation-sessions/{id}/reference-images` 在獨立檔案，prefix 同為 `/v1/creation-sessions` 但 router 物件分開；reference mode `character.create` 必含此 endpoint）
+- `api/app/api/routes/checkpoints.py` (edit) — 同上（GET / fork）
 - `api/tests/mcp/tools/__init__.py` (new)
 - `api/tests/mcp/tools/test_character_create.py` (new)
 - `api/tests/mcp/tools/test_character_crud.py` (new)
