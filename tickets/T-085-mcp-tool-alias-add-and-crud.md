@@ -26,7 +26,7 @@ Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image 
       name: str
       input_mode: Literal["text", "image", "inpaint", "mixed"]
       freeform_note: str | None = None
-      reference_image_ids: list[UUID] | None = None  # existing ids from Base's source creation session; required if mode in (image/mixed). See T-083 §6 Q-D7.
+      reference_image_ids: list[UUID] | None = None  # existing ids from Base's source creation session; REQUIRED only for image mode. For mixed mode optional — backend `alias_service._validate_input_mode_matrix` only requires `at least one of (note / refs / mask)`. See T-083 §6 Q-D7.
       mask_file: bytes | None = None                 # base64 packed mask PNG; required if mode = inpaint, optional for mixed
       mask_id: UUID | None = None                    # 已存在 mask（agent 上一輪重用）；mutually exclusive with mask_file
   ```
@@ -144,11 +144,11 @@ Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image 
 
 ## Notes
 
-- **為什麼 alias.add 是 packaging（2 endpoint，inpaint mode 才用到第 2 條）**：mask upload + alias 建立是兩條獨立 REST endpoint，inpaint mode 必須串：upload mask → 拿 mask_id → 嵌進 alias create body。Text / image / mixed mode 只呼 alias create endpoint，但與 inpaint mode share 同一條 tool（input_mode discriminator），agent 不必感知 chain 結構。**reference image upload 不在 bundle**（per T-083 §6 Q-D7）—— 詳見下一條。
+- **為什麼 alias.add 是 packaging（2 endpoint，inpaint 必用第 2 條 / mixed 帶 mask 時也用）**：mask upload + alias 建立是兩條獨立 REST endpoint。**inpaint** 必須串：upload mask → 拿 mask_id → 嵌進 alias create body；**mixed** 在 agent 帶 `mask_file` 時也走同一條 chain（per `alias_service._validate_input_mode_matrix` 與 T-085 schema：mixed mode `mask` 是 optional，但只要有就必須 upload 拿 mask_id 才能塞進 create body）。**text / image** 與不帶 mask 的 mixed mode 只呼 alias create endpoint，但仍 share 同一條 tool（input_mode discriminator），agent 不必感知 chain 結構。**reference image upload 不在 bundle**（per T-083 §6 Q-D7）—— 詳見下方對應條目。
 - **為什麼 mask 不能直接傳 raw bytes 給 alias create endpoint**：既有 REST 合約（per `app/schemas/prompt.py::MaskInput` + T-031 落地）規定 alias create body 的 `mask` 欄位是 `{ mask_id: UUID }`，raw bytes 走獨立 `POST /aliases/masks` upload。若 MCP tool 把 raw bytes 塞進 alias create body 會 422。把 mask upload 包進 packaging tool 是 agent-side ergonomics + 守 REST 合約的正確做法（Codex review #106 round-6 P1 抓到本單早期版本漏 mask upload endpoint，會讓 inpaint/mixed mode 在 MCP 層 unimplementable，已 reconcile）
 - **為什麼支援 `mask_id` path 而非只支援 `mask_file`**：agent 多輪迭代場景常重用上一輪 mask（節省 upload + 維持一致 region）；只支援 `mask_file` 強迫每輪重傳浪費 bandwidth + 失去重用性。`mask_file` 與 `mask_id` 互斥（tool 入口拒同時傳）
 - **MaskInput schema 為什麼 reuse 既有**：T-030 / T-031 / T-035 / T-036 已穩定，MCP 層不該另定一份；單一 source of truth 避免 schema drift
-- **mixed mode 在 alias 是什麼**：image + freeform_note 都有的 case（per `api-shape.md` §5.3），T-030 已支援。本單 tool 只是 pass-through，alias generation backend 處理多模融合
+- **mixed mode 在 alias 是什麼**：per `alias_service._validate_input_mode_matrix` doc string「mixed → at least one of (note / refs / mask)」—— 任何 note / refs / mask 組合都 valid（不是「image + freeform_note」窄定義）。T-030 已支援。本單 tool 只是 pass-through，alias generation backend 處理多模融合。tool 入口僅 enforce「at least one signal」與 image-mode `reference_image_ids` 必填，不對 mixed 額外要求
 - **為什麼不在 bundle 裡 reference-image upload（T-083 §6 Q-D7 的 Phase 1 constraint）**：`POST /v1/creation-sessions/{id}/reference-images` 要求 `session.status == "in_progress"`（`assert_session_writable` enforce），但 alias 建立發生在 `select-base` 鎖死 Base 之後，character 的 source creation session 已 `completed`。呼這個 endpoint 必 fail `CONFLICT_SESSION_NOT_ACTIVE`。Phase 1 沒有 character-scoped reference upload endpoint（SPA `web/src/api/endpoints/aliases.ts:83` 的 `uploadCharacterReference` 打的 `/v1/characters/{id}/reference-images` 在 backend 不存在 —— 也是 T-083 §6 Q-D7 flag 的 SPA dead-code suspicion）。Result：`image` / `mixed` mode 在 Phase 1 只能消費 character 的 Base source session 期間上傳過的 `reference_image_ids`（`alias_service._resolve_reference_keys` enforce 同 session 限制）。Brand-new reference upload at alias time = M4 work（per Q-D7 recommended work：加 `POST /v1/characters/{id}/reference-images` character-scoped endpoint）
 - **alias 沒有 export / copy 對應 tool**：alias 是 character 的子資源，export / copy 都在 character 層級處理（M4 範圍，per scope.md §1，T-084 也已 defer）。本單範圍純 alias CRUD + add
-- **progress phase 與 T-084 命名一致**：`uploading_references` / `uploading_mask` / `generating_alias` 與 character.create 同 prefix family，agent UI 顯示時容易統一渲染
+- **progress phase 與 T-084 命名一致**：`uploading_mask` / `generating_alias` 與 character.create 同 prefix family，agent UI 顯示時容易統一渲染。本單沒有 `uploading_references` phase（per Q-D7：reference upload at alias time 整個 Phase 1 不存在）
