@@ -136,7 +136,7 @@ Wave B 第 3 張：把 motion 領域全部 MCP tool 落地。motion.generate 是
 
 | Name | Type | Bundles | Scopes |
 |---|---|---|---|
-| `motion.generate` | packaged（polymorphic） | base or alias motion create + task wait | `character:write` + `task:read` |
+| `motion.generate` | packaged（polymorphic） | base or alias motion create + `GET /v1/tasks/{task_id}` polling | `character:write` + `task:read`（`task:read` 由 task GET 進 union） |
 | `motion.list_for_base` | 1:1 | `GET /v1/bases/{id}/motions` | `character:read` |
 | `motion.list_for_alias` | 1:1 | `GET /v1/aliases/{id}/motions` | `character:read` |
 | `motion.get` | 1:1 | `GET /v1/motions/{id}` | `character:read` |

@@ -133,7 +133,7 @@ Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image 
 
 | Name | Type | Bundles | Scopes |
 |---|---|---|---|
-| `alias.add` | packaged | (optional) mask upload + alias create（reference-images upload **not** bundled per T-083 §6 Q-D7 — image/mixed mode consume existing `reference_image_ids`） | `character:write` + `task:read` |
+| `alias.add` | packaged | (optional inpaint/mixed) mask upload + alias create + `GET /v1/tasks/{task_id}` polling（reference-images upload **not** bundled per T-083 §6 Q-D7 — image/mixed mode consume existing `reference_image_ids`） | `character:write` + `task:read`（`task:read` 由 task GET 進 union） |
 | `alias.list` | 1:1 | `GET /v1/characters/{id}/aliases` | `character:read` |
 | `alias.get` | 1:1 | `GET /v1/aliases/{id}` | `character:read` |
 | `alias.rename` | 1:1 | `PATCH /v1/aliases/{id}` | `character:write` |
