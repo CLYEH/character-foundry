@@ -67,6 +67,7 @@ from app.core.errors import (
     auth_missing_token,
 )
 from app.db.session import async_session_factory
+from app.models.user import User
 
 _logger = logging.getLogger(__name__)
 
@@ -270,6 +271,20 @@ async def resolve_mcp_token(token: str) -> MCPAuthContext | MCPAuthFailure:
         # Token verified but `sub` is not a UUID — treat as invalid,
         # parallel to `_resolve_jwt`'s same branch in `app/api/deps.py`.
         return MCPAuthFailure(error=auth_invalid_token())
+
+    # Verify the user row still exists — same check `/v1/*`'s
+    # `get_current_user` runs immediately after `_resolve_jwt` (see
+    # `app/api/deps.py::get_current_user`). Without it, a validly-signed
+    # JWT whose `sub` points at a since-deleted user row would still grant
+    # full canonical scope access on `/mcp/*` — Codex round-3 P2 against
+    # PR #107. Same short-lived AsyncSession pattern as the delegated
+    # OAuth branch above.
+    factory = async_session_factory()
+    async with factory() as db:
+        user = await db.get(User, user_id)
+        if user is None:
+            return MCPAuthFailure(error=auth_invalid_token())
+
     return MCPAuthContext(
         user_id=user_id,
         client_id=None,

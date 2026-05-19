@@ -485,6 +485,63 @@ async def test_no_trailing_slash_path_works_without_redirect(
 
 
 # ---------------------------------------------------------------------------
+# Legacy JWT — reject stale user rows (Codex round-3 P2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_jwt_with_deleted_user_surfaces_invalid_token(
+    monkeypatch: pytest.MonkeyPatch,
+    make_jwt_token: Callable[..., str],
+) -> None:
+    """A validly-signed legacy JWT whose `sub` points at a deleted user
+    must be rejected, mirroring `/v1/*`'s `get_current_user` behaviour.
+
+    Codex round-3 P2 against PR #107 flagged that `resolve_mcp_token`'s
+    JWT branch returned an authenticated `MCPAuthContext` with full
+    canonical scopes WITHOUT checking the DB — so a token signed before
+    the user was deleted would continue to authorise `/mcp/*` calls
+    even though `/v1/*` would 401 the same token. The fix opens a
+    short-lived AsyncSession and calls `db.get(User, user_id)`,
+    returning `MCPAuthFailure(auth_invalid_token())` when the row is
+    missing.
+
+    Same mock pattern as `test_delegated_oauth_token_resolves_user_id`:
+    patch the session factory so the test doesn't need a real DB, and
+    stub `db.get(User, ...)` to return None (the "stale user" state).
+    Asserting the failure path keeps the parity guarantee anchored —
+    without it, a future refactor that drops the DB check on the JWT
+    branch would silently regress the gap Codex flagged.
+    """
+    import contextlib
+
+    from app.mcp.auth import MCPAuthFailure, resolve_mcp_token
+
+    class _StaleSession:
+        async def get(self, _cls: Any, _user_id: Any) -> None:
+            # Simulates a user row that's been deleted since the token
+            # was minted — `db.get` returns None for missing primary keys.
+            return None
+
+    def _stale_factory() -> Any:
+        @contextlib.asynccontextmanager
+        async def _ctx() -> Any:
+            yield _StaleSession()
+
+        return _ctx
+
+    monkeypatch.setattr("app.mcp.auth.async_session_factory", _stale_factory)
+
+    token = make_jwt_token()
+    result = await resolve_mcp_token(token)
+
+    assert isinstance(result, MCPAuthFailure), (
+        f"Expected MCPAuthFailure for stale JWT user, got {type(result).__name__}"
+    )
+    assert result.error.error.code == "AUTH_INVALID_TOKEN"
+
+
+# ---------------------------------------------------------------------------
 # Delegated OAuth token → user_id resolution (Codex round-2 P1)
 # ---------------------------------------------------------------------------
 

@@ -54,6 +54,43 @@ JWT_SECRET = "test-mcp-jwt-secret-dont-use-in-prod"
 
 
 @pytest.fixture(autouse=True)
+def _mcp_db_session_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub `app.mcp.auth.async_session_factory` so tests don't need a real DB.
+
+    After PR #107 round-3 P2, `resolve_mcp_token` opens a short-lived
+    AsyncSession for BOTH the JWT path (verify user row still exists)
+    and the delegated OAuth path (resolve user_id via shared helper).
+    Real `async_session_factory()` requires `DATABASE_URL` and a live
+    Postgres, which the MCP smoke suite deliberately avoids.
+
+    Default behaviour: every `db.get(User, ...)` returns a sentinel
+    `object()` so the "user exists" path runs and the smoke tool gets
+    its happy path. Tests that need different semantics — the stale-user
+    test asserting `AUTH_INVALID_TOKEN`, or the delegated OAuth test
+    asserting `user_id` resolution — install their own monkeypatch in
+    the test body, which stacks ON TOP of this autouse stub and wins.
+    """
+
+    class _UserAlwaysExistsSession:
+        async def get(self, _cls: Any, _user_id: Any) -> object:
+            # `db.get(User, ...)` returns the User row or None for the
+            # primary-key lookup. Returning any non-None object is
+            # sufficient for the `if user is None` gate in
+            # `resolve_mcp_token` — tests that need a real User shape
+            # would override anyway.
+            return object()
+
+    def _factory() -> Any:
+        @contextlib.asynccontextmanager
+        async def _ctx() -> Any:
+            yield _UserAlwaysExistsSession()
+
+        return _ctx
+
+    monkeypatch.setattr("app.mcp.auth.async_session_factory", _factory)
+
+
+@pytest.fixture(autouse=True)
 def _mcp_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin env vars every MCP test depends on.
 
