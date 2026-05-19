@@ -4,7 +4,7 @@
 **Sprint:** 3.5b
 **Est:** S
 **Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）
-**Related:** T-084 / T-085 / T-086（與 Wave B packaged-tool 三張平行，無 inter-tool dep）
+**Blocks:** T-084 / T-085 / T-086（三張 packaged tool 都 bundle `GET /v1/tasks/{task_id}` 並 declare `task:read` scope；T-088 是把 `require_scope("task:read")` 補到 task endpoints 的 owner。本單必須先 land，否則 T-081 guardrail 2 對 packaged tool 的 `task:read` scope 找不到 union 來源、reject 整個 registry。詳見 T-083 §6 Q-D6 sequencing note）
 
 ---
 
