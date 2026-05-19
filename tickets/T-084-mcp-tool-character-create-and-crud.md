@@ -53,6 +53,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 - `character.fork`：wraps `POST /v1/checkpoints/{id}/fork`，scope `character:write`
 - `character.get_session`：wraps `GET /v1/creation-sessions/{id}`，scope `character:read`（debug / resume 用）
 - `character.abandon_session`：wraps `POST /v1/creation-sessions/{id}/abandon`，scope `character:write`
+- `character.get_checkpoint`：wraps `GET /v1/checkpoints/{id}`，scope `character:read`（drift from api-shape §5.2 — endpoint exists in code, see T-083 endpoint-mcp-mapping.md §6 Q-D1）
 
 ### Registry 條目
 - 每個 tool 在 `app/mcp/tools/character.py` 用 `register(MCPTool(...))` 註冊
@@ -93,7 +94,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 ## Acceptance criteria
 
 - [ ] `character.create` packaged tool 註冊進 registry，bundles 與 T-083 §2 表完全一致
-- [ ] 全部 8 條 CRUD 1:1 tool 註冊進 registry（`list` / `get` / `rename` / `delete` / `restore` / `fork` / `get_session` / `abandon_session`；M4-deferred 的 `get_manifest` / `copy` / `export` 不在本單）
+- [ ] 全部 9 條 CRUD 1:1 tool 註冊進 registry（`list` / `get` / `rename` / `delete` / `restore` / `fork` / `get_session` / `abandon_session` / `get_checkpoint`；M4-deferred 的 `get_manifest` / `copy` / `export` 不在本單）
 - [ ] 每個 tool 的 `scopes` 通過 T-081 CI guardrail 2（⊆ union of bundle endpoint scopes）
 - [ ] `character.create` template mode + reference mode 各自一條 e2e test 綠（含 progress notification 驗證）
 - [ ] 失敗 path test 綠（checkpoint 失敗、reference upload 失敗、abandon 被呼）
@@ -105,7 +106,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## Files expected to touch
 
-- `api/app/mcp/tools/character.py` (new) — 9 個 tool（1 packaged create + 8 CRUD 1:1；M4-deferred 的 manifest/copy/export 不在本單）
+- `api/app/mcp/tools/character.py` (new) — 10 個 tool（1 packaged create + 9 CRUD 1:1；M4-deferred 的 manifest/copy/export 不在本單）
 - `api/app/mcp/schemas/character.py` (new) — input / output pydantic schema
 - `api/app/api/routes/characters.py` (edit) — 補 `require_scope` decorator（若 T-054 後續未套）
 - `api/app/api/routes/creation_sessions.py` (edit) — 同上
@@ -136,6 +137,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 | `POST /v1/creation-sessions/{id}/reference-images` | `character:write` |
 | `POST /v1/creation-sessions/{id}/select-base` | `character:write` |
 | `POST /v1/creation-sessions/{id}/abandon` | `character:write` |
+| `GET /v1/checkpoints/{id}` | `character:read` |
 
 > ⚠ M4 endpoints（`/v1/characters/{id}/manifest` / `/v1/characters/{id}/copy` / `/v1/characters/{id}/export`）**未實作**，由 M4 ticket 從 day 1 帶 scope decorator + MCP tool 條目（per scope.md §1）
 
@@ -145,7 +147,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## MCP tool delta
 
-**新 tool（9 條 = 1 packaged + 8 CRUD 1:1）：**
+**新 tool（10 條 = 1 packaged + 9 CRUD 1:1）：**
 
 | Name | Type | Bundles | Scopes |
 |---|---|---|---|
@@ -158,6 +160,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 | `character.fork` | 1:1 | `POST /v1/checkpoints/{id}/fork` | `character:write` |
 | `character.get_session` | 1:1 | `GET /v1/creation-sessions/{id}` | `character:read` |
 | `character.abandon_session` | 1:1 | `POST /v1/creation-sessions/{id}/abandon` | `character:write` |
+| `character.get_checkpoint` | 1:1 | `GET /v1/checkpoints/{id}` | `character:read` |
 
 決策出處：`planning/agent-interface/endpoint-mcp-mapping.md` §3
 
