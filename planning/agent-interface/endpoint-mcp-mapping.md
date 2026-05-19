@@ -142,15 +142,15 @@ Reverse lookup: for each packaged tool, the list of REST endpoints it consumes. 
 
 ```python
 bundles = [
-    "POST /v1/characters",
-    "POST /v1/creation-sessions/{session_id}/checkpoints",
-    "POST /v1/creation-sessions/{session_id}/reference-images",  # reference mode only
-    "POST /v1/creation-sessions/{session_id}/select-base",
+    "POST /v1/characters",                                        # step 1: create character + session
+    "POST /v1/creation-sessions/{session_id}/reference-images",   # step 2 (reference mode only): upload refs FIRST, get reference_image_ids
+    "POST /v1/creation-sessions/{session_id}/checkpoints",        # step 3: enqueue checkpoint (passes reference_image_ids if reference mode)
+    "POST /v1/creation-sessions/{session_id}/select-base",        # step 4: lock the checkpoint as Base
 ]
 scopes = ["character:write", "task:read"]
 ```
 
-Rationale: api-shape §9 "建立 Character (模式 A / B)" flow is exactly these 4 endpoints in sequence. Agent saying "create character" expects a single returned `Character` (with `base` locked), not a 4-step orchestration burden.
+Rationale: api-shape §9 "建立 Character (模式 A / B)" flow is exactly these 4 endpoints in this **sequence** — reference-images must upload **before** checkpoints so the latter receives the populated `reference_image_ids` field. Reversing them makes reference-mode creation either fail validation or run the generation without the intended images. Agent saying "create character" expects a single returned `Character` (with `base` locked), not a 4-step orchestration burden.
 
 ### `alias.add`（T-085）
 
