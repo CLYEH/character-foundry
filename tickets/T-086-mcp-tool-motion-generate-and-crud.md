@@ -3,7 +3,7 @@
 **Status:** TODO
 **Sprint:** 3.5b
 **Est:** M
-**Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）、T-084（pattern reference；progress phase 命名 align）
+**Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）、T-084（pattern reference；progress phase 命名 align）、**T-088**（task endpoint `require_scope` 必須先 land 才能讓 motion.generate 的 `task:read` 通過 T-081 guardrail 2 的 union check）
 **Related:** T-085（同 Wave B）、T-087（i2v 是 Last-Event-ID 最關鍵的對象——本單實作 progress 但不處理斷線重連，T-087 補上）
 
 ---

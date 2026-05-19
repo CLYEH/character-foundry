@@ -182,8 +182,8 @@ ZIP 匯出、Copy Character、Usage dashboard。
 
 **Dependency / parallelization：**
 - **Wave A（foundation；4 張幾乎全平行）**：T-080 / T-082 / T-083 無內部 dep，可同時起步。T-081 主體（registry pattern + 3 條 CI script）也可並行開發，唯一耦合是 T-080 落地的 `hello.world` migrate 進 registry 的那 commit 必須等 T-080 merge 後追加（per T-081 Depends-on 段；Codex review #106 round-3 抓到原本「Depends on: none」與 migration 要求衝突已 reconcile）
-- **Wave B（核心 tool；3 張依 Wave A）**：T-084 / T-085 / T-086 等 T-080 + T-081 + T-083 三張完成才開；T-084 先行作為 pattern reference 較順，但不是 hard dep
-- **Wave B miscellany（T-088）**：等 T-080 + T-081（registry / CI guardrail），與 T-084 / T-085 / T-086 平行可開；5 條 1:1 tool，無 internal inter-tool dep
+- **Wave B miscellany（T-088）必須先 ship**：等 T-080 + T-081（registry / CI guardrail）；**T-084 / T-085 / T-086 都依賴 T-088 先 land**（per T-083 §6 Q-D6 sequencing note）。理由：三張 packaged tool 都 bundle `GET /v1/tasks/{task_id}` 並 declare `task:read`，而 task endpoint 的 `require_scope` 是 T-088 在做。若 packaged tool ticket 先 land，T-081 guardrail 2（tool.scopes ⊆ union of bundle endpoint scopes）會因為 task endpoint 還沒 declare `task:read` 而 reject 整個 tool registry。
+- **Wave B（核心 tool；3 張依 Wave A + T-088）**：T-084 / T-085 / T-086 等 T-080 + T-081 + T-083 + **T-088** 全部完成才開；T-084 先行作為 pattern reference 較順，但不是 hard dep（三張之間平行）
 - **T-087**：等 T-080（transport 層）+ T-086（i2v 是最關鍵測試對象）
 
 **Plan phase deliverable（M3.5 整體；3.5a 已 ship）：**

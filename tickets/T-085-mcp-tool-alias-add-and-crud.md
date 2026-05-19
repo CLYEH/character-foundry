@@ -3,7 +3,7 @@
 **Status:** TODO
 **Sprint:** 3.5b
 **Est:** M
-**Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）、T-084（character.create pattern 是本單抄的對象）
+**Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）、T-084（character.create pattern 是本單抄的對象）、**T-088**（task endpoint `require_scope` 必須先 land 才能讓 alias.add 的 `task:read` 通過 T-081 guardrail 2 的 union check）
 **Related:** T-086（同 Wave B、共用 pattern）、T-087（progress 是 Last-Event-ID 對象）
 
 ---

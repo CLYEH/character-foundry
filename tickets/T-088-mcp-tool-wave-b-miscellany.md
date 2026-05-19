@@ -34,8 +34,10 @@ T-083 §6 Q-D6 surfaced：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 - 兩個 surface 共用一個 backend service（不重複實作）
 
 ### 既有 endpoint 補 `require_scope`
-- 5 個 endpoint 若 T-054 落地時未套 → 本單順手套（per S3.5-1 pattern）
-- T-081 CI guardrail 1 會 enforce
+- **4 個受保護 endpoint** 若 T-054 落地時未套 → 本單順手套（per S3.5-1 pattern）：`GET /v1/tasks/{task_id}`、`GET /v1/tasks`、`POST /v1/tasks/{task_id}/cancel`、`POST /v1/prompt/preview`
+- **加上 `GET /v1/tasks/{task_id}/stream`**（SSE endpoint，T-083 §2.5 表列 owner = T-080，但 T-080 落地時用 `get_current_user_no_pin` 沒套 `require_scope`，留下 scope coverage gap）→ 本單補成 `task:read`，與其它 task endpoint 一致
+- **`GET /v1/meta` 保持 public，不套 `require_scope`** —— per `api-shape.md` §5.9 與 §2.9 mapping 行決策（meta 是 health/capability info，必須讓未授權 client 可讀，包含 SPA 啟動時 polling 60s）。本單把 `/v1/meta` 加進 T-081 scope coverage check 的 **explicit public allowlist**（與 `/health` 同 bucket），避免 coverage check 把它當 missing scope。
+- T-081 CI guardrail 1 (scope coverage) 會 enforce 上述
 
 ### Tests
 - `api/tests/mcp/tools/test_task_tools.py`：
@@ -71,7 +73,9 @@ T-083 §6 Q-D6 surfaced：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 - [ ] 每個 tool 的 `scopes` 通過 T-081 CI guardrail 2（scope ⊆ union of bundle endpoint scopes）
 - [ ] `meta.get` 同時透過 `tools/list` extension 露 `degraded_services`，且兩個 surface 來源一致（同 Redis aggregator）
 - [ ] `task.cancel` 4 種 `cancel_outcome` 各一條 e2e test 綠
-- [ ] 5 個 endpoint 都套上 `require_scope`，T-081 scope coverage check pass
+- [ ] **5 個受保護 endpoint 都套上 `require_scope`**：4 misc-tool endpoint（`GET /v1/tasks/{task_id}` / `GET /v1/tasks` / `POST /v1/tasks/{task_id}/cancel` / `POST /v1/prompt/preview`）+ 1 SSE endpoint（`GET /v1/tasks/{task_id}/stream`，補 T-080 留下的 coverage gap）
+- [ ] **`GET /v1/meta` 保持 public，不套 `require_scope`** —— 加進 T-081 scope coverage check 的 explicit public allowlist（與 `/health` 同 bucket）；T-081 scope coverage check 不對它 fail
+- [ ] T-081 scope coverage check pass（all protected + explicit-public allowlist 都被認）
 - [ ] `pytest api/tests/mcp/tools/test_{task,prompt,meta}_tools.py` 全綠
 - [ ] PR description 對照 T-083 §2 表逐條 check（5 條都標 T-088 owner）
 
@@ -102,9 +106,10 @@ T-083 §6 Q-D6 surfaced：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 |---|---|
 | `GET /v1/tasks/{task_id}` | `task:read` |
 | `GET /v1/tasks` | `task:read` |
+| `GET /v1/tasks/{task_id}/stream` | `task:read` （SSE endpoint；T-080 落地時用 `get_current_user_no_pin`，本單補 `require_scope` 對齊其他 task endpoint） |
 | `POST /v1/tasks/{task_id}/cancel` | `task:cancel` |
 | `POST /v1/prompt/preview` | `character:read` |
-| `GET /v1/meta` | （public，no scope required；但 endpoint 必須在 scope coverage check allowlist 或顯式 declare）|
+| `GET /v1/meta` | **public，不套 `require_scope`** —— per `api-shape.md` §5.9（health/capability info，未授權 client 必須可讀，SPA 60s polling）。本單把它加進 T-081 scope coverage check 的 explicit public allowlist（與 `/health` 同 bucket） |
 
 決策出處：`planning/agent-interface/endpoint-mcp-mapping.md` §2 / `planning/auth/open-questions.md §「Q3 canonical scope 字串」`
 

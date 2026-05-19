@@ -3,7 +3,7 @@
 **Status:** TODO
 **Sprint:** 3.5b
 **Est:** M
-**Depends on:** T-080（MCP skeleton）、T-081（registry pattern + CI guardrail）、T-083（endpoint mapping doc 提供權威 bundle list）
+**Depends on:** T-080（MCP skeleton）、T-081（registry pattern + CI guardrail）、T-083（endpoint mapping doc 提供權威 bundle list）、**T-088**（task endpoint `require_scope` 必須先 land 才能讓 T-084 packaged tool 的 `task:read` 通過 T-081 guardrail 2 的 union check）
 **Related:** T-085 / T-086（同 Wave B、共用 pattern）、T-087（progress 機制是 Last-Event-ID 的對象）
 
 ---
