@@ -45,7 +45,7 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 | `DELETE` | `/v1/characters/{id}` | ✅ | `character.delete`（1:1）| `character:write` | ✅ | T-084 | soft delete |
 | `POST` | `/v1/characters/{id}/restore` | ✅ | `character.restore`（1:1）| `character:write` | ✅ | T-084 | undo soft delete |
 | `POST` | `/v1/characters/{id}/copy` | ✅ | `character.copy`（1:1，async via task）| `character:write` + `task:read` | 🟡 M4 | M4-future | B1 scope = Base + Aliases |
-| `GET` | `/v1/characters/{id}/export` | ✅ | bundle of `character.export`（trigger → poll task → resolve signed URL）| `character:write` + `task:read` | 🟡 M4 | M4-future | ZIP packaging is multi-step async |
+| `GET` | `/v1/characters/{id}/export` | ✅ | bundle of `character.export`（trigger → poll task → resolve signed URL）| `character:read` + `task:read` | 🟡 M4 | M4-future | ZIP packaging is multi-step async. Scope is `character:read` per `auth/open-questions.md §「Q3 ...」` line 150 (all `GET /v1/characters/*` → `character:read`) and `oauth-mcp-integration.md §3.4` (tool scope = union of endpoint scopes). If M4 decides export's mutation-y semantics warrant `character:write`, reopen Q3 in `auth/open-questions.md` first. |
 | `GET` | `/v1/exports/{id}/download` | ❌ | n/a | n/a | 🟡 M4 | n/a | 302 redirect; agent fetches signed URL directly |
 
 ### §2.2 Creation Session / Checkpoints (api-shape §5.2)
@@ -186,7 +186,7 @@ bundles = [
     "GET /v1/tasks/{task_id}",                   # poll until completed
     # signed URL from completed task result is fetched out-of-band by the agent
 ]
-scopes = ["character:write", "task:read"]
+scopes = ["character:read", "task:read"]
 ```
 
 Rationale: ZIP export is async (Veo-tier latency potential for large characters). One tool packs trigger + wait + signed-URL resolution; agent gets a ready-to-fetch URL.
@@ -246,13 +246,12 @@ Items flagged during T-083 enumeration. Each must be resolved before the corresp
 
 ### Q-D3. T-084 tool count reconciliation
 
-- T-084 in `STATUS.md` Sprint 3.5b table says "9 個 tool". The §2.1 + §2.2 enumeration above contributes:
+- T-084 in `STATUS.md` Sprint 3.5b table says "9 個 tool = 1 packaged + 8 CRUD". The §2.1 + §2.2 enumeration above contributes:
   - 1 packaged (`character.create`)
-  - 6 CRUD from §2.1 (`list` / `get` / `rename` / `delete` / `restore` — `manifest` / `copy` / `export` are M4-future)
-  - 3 CRUD from §2.2 (`get_session` / `abandon_session` / `fork`)
-  - + 1 drift CRUD per Q-D1 (`get_checkpoint`)
-  - = **1 packaged + 10 CRUD = 11**
-- T-084 ticket needs to either update its tool-count claim to 11 (or 10 if Q-D1 is deferred), or scope the ticket explicitly to a subset. Recommended: update to 11 and land `get_checkpoint` in the same PR (the CRUD wrap is trivial relative to the packaged-tool work).
+  - 5 CRUD from §2.1 (`list` / `get` / `rename` / `delete` / `restore` — `manifest` / `copy` / `export` are M4-future)
+  - 4 CRUD from §2.2 (`get_session` / `abandon_session` / `fork` / `get_checkpoint` ← drift per Q-D1)
+  - = **1 packaged + 9 CRUD = 10**
+- T-084 ticket needs to update its tool-count claim from 9 to 10 (the +1 is `get_checkpoint`). Recommendation: accept the +1 and land `get_checkpoint` in the same PR (the CRUD wrap is trivial relative to the packaged-tool work).
 - Surfacing this in the T-083 PR description so the user can decide before T-084 starts.
 
 ### Q-D4. T-085 tool count (confirmation, not drift)
