@@ -120,8 +120,8 @@ Wave B 第 3 張：把 motion 領域全部 MCP tool 落地。motion.generate 是
 |---|---|
 | `GET /v1/bases/{id}/motions` | `character:read` |
 | `GET /v1/aliases/{id}/motions` | `character:read` |
-| `POST /v1/bases/{id}/motions` | `character:write` + `task:read` |
-| `POST /v1/aliases/{id}/motions` | `character:write` + `task:read` |
+| `POST /v1/bases/{id}/motions` | `character:write` |
+| `POST /v1/aliases/{id}/motions` | `character:write` |
 | `GET /v1/motions/{id}` | `character:read` |
 | `PATCH /v1/motions/{id}` | `character:write` |
 | `DELETE /v1/motions/{id}` | `character:write` |

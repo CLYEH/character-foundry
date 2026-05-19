@@ -133,7 +133,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 | `POST /v1/characters/{id}/restore` | `character:write` |
 | `POST /v1/checkpoints/{id}/fork` | `character:write` |
 | `GET /v1/creation-sessions/{id}` | `character:read` |
-| `POST /v1/creation-sessions/{id}/checkpoints` | `character:write` + `task:read` |
+| `POST /v1/creation-sessions/{id}/checkpoints` | `character:write` |
 | `POST /v1/creation-sessions/{id}/reference-images` | `character:write` |
 | `POST /v1/creation-sessions/{id}/select-base` | `character:write` |
 | `POST /v1/creation-sessions/{id}/abandon` | `character:write` |

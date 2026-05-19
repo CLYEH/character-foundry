@@ -116,7 +116,7 @@ Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image 
 | Endpoint | Scope |
 |---|---|
 | `GET /v1/characters/{id}/aliases` | `character:read` |
-| `POST /v1/characters/{id}/aliases` | `character:write` + `task:read` |
+| `POST /v1/characters/{id}/aliases` | `character:write` |
 | `POST /v1/characters/{id}/aliases/masks` | `character:write` |
 | `GET /v1/aliases/{id}` | `character:read` |
 | `PATCH /v1/aliases/{id}` | `character:write` |

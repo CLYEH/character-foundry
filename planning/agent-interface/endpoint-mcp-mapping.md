@@ -44,8 +44,8 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 | `PATCH` | `/v1/characters/{id}` | ✅ | `character.rename`（1:1）| `character:write` | ✅ | T-084 | CRUD update |
 | `DELETE` | `/v1/characters/{id}` | ✅ | `character.delete`（1:1）| `character:write` | ✅ | T-084 | soft delete |
 | `POST` | `/v1/characters/{id}/restore` | ✅ | `character.restore`（1:1）| `character:write` | ✅ | T-084 | undo soft delete |
-| `POST` | `/v1/characters/{id}/copy` | ✅ | `character.copy`（1:1，async via task）| `character:write` + `task:read` | 🟡 M4 | M4-future | B1 scope = Base + Aliases |
-| `GET` | `/v1/characters/{id}/export` | ✅ | bundle of `character.export`（trigger → poll task → resolve signed URL）| `character:read` + `task:read` | 🟡 M4 | M4-future | ZIP packaging is multi-step async. Scope is `character:read` per `auth/open-questions.md §「Q3 ...」` line 150 (all `GET /v1/characters/*` → `character:read`) and `oauth-mcp-integration.md §3.4` (tool scope = union of endpoint scopes). If M4 decides export's mutation-y semantics warrant `character:write`, reopen Q3 in `auth/open-questions.md` first. |
+| `POST` | `/v1/characters/{id}/copy` | ✅ | `character.copy`（1:1，async via task）| `character:write` | 🟡 M4 | M4-future | B1 scope = Base + Aliases. Endpoint-level scope is `character:write` only per canonical Q3 mapping; the `character.copy` MCP tool layers `task:read` on top because it internally polls `GET /v1/tasks/{id}` for completion. |
+| `GET` | `/v1/characters/{id}/export` | ✅ | bundle of `character.export`（trigger → poll task → resolve signed URL）| `character:read` | 🟡 M4 | M4-future | ZIP packaging is multi-step async. Endpoint-level scope is `character:read` per `auth/open-questions.md §「Q3 ...」` line 150 (all `GET /v1/characters/*` → `character:read`); the packaged `character.export` tool adds `task:read` for internal polling per §3 below. If M4 decides export's mutation-y semantics warrant `character:write`, reopen Q3 in `auth/open-questions.md` first. |
 | `GET` | `/v1/exports/{id}/download` | ❌ | n/a | n/a | 🟡 M4 | n/a | 302 redirect; agent fetches signed URL directly |
 
 ### §2.2 Creation Session / Checkpoints (api-shape §5.2)
@@ -53,7 +53,7 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 | Method | Path | MCP | Tool / Packaging | Scope | M3 status | Tool ticket | Reason |
 |---|---|---|---|---|---|---|---|
 | `GET` | `/v1/creation-sessions/{id}` | ✅ | `character.get_session`（1:1, resume / debug）| `character:read` | ✅ | T-084 | inspect in-progress session |
-| `POST` | `/v1/creation-sessions/{id}/checkpoints` | ✅ | bundle of `character.create` | `character:write` + `task:read` | ✅ | T-084 | session bootstrap step 2; consumes task SSE |
+| `POST` | `/v1/creation-sessions/{id}/checkpoints` | ✅ | bundle of `character.create` | `character:write` | ✅ | T-084 | session bootstrap step 2; enqueues async task. Endpoint scope is `character:write` only per canonical Q3 (write side of `/v1/characters/*` family); the `task:read` for polling the returned `task_id` is a packaged-tool-level scope, added in §3 below — REST callers that hold `character:write` but not `task:read` must be able to enqueue. |
 | `POST` | `/v1/creation-sessions/{id}/reference-images` | ✅ | bundle of `character.create`（reference mode only）| `character:write` | ✅ | T-084 | session-scoped: backend `assert_session_writable` requires `session.status == "in_progress"` (`api/app/services/checkpoint_service.py:96-98`). After `select-base` the session is `completed` and this endpoint rejects with `CONFLICT_SESSION_NOT_ACTIVE`. **Not** reusable by `alias.add` — see §6 Q-D7 for the backend gap. |
 | `POST` | `/v1/creation-sessions/{id}/select-base` | ✅ | bundle of `character.create` | `character:write` | ✅ | T-084 | session bootstrap step 3 (lock Base) |
 | `POST` | `/v1/creation-sessions/{id}/abandon` | ✅ | `character.abandon_session`（1:1）| `character:write` | ✅ | T-084 | mark session abandoned |
@@ -65,7 +65,7 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 | Method | Path | MCP | Tool / Packaging | Scope | M3 status | Tool ticket | Reason |
 |---|---|---|---|---|---|---|---|
 | `GET` | `/v1/characters/{id}/aliases` | ✅ | `alias.list`（1:1）| `character:read` | ✅ | T-085 | CRUD list |
-| `POST` | `/v1/characters/{id}/aliases` | ✅ | bundle of `alias.add` | `character:write` + `task:read` | ✅ | T-085 | alias creation; consumes task SSE. **image / mixed modes:** `reference_image_ids` must be existing ids from the Base's source creation session (`alias_service._resolve_reference_keys` doc string: "Phase 1 has no separate alias reference upload endpoint — refs piggyback on the creation session that made the Base"). Brand-new uploads at alias time blocked by §6 Q-D7. |
+| `POST` | `/v1/characters/{id}/aliases` | ✅ | bundle of `alias.add` | `character:write` | ✅ | T-085 | alias creation; enqueues async task. Endpoint scope is `character:write` only per canonical Q3 — `task:read` for the returned `task_id` lives at the packaged-tool level (§3 below). **image / mixed modes:** `reference_image_ids` must be existing ids from the Base's source creation session (`alias_service._resolve_reference_keys` doc string: "Phase 1 has no separate alias reference upload endpoint — refs piggyback on the creation session that made the Base"). Brand-new uploads at alias time blocked by §6 Q-D7. |
 | `POST` | `/v1/characters/{id}/aliases/masks` | ✅ | bundle of `alias.add`（inpaint mode: required；mixed mode: optional）| `character:write` | ✅ | T-085 | **Drift from spec — see §6 Q-D2.** Code exists; api-shape §5.3 only mentions a `mask` field in the create body. Mask PNG upload primitive — `alias_service._validate_input_mode_matrix` and T-085 schema both confirm `mask` is required for `inpaint` and optional for `mixed`. |
 | `GET` | `/v1/aliases/{id}` | ✅ | `alias.get`（1:1）| `character:read` | ✅ | T-085 | CRUD detail |
 | `PATCH` | `/v1/aliases/{id}` | ✅ | `alias.rename`（1:1）| `character:write` | ✅ | T-085 | CRUD update |
@@ -77,8 +77,8 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 |---|---|---|---|---|---|---|---|
 | `GET` | `/v1/bases/{id}/motions` | ✅ | `motion.list_for_base`（1:1）| `character:read` | ✅ | T-086 | CRUD list under Base |
 | `GET` | `/v1/aliases/{id}/motions` | ✅ | `motion.list_for_alias`（1:1）| `character:read` | ✅ | T-086 | CRUD list under Alias |
-| `POST` | `/v1/bases/{id}/motions` | ✅ | bundle of `motion.generate`（`parent_type='base'`）| `character:write` + `task:read` | ✅ | T-086 | i2v generation; polymorphic on parent |
-| `POST` | `/v1/aliases/{id}/motions` | ✅ | bundle of `motion.generate`（`parent_type='alias'`）| `character:write` + `task:read` | ✅ | T-086 | same tool, alias parent — single agent mental unit |
+| `POST` | `/v1/bases/{id}/motions` | ✅ | bundle of `motion.generate`（`parent_type='base'`）| `character:write` | ✅ | T-086 | i2v generation; polymorphic on parent. Endpoint scope `character:write` only — `task:read` is on the packaged tool, not the REST endpoint. |
+| `POST` | `/v1/aliases/{id}/motions` | ✅ | bundle of `motion.generate`（`parent_type='alias'`）| `character:write` | ✅ | T-086 | same tool, alias parent — single agent mental unit. Endpoint scope `character:write` only — see Base motion row above for the tool-vs-endpoint split. |
 | `GET` | `/v1/motions/{id}` | ✅ | `motion.get`（1:1）| `character:read` | ✅ | T-086 | CRUD detail |
 | `PATCH` | `/v1/motions/{id}` | ✅ | `motion.rename`（1:1）| `character:write` | ✅ | T-086 | rename custom motion |
 | `DELETE` | `/v1/motions/{id}` | ✅ | `motion.delete`（1:1）| `character:write` | ✅ | T-086 | soft delete |
@@ -137,6 +137,8 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 ## §3. Packaged tool → bundles map
 
 Reverse lookup: for each packaged tool, the list of REST endpoints it consumes. Wave B tickets copy this verbatim into the tool's `bundles=[...]` field per `oauth-mcp-integration.md §3.2`.
+
+> **Tool scopes vs endpoint scopes.** A packaged tool's `scopes` is the **superset** of the canonical scope of each bundled endpoint *plus* any extra scope its **internal helper calls** need (e.g. `task:read` for the SSE polling `GET /v1/tasks/{id}` that the tool runs internally). The underlying REST endpoint itself stays at the canonical Q3 scope — `POST /v1/.../checkpoints`, `POST /v1/characters/{id}/aliases`, `POST /v1/bases|aliases/{id}/motions` are all `character:write` only. Don't propagate the tool union back onto the REST `require_scope` table; a REST client holding `character:write` without `task:read` must still be able to enqueue (it'll poll the task by other means).
 
 ### `character.create`（T-084）
 
