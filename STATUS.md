@@ -175,7 +175,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | T-082 | nginx `/mcp` proxy + `proxy_read_timeout ≥ 180s`（streamable HTTP SSE 不被剪斷）| TODO |
 | T-083 | api-shape §5 endpoint MCP review（whitelist / blacklist / packaging map，輸出 `planning/agent-interface/endpoint-mcp-mapping.md`）| DONE |
 | T-084 | MCP tool `character.create`（packaged）+ character CRUD 1:1 wraps（10 個 tool = 1 packaged + 9 CRUD，含 `get_checkpoint` per T-083 §6 Q-D1 drift；M4-deferred 的 manifest / copy / export 不在本單，由 M4 ticket 從 day 1 帶）| TODO |
-| T-085 | MCP tool `alias.add`（packaged）+ alias CRUD 1:1 wraps（5 個 tool）| TODO |
+| T-085 | MCP tool `alias.add`（packaged）+ alias CRUD 1:1 wraps（5 個 tool；image/mixed mode 只接受既有 `reference_image_ids` from Base source session per T-083 §6 Q-D7，brand-new reference upload at alias time = M4）| TODO |
 | T-086 | MCP tool `motion.generate`（packaged, polymorphic）+ motion CRUD 1:1 wraps（6 個 tool）| TODO |
 | T-087 | MCP streamable HTTP `Last-Event-ID` resumability（i2v 長 task 斷線重連）| TODO |
 
