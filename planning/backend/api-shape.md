@@ -173,6 +173,8 @@ Phase 1 UI 用 polling + SSE；agent 推薦用 webhook（避免長連線）。
 
 ## 5. Resource Endpoints
 
+> Agent 視角的 endpoint → MCP tool 對應見 [`../agent-interface/endpoint-mcp-mapping.md`](../agent-interface/endpoint-mcp-mapping.md)（每條 endpoint 標 ✅ / ❌、tool name、packaging、scope）。新增 / 修改 / 移除 endpoint 必須在同一個 PR 更新該表。
+
 ### 5.1 Characters
 
 ```
