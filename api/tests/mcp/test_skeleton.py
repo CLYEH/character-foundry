@@ -414,6 +414,77 @@ def test_require_mcp_scopes_rejects_unknown_scope() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Path normalization — /mcp and /mcp/ both work (Codex round-3 P1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_trailing_slash_path_works_without_redirect(
+    make_jwt_token: Callable[..., str],
+) -> None:
+    """`POST /mcp` (no trailing slash) must reach the MCP handler directly,
+    not 307-redirect to `/mcp/`.
+
+    Codex round-3 P1 against PR #107 verified empirically that the bare
+    `POST /mcp` returned 307. JSON-RPC / MCP clients vary in how they
+    handle 307 on POST — some refuse silently, breaking initialise
+    against a misconfigured base URL. `MCPPathNormalizationMiddleware`
+    rewrites the scope's `path` in-place so both URLs hit the same
+    handler. Without this assertion the redirect can sneak back in
+    (e.g. someone removes the middleware while refactoring) and break
+    real-world clients that the test harness's `streamablehttp_client`
+    happens to tolerate.
+
+    We use raw httpx + ASGI transport here (not `streamablehttp_client`
+    + `ClientSession.initialize`) because the SDK normalises trailing
+    slashes for us — we need to verify the WIRE-LEVEL behaviour at `/mcp`
+    exactly, with `follow_redirects=False` so a 307 would be visible.
+    """
+    token = make_jwt_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "no-slash-smoke", "version": "0.1"},
+        },
+    }
+
+    async with mcp_runtime() as factory:
+        # `factory()` builds an httpx client bound to the FastAPI ASGI
+        # via our test transport — same path real requests take, no
+        # redirect-following so a 307 would surface in the assertion.
+        async with factory() as client:
+            client.follow_redirects = False
+            no_slash_resp = await client.post("/mcp", json=body, headers=headers)
+            with_slash_resp = await client.post("/mcp/", json=body, headers=headers)
+
+    assert no_slash_resp.status_code != 307, (
+        f"POST /mcp (no slash) should NOT redirect; got 307 → "
+        f"{no_slash_resp.headers.get('location')!r}. "
+        "MCPPathNormalizationMiddleware regressed — JSON-RPC clients that "
+        "don't follow POST 307s will break."
+    )
+    assert no_slash_resp.status_code == 200, (
+        f"POST /mcp should reach the MCP handler directly; got "
+        f"{no_slash_resp.status_code}: {no_slash_resp.text[:200]!r}"
+    )
+    # Sanity: `/mcp/` was already known to work; both should now behave
+    # identically. Confirms the rewrite isn't just hiding a regression
+    # on the trailing-slash path.
+    assert with_slash_resp.status_code == 200, (
+        f"POST /mcp/ regressed: {with_slash_resp.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Delegated OAuth token → user_id resolution (Codex round-2 P1)
 # ---------------------------------------------------------------------------
 

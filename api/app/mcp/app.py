@@ -106,6 +106,42 @@ def _build_mcp_server() -> FastMCP:
     return mcp
 
 
+class MCPPathNormalizationMiddleware:
+    """Rewrite `/mcp` to `/mcp/` BEFORE FastAPI's router sees the request.
+
+    Without this, `POST /mcp` (no trailing slash) lands on FastAPI's
+    default `redirect_slashes=True` behaviour and returns 307 → `/mcp/`.
+    JSON-RPC / MCP clients vary in how they handle 307 on POST: some
+    re-POST to the redirect target (works), some silently fall back to
+    GET (fails), some refuse without user confirmation (fails). Rewriting
+    the scope's `path` in-place before routing avoids the redirect
+    entirely — both `/mcp` and `/mcp/` reach the same handler with a
+    single round-trip.
+
+    Codex round-3 P1 against PR #107 verified empirically: bare `POST /mcp`
+    returned 307 from `TestClient(app, follow_redirects=False)`. Per
+    ticket Note "MCP error vs HTTP status", we already promise auth
+    errors won't be HTTP 3xx; consistency says the transport URL
+    shouldn't be either.
+
+    Scoped to the exact `/mcp` path so unrelated routes keep their
+    normal slash-handling. Listed as middleware on the FastAPI app in
+    `app/main.py`.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") == "/mcp":
+            # Build a new scope dict instead of mutating — the same scope
+            # may be in flight for cross-cutting middleware that snapshots
+            # values. `raw_path` must be updated in lockstep with `path`
+            # or downstream Starlette path matching gets confused.
+            scope = {**scope, "path": "/mcp/", "raw_path": b"/mcp/"}
+        await self.app(scope, receive, send)
+
+
 class _MCPDispatcher:
     """Stable ASGI callable that forwards to whichever FastMCP is current.
 

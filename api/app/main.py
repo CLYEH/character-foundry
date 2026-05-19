@@ -20,7 +20,11 @@ from app.api.routes.reference_images import router as reference_images_router
 from app.api.routes.storage import router as storage_router
 from app.api.routes.tasks import router as tasks_router
 from app.core.errors import AgentErrorException, agent_error_handler
-from app.mcp.app import get_mcp_dispatcher, mcp_lifespan
+from app.mcp.app import (
+    MCPPathNormalizationMiddleware,
+    get_mcp_dispatcher,
+    mcp_lifespan,
+)
 from app.middleware.error_handling import RequestIdMiddleware
 from app.prompt.errors import validation_mask_required
 
@@ -40,6 +44,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Character Foundry API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(RequestIdMiddleware)
+# Rewrite `/mcp` → `/mcp/` BEFORE the router runs so JSON-RPC clients
+# that don't follow 307-on-POST hit the MCP mount with a single round-trip
+# regardless of which URL they configure. See middleware docstring.
+app.add_middleware(MCPPathNormalizationMiddleware)
 app.add_exception_handler(AgentErrorException, agent_error_handler)
 
 
