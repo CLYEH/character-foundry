@@ -85,7 +85,7 @@ Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image 
 
 ## Acceptance criteria
 
-- [ ] `alias.add` packaged tool 註冊；bundles 與 T-083 §3 一致（**mask upload + alias create 兩條 endpoint**；reference-images upload **不在 bundle** per T-083 §6 Q-D7）
+- [ ] `alias.add` packaged tool 註冊；bundles 與 T-083 §3 一致（**mask upload + alias create + `GET /v1/tasks/{task_id}` polling 三條 endpoint**；reference-images upload **不在 bundle** per T-083 §6 Q-D7。task GET 進 bundle 才能讓 `task:read` scope 通過 T-081 CI guardrail 2 的 union check）
 - [ ] 4 條 CRUD 1:1 tool 註冊
 - [ ] T-081 CI guardrail 2 對所有 tool pass（scope ⊆ union of bundle scopes）
 - [ ] 4 種 input mode 各一條 e2e test 綠（含 progress notification + inpaint 走 mask_file vs mask_id 兩條 path；image / mixed mode 用既有 `reference_image_ids`，不嘗試 brand-new upload）

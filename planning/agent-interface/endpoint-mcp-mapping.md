@@ -87,16 +87,16 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 
 | Method | Path | MCP | Tool / Packaging | Scope | M3 status | Tool ticket | Reason |
 |---|---|---|---|---|---|---|---|
-| `GET` | `/v1/tasks/{id}` | ✅ | `task.get`（1:1）| `task:read` | ✅ | T-080 (registry slot) / Wave B | poll task state; complements MCP `progress` notification path |
+| `GET` | `/v1/tasks/{id}` | ✅ | `task.get`（1:1）| `task:read` | ✅ | T-088 | poll task state; complements MCP `progress` notification path. **Also internally bundled in T-084 / T-085 / T-086 packaged tools** per §3 below — those uses are NOT separate tool registrations, just internal helper calls. |
 | `GET` | `/v1/tasks/{id}/stream` | ✅ | absorbed into packaged tools via MCP `notifications/progress`（per Round 1 Q3 Option A）| `task:read` | ✅ | T-080 | **No direct 1:1 tool.** SSE → MCP progress is the agent-native contract; exposing a "stream" tool would re-leak the polling/streaming dichotomy the packaging is meant to hide. |
-| `POST` | `/v1/tasks/{id}/cancel` | ✅ | `task.cancel`（1:1）| `task:cancel` | ✅ | Wave B | agent-initiated cancellation; honors `cancel_outcome` payload |
-| `GET` | `/v1/tasks` | ✅ | `task.list`（1:1）| `task:read` | ✅ | Wave B | inspection / debug |
+| `POST` | `/v1/tasks/{id}/cancel` | ✅ | `task.cancel`（1:1）| `task:cancel` | ✅ | T-088 | agent-initiated cancellation; honors `cancel_outcome` payload |
+| `GET` | `/v1/tasks` | ✅ | `task.list`（1:1）| `task:read` | ✅ | T-088 | inspection / debug |
 
 ### §2.6 Prompt Preview (api-shape §5.6)
 
 | Method | Path | MCP | Tool / Packaging | Scope | M3 status | Tool ticket | Reason |
 |---|---|---|---|---|---|---|---|
-| `POST` | `/v1/prompt/preview` | ✅ | `prompt.preview`（1:1）| `character:read` | ✅ | Wave B | non-mutating preview; agent uses it to inspect the reconciled final prompt before committing |
+| `POST` | `/v1/prompt/preview` | ✅ | `prompt.preview`（1:1）| `character:read` | ✅ | T-088 | non-mutating preview; agent uses it to inspect the reconciled final prompt before committing |
 
 ### §2.7 Usage / Quota (api-shape §5.7)
 
@@ -115,7 +115,7 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 | Method | Path | MCP | Tool / Packaging | Scope | M3 status | Tool ticket | Reason |
 |---|---|---|---|---|---|---|---|
 | `GET` | `/health` | ❌ | n/a | n/a | ✅ | n/a | Ops only — DevOps liveness probe. |
-| `GET` | `/v1/meta` | ✅ | `meta.get`（1:1）+ `degraded_services` surfaced via MCP `tools/list` extension（per §5 below）| no scope（public）| ✅ | Wave B | agent-readable model / preset metadata; degraded state must reach `tools/list` so agents can self-defer |
+| `GET` | `/v1/meta` | ✅ | `meta.get`（1:1）+ `degraded_services` surfaced via MCP `tools/list` extension（per §5 below）| no scope（public）| ✅ | T-088 | agent-readable model / preset metadata; degraded state must reach `tools/list` so agents can self-defer |
 
 ### §2.10 Auth (api-shape §2)
 
@@ -278,7 +278,7 @@ Items flagged during T-083 enumeration. Each must be resolved before the corresp
 - §2.5 / §2.6 / §2.9 list these 5 tools as 1:1 wraps but they are **not** owned by T-084 / T-085 / T-086 (verified against `STATUS.md` Sprint 3.5b table — only T-084 / T-085 / T-086 / T-087 are listed for Wave B).
 - **Resolution (T-083 recommends):** open a new ticket **T-088 "Wave B miscellany — task / prompt / meta CRUD"** in the Sprint 3.5b table. Five 1:1 wraps, no packaging, est S. Sequencing: Depends on T-080 + T-081 (registry); no internal dep on T-084 / T-085 / T-086, can run in parallel with them.
 - **Why not extend T-084:** the task / prompt / meta tools are cross-domain and would inflate T-084's already-grown scope (now 10 tools post-Q-D1). Keeping them in a dedicated mini-ticket preserves T-084's "character bootstrap" cohesion.
-- **STATUS.md placeholder:** `STATUS.md` Sprint 3.5b table updated in this PR to include a T-088 row marked TODO, so the gap is visible at the source of truth. The ticket file itself (`tickets/T-088-*.md`) is **not** created in this PR (out of scope — T-083 is a planning doc only); to be filed by the user / next session as a follow-up before Wave B starts.
+- **Ticket landed in this PR:** `STATUS.md` Sprint 3.5b table includes the T-088 row (TODO), and `tickets/T-088-mcp-tool-wave-b-miscellany.md` is filed with full scope / AC / Files / OAuth scope / MCP tool delta sections so `start T-088` works out of the box per the standard implementation workflow. (Codex PR #108 P2 #16 caught the earlier "STATUS row without ticket file" inconsistency.)
 - **Effect on Wave B sequencing:** T-088 can land before or alongside T-084 / T-085 / T-086 since the 5 tools have zero inter-tool dependency on the packaged-tool work.
 
 ### Q-D7. Backend gap — no character-scoped reference image upload endpoint
