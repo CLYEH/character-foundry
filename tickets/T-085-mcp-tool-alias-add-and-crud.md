@@ -10,7 +10,7 @@
 
 ## Scope
 
-Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image / inpaint / mixed 四種 input mode，並支援 reference image 上傳 + alias 建立的 atomic packaging。
+Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image / inpaint / mixed 四種 input mode，並支援 (inpaint/mixed) mask 上傳 + alias 建立的 atomic packaging。**image / mixed mode 只消費既有 `reference_image_ids`（from Base 的 source creation session），不接受 brand-new reference upload**——`/v1/creation-sessions/{id}/reference-images` 要求 `in_progress` session，alias 建立發生在 `select-base` 之後 session 已 `completed`，不能再寫。Brand-new reference upload at alias time 等 M4 character-scoped upload endpoint（T-083 §6 Q-D7）。
 
 **In scope:**
 
