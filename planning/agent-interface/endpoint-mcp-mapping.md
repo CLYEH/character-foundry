@@ -248,9 +248,9 @@ Items flagged during T-083 enumeration. Each must be resolved before the corresp
 ### Q-D2. `POST /v1/characters/{id}/aliases/masks` — code exists, api-shape spec missing
 
 - **Where:** `api/app/api/routes/aliases.py:76`
-- **What:** Upload an inpaint mask PNG, returns `{ mask_id, url }`. Owned by the character (not by a session — alias creation runs after Base is locked).
-- **Mapping decision (§2.3):** Bundled inside `alias.add` (inpaint mode only). No separate tool — agent sends mask bytes as part of the `alias.add(input_mode='inpaint', mask=<bytes>)` call; the packaged tool uploads internally.
-- **Effect on T-085:** T-085 ticket says "5 個 tool = 1 packaged + 4 CRUD". This drift does **not** change that count (no separate tool added). T-085 must remember to internally call this endpoint when `input_mode='inpaint'`.
+- **What:** Upload a mask PNG, returns `{ mask_id, url }`. Owned by the character (not by a session — alias creation runs after Base is locked).
+- **Mapping decision (§2.3):** Bundled inside `alias.add` — **required** for `input_mode='inpaint'`, **optional** for `input_mode='mixed'` (per `_validate_input_mode_matrix` + T-085 schema; see §2.3 row and §3 bundle annotation for the locked semantics). No separate tool — agent sends mask bytes as part of the `alias.add(input_mode='inpaint' | 'mixed', mask_file=<bytes>)` call; the packaged tool uploads internally.
+- **Effect on T-085:** T-085 ticket says "5 個 tool = 1 packaged + 4 CRUD". This drift does **not** change that count (no separate tool added). T-085 must remember to internally call this endpoint when `input_mode='inpaint'` (required) or when `input_mode='mixed'` and `mask_file` is supplied (optional).
 - **api-shape follow-up:** Add this endpoint to api-shape §5.3 in the same follow-up ticket as Q-D1.
 
 ### Q-D3. T-084 tool count reconciliation
@@ -273,10 +273,13 @@ Items flagged during T-083 enumeration. Each must be resolved before the corresp
 - T-086 in `STATUS.md` Sprint 3.5b table says "6 個 tool = 1 packaged + 5 CRUD".
 - §2.4 enumeration: 1 packaged (`motion.generate`) + 5 CRUD (`list_for_base` / `list_for_alias` / `get` / `rename` / `delete`) = **6**. ✅ Matches.
 
-### Q-D6. Where does `task.cancel` / `task.list` / `task.get` / `prompt.preview` / `meta.get` land?
+### Q-D6. `task.cancel` / `task.list` / `task.get` / `prompt.preview` / `meta.get` — Wave B miscellany owner
 
-- §2.5 / §2.6 / §2.9 list these as 1:1 wraps but they are **not** owned by T-084 / T-085 / T-086.
-- Recommendation: bundle them into a "Wave B miscellany" mini-ticket (or extend one of T-084 / T-085 / T-086 with an explicit "+ task/prompt/meta CRUD" sub-scope). Surfacing in T-083 PR description.
+- §2.5 / §2.6 / §2.9 list these 5 tools as 1:1 wraps but they are **not** owned by T-084 / T-085 / T-086 (verified against `STATUS.md` Sprint 3.5b table — only T-084 / T-085 / T-086 / T-087 are listed for Wave B).
+- **Resolution (T-083 recommends):** open a new ticket **T-088 "Wave B miscellany — task / prompt / meta CRUD"** in the Sprint 3.5b table. Five 1:1 wraps, no packaging, est S. Sequencing: Depends on T-080 + T-081 (registry); no internal dep on T-084 / T-085 / T-086, can run in parallel with them.
+- **Why not extend T-084:** the task / prompt / meta tools are cross-domain and would inflate T-084's already-grown scope (now 10 tools post-Q-D1). Keeping them in a dedicated mini-ticket preserves T-084's "character bootstrap" cohesion.
+- **STATUS.md placeholder:** `STATUS.md` Sprint 3.5b table updated in this PR to include a T-088 row marked TODO, so the gap is visible at the source of truth. The ticket file itself (`tickets/T-088-*.md`) is **not** created in this PR (out of scope — T-083 is a planning doc only); to be filed by the user / next session as a follow-up before Wave B starts.
+- **Effect on Wave B sequencing:** T-088 can land before or alongside T-084 / T-085 / T-086 since the 5 tools have zero inter-tool dependency on the packaged-tool work.
 
 ### Q-D7. Backend gap — no character-scoped reference image upload endpoint
 

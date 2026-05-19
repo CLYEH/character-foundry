@@ -178,10 +178,12 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | T-085 | MCP tool `alias.add`（packaged）+ alias CRUD 1:1 wraps（5 個 tool；image/mixed mode 只接受既有 `reference_image_ids` from Base source session per T-083 §6 Q-D7，brand-new reference upload at alias time = M4）| TODO |
 | T-086 | MCP tool `motion.generate`（packaged, polymorphic）+ motion CRUD 1:1 wraps（6 個 tool）| TODO |
 | T-087 | MCP streamable HTTP `Last-Event-ID` resumability（i2v 長 task 斷線重連）| TODO |
+| T-088 | Wave B miscellany — `task.get` / `task.list` / `task.cancel` / `prompt.preview` / `meta.get` 5 個 1:1 tool（T-083 §6 Q-D6 surfaced，不屬於 T-084 / T-085 / T-086 的 packaged-tool 領域）| TODO |
 
 **Dependency / parallelization：**
 - **Wave A（foundation；4 張幾乎全平行）**：T-080 / T-082 / T-083 無內部 dep，可同時起步。T-081 主體（registry pattern + 3 條 CI script）也可並行開發，唯一耦合是 T-080 落地的 `hello.world` migrate 進 registry 的那 commit 必須等 T-080 merge 後追加（per T-081 Depends-on 段；Codex review #106 round-3 抓到原本「Depends on: none」與 migration 要求衝突已 reconcile）
 - **Wave B（核心 tool；3 張依 Wave A）**：T-084 / T-085 / T-086 等 T-080 + T-081 + T-083 三張完成才開；T-084 先行作為 pattern reference 較順，但不是 hard dep
+- **Wave B miscellany（T-088）**：等 T-080 + T-081（registry / CI guardrail），與 T-084 / T-085 / T-086 平行可開；5 條 1:1 tool，無 internal inter-tool dep
 - **T-087**：等 T-080（transport 層）+ T-086（i2v 是最關鍵測試對象）
 
 **Plan phase deliverable（M3.5 整體；3.5a 已 ship）：**
