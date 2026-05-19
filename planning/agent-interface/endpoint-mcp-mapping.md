@@ -138,7 +138,9 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 
 Reverse lookup: for each packaged tool, the list of REST endpoints it consumes. Wave B tickets copy this verbatim into the tool's `bundles=[...]` field per `oauth-mcp-integration.md §3.2`.
 
-> **Tool scopes vs endpoint scopes.** A packaged tool's `scopes` is the **superset** of the canonical scope of each bundled endpoint *plus* any extra scope its **internal helper calls** need (e.g. `task:read` for the SSE polling `GET /v1/tasks/{id}` that the tool runs internally). The underlying REST endpoint itself stays at the canonical Q3 scope — `POST /v1/.../checkpoints`, `POST /v1/characters/{id}/aliases`, `POST /v1/bases|aliases/{id}/motions` are all `character:write` only. Don't propagate the tool union back onto the REST `require_scope` table; a REST client holding `character:write` without `task:read` must still be able to enqueue (it'll poll the task by other means).
+> **Tool scopes vs endpoint scopes.** A packaged tool's `scopes` is the **union of every bundled endpoint's canonical scope**, where the bundle is the full list of REST endpoints the tool calls — **including internal helpers like `GET /v1/tasks/{id}` for SSE polling**. List the polling endpoint explicitly in `bundles=[...]` and let the union derive naturally; T-081 CI guardrail 2 (`tool.scopes ⊆ union of bundled endpoint scopes`) then stays consistent.
+>
+> The underlying REST endpoints themselves stay at canonical Q3 scope — `POST /v1/.../checkpoints`, `POST /v1/characters/{id}/aliases`, `POST /v1/bases|aliases/{id}/motions` are all `character:write` only. Don't propagate the tool union back onto the REST `require_scope` table; a REST client holding `character:write` without `task:read` must still be able to enqueue (they'll poll the task on their own).
 
 ### `character.create`（T-084）
 
@@ -147,9 +149,10 @@ bundles = [
     "POST /v1/characters",                                        # step 1: create character + session
     "POST /v1/creation-sessions/{session_id}/reference-images",   # step 2 (reference mode only): upload refs FIRST, get reference_image_ids
     "POST /v1/creation-sessions/{session_id}/checkpoints",        # step 3: enqueue checkpoint (passes reference_image_ids if reference mode)
+    "GET  /v1/tasks/{task_id}",                                   # internal: poll the checkpoint task until done (also SSE-equivalent)
     "POST /v1/creation-sessions/{session_id}/select-base",        # step 4: lock the checkpoint as Base
 ]
-scopes = ["character:write", "task:read"]
+scopes = ["character:write", "task:read"]   # union of bundle endpoint scopes per oauth-mcp-integration.md §3.4
 ```
 
 Rationale: api-shape §9 "建立 Character (模式 A / B)" flow is exactly these 4 endpoints in this **sequence** — reference-images must upload **before** checkpoints so the latter receives the populated `reference_image_ids` field. Reversing them makes reference-mode creation either fail validation or run the generation without the intended images. Agent saying "create character" expects a single returned `Character` (with `base` locked), not a 4-step orchestration burden.
@@ -160,8 +163,9 @@ Rationale: api-shape §9 "建立 Character (模式 A / B)" flow is exactly these
 bundles = [
     "POST /v1/characters/{character_id}/aliases/masks",  # step 1 (inpaint required / mixed optional): upload mask FIRST, get mask_id
     "POST /v1/characters/{character_id}/aliases",        # step 2: create alias; body carries { mask: { mask_id } } when applicable
+    "GET  /v1/tasks/{task_id}",                          # internal: poll the alias-generation task until done
 ]
-scopes = ["character:write", "task:read"]
+scopes = ["character:write", "task:read"]   # union of bundle endpoint scopes per oauth-mcp-integration.md §3.4
 ```
 
 Rationale: alias creation has 4 input modes (`text` / `image` / `inpaint` / `mixed`). The alias-create endpoint is always hit; the mask upload (character-scoped) is **required** for `inpaint` and **optional** for `mixed` — when an agent calls `alias.add(input_mode='mixed', mask_file=<bytes>)` the tool must still upload and bind the mask, or the resulting alias drops the mask signal entirely. `alias_service._validate_input_mode_matrix` and T-085's `mask_file: bytes | None = None` field both treat the mask the same way for these two modes.
@@ -176,8 +180,9 @@ Rationale: alias creation has 4 input modes (`text` / `image` / `inpaint` / `mix
 bundles = [
     "POST /v1/bases/{base_id}/motions",       # parent_type='base'
     "POST /v1/aliases/{alias_id}/motions",    # parent_type='alias'
+    "GET  /v1/tasks/{task_id}",               # internal: poll the i2v task until done (30–120s)
 ]
-scopes = ["character:write", "task:read"]
+scopes = ["character:write", "task:read"]   # union of bundle endpoint scopes per oauth-mcp-integration.md §3.4
 ```
 
 Rationale: polymorphic on `parent_type`. Single tool dispatches to the right endpoint, then waits on task SSE → MCP progress → returns `Motion`. Two endpoints into one tool because to the agent it's "generate motion for this character part" — `base` vs `alias` is implementation detail.

@@ -15,9 +15,10 @@ Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image 
 **In scope:**
 
 ### Packaged tool — `alias.add`
-- Bundles（per T-083 endpoint-mcp-mapping.md §3）：
+- Bundles（per T-083 endpoint-mcp-mapping.md §3；scope = union of bundle endpoint scopes per `oauth-mcp-integration.md §3.4`）：
   - **`POST /v1/characters/{character_id}/aliases/masks`（input_mode 為 inpaint / mixed 且 agent 帶 `mask_file` 時呼；回傳 `mask_id`，tool 內部塞進 alias create body 的 `{ mask: { mask_id } }`）**
   - `POST /v1/characters/{character_id}/aliases`（alias 建立 + async generation task）
+  - `GET /v1/tasks/{task_id}`（內部 polling 用，等 alias generation task 跑完；scope `task:read` 從這條進 union）
   - ⚠ **`POST /v1/creation-sessions/{id}/reference-images` 不在 bundle**（T-083 §6 Q-D7）：endpoint 要求 `session.status == "in_progress"`，但 alias 建立發生在 `select-base` 之後 session 已 `completed`，呼了會 422 `CONFLICT_SESSION_NOT_ACTIVE`。Phase 1 沒有 character-scoped reference upload endpoint，brand-new reference upload at alias time blocked on Q-D7 / M4
 - Input schema：
   ```python

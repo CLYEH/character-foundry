@@ -15,9 +15,9 @@ Wave B 第 3 張：把 motion 領域全部 MCP tool 落地。motion.generate 是
 **In scope:**
 
 ### Packaged tool — `motion.generate`
-- Bundles（per T-083 §3）：
+- Bundles（per T-083 §3；scope = union of bundle endpoint scopes per `oauth-mcp-integration.md §3.4`）：
   - `POST /v1/bases/{base_id}/motions` **OR** `POST /v1/aliases/{alias_id}/motions`（target 二選一）
-  - 內部 task polling（不對應獨立 endpoint，是 backend task subscription）
+  - `GET /v1/tasks/{task_id}`（內部 polling 用，等 i2v task 跑完；scope `task:read` 從這條進 union。SSE 變體 `GET /v1/tasks/{task_id}/stream` 不在 bundle 列表內 —— 該 endpoint per §2.5 已 absorbed 進 packaged tool 的 MCP progress notification path，不另列）
 - Input schema：
   ```python
   class MotionGenerateIn(BaseModel):

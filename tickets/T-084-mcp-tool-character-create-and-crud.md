@@ -15,10 +15,11 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 **In scope:**
 
 ### Packaged tool — `character.create`
-- Bundles（以 T-083 endpoint-mcp-mapping.md §2 表為權威，本單實作時對齊）：
+- Bundles（以 T-083 endpoint-mcp-mapping.md §3 表為權威，本單實作時對齊；scope = union of bundle endpoint scopes per `oauth-mcp-integration.md §3.4`）：
   - `POST /v1/characters`（建 character skeleton + creation session）
   - `POST /v1/creation-sessions/{id}/reference-images`（input_mode=reference 才呼）
   - `POST /v1/creation-sessions/{id}/checkpoints`（跑 checkpoint generation；async task）
+  - `GET /v1/tasks/{task_id}`（內部 polling 用，等 checkpoint task 跑完；scope `task:read` 從這條進 union）
   - `POST /v1/creation-sessions/{id}/select-base`（鎖死 base）
 - Input schema（pydantic）：
   ```python
