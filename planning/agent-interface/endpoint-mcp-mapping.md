@@ -66,7 +66,7 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 |---|---|---|---|---|---|---|---|
 | `GET` | `/v1/characters/{id}/aliases` | ✅ | `alias.list`（1:1）| `character:read` | ✅ | T-085 | CRUD list |
 | `POST` | `/v1/characters/{id}/aliases` | ✅ | bundle of `alias.add` | `character:write` + `task:read` | ✅ | T-085 | alias creation; consumes task SSE. **image / mixed modes:** `reference_image_ids` must be existing ids from the Base's source creation session (`alias_service._resolve_reference_keys` doc string: "Phase 1 has no separate alias reference upload endpoint — refs piggyback on the creation session that made the Base"). Brand-new uploads at alias time blocked by §6 Q-D7. |
-| `POST` | `/v1/characters/{id}/aliases/masks` | ✅ | bundle of `alias.add`（inpaint mode only）| `character:write` | ✅ | T-085 | **Drift from spec — see §6 Q-D2.** Code exists; api-shape §5.3 only mentions a `mask` field in the create body. Inpaint mask PNG upload primitive used by `alias.add(input_mode='inpaint')`. |
+| `POST` | `/v1/characters/{id}/aliases/masks` | ✅ | bundle of `alias.add`（inpaint mode: required；mixed mode: optional）| `character:write` | ✅ | T-085 | **Drift from spec — see §6 Q-D2.** Code exists; api-shape §5.3 only mentions a `mask` field in the create body. Mask PNG upload primitive — `alias_service._validate_input_mode_matrix` and T-085 schema both confirm `mask` is required for `inpaint` and optional for `mixed`. |
 | `GET` | `/v1/aliases/{id}` | ✅ | `alias.get`（1:1）| `character:read` | ✅ | T-085 | CRUD detail |
 | `PATCH` | `/v1/aliases/{id}` | ✅ | `alias.rename`（1:1）| `character:write` | ✅ | T-085 | CRUD update |
 | `DELETE` | `/v1/aliases/{id}` | ✅ | `alias.delete`（1:1）| `character:write` | ✅ | T-085 | soft delete |
@@ -157,12 +157,12 @@ Rationale: api-shape §9 "建立 Character (模式 A / B)" flow is exactly these
 ```python
 bundles = [
     "POST /v1/characters/{character_id}/aliases",
-    "POST /v1/characters/{character_id}/aliases/masks",  # inpaint mode only
+    "POST /v1/characters/{character_id}/aliases/masks",  # inpaint mode: required; mixed mode: optional
 ]
 scopes = ["character:write", "task:read"]
 ```
 
-Rationale: alias creation has 4 input modes (`text` / `image` / `inpaint` / `mixed`). All modes hit endpoint 1; `inpaint` additionally uploads a mask via endpoint 2 (character-scoped — the only character-scoped upload endpoint that exists today). One packaged tool with a polymorphic `input_mode` argument absorbs the dispatch — agent gives the source bytes + mode and gets an `Alias`.
+Rationale: alias creation has 4 input modes (`text` / `image` / `inpaint` / `mixed`). All modes hit endpoint 1; the mask upload (endpoint 2, character-scoped) is **required** for `inpaint` and **optional** for `mixed` — when an agent calls `alias.add(input_mode='mixed', mask_file=<bytes>)` the tool must still upload and bind the mask, or the resulting alias drops the mask signal entirely. `alias_service._validate_input_mode_matrix` and T-085's `mask_file: bytes | None = None` field both treat the mask the same way for these two modes. One packaged tool with a polymorphic `input_mode` argument absorbs the dispatch — agent gives the source bytes + mode and gets an `Alias`.
 
 > **Reference-image constraint for `image` / `mixed` modes:** Phase 1 has **no** way to upload a brand-new reference image at alias time — `/v1/creation-sessions/{id}/reference-images` requires `session.status == "in_progress"` and alias creation runs only after the Base is locked (session is `completed`). Agents calling `alias.add(input_mode='image' | 'mixed')` must pass `reference_image_ids` that were uploaded **during** the original Base creation session. The packaged tool's input schema must document this constraint and reject calls that try to inline new image bytes for these modes. See §6 Q-D7 for the backend gap and recommended M4 work.
 
