@@ -94,14 +94,14 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## Acceptance criteria
 
-- [ ] `character.create` packaged tool 註冊進 registry，bundles 與 T-083 §2 表完全一致
+- [ ] `character.create` packaged tool 註冊進 registry，bundles 與 T-083 **§3** 表完全一致（§3 是 packaged-tool 的權威 bundle list，含 internal `GET /v1/tasks/{task_id}` polling endpoint；§2 只列個別 endpoint metadata。對齊 §2 而不對 §3 會漏 task GET、撞 T-081 guardrail 2 對 `task:read` 的 union check）
 - [ ] 全部 9 條 CRUD 1:1 tool 註冊進 registry（`list` / `get` / `rename` / `delete` / `restore` / `fork` / `get_session` / `abandon_session` / `get_checkpoint`；M4-deferred 的 `get_manifest` / `copy` / `export` 不在本單）
 - [ ] 每個 tool 的 `scopes` 通過 T-081 CI guardrail 2（⊆ union of bundle endpoint scopes）
 - [ ] `character.create` template mode + reference mode 各自一條 e2e test 綠（含 progress notification 驗證）
 - [ ] 失敗 path test 綠（checkpoint 失敗、reference upload 失敗、abandon 被呼）
 - [ ] 所有 character 領域 endpoint 都套上 `require_scope`，T-081 scope coverage check pass（不放 known-allowed）
 - [ ] `pytest api/tests/mcp/tools/test_character_*.py` 全綠
-- [ ] PR description 對照 T-083 §2 表逐條 check（每個 bundle / scope / packaging 決定 trace 回 doc）
+- [ ] PR description 對照 T-083 **§2 + §3** 表逐條 check（§2: 每個 endpoint 的 ✅/❌、scope、owner；§3: 每個 packaged tool 的完整 bundle list 與 union-derived scopes；兩處 trace 對齊才算完整）
 
 ---
 

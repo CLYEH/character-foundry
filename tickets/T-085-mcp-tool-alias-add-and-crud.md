@@ -94,7 +94,7 @@ Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image 
 - [ ] Inpaint mode 經由 tool 上傳 mask file 後，assert backend 收到的 alias create body 是 `{ mask: { mask_id: <UUID> } }` 不是 raw bytes（合約一致性 lock-in）
 - [ ] Alias 領域全部 endpoint 套 `require_scope`（含 `/aliases/masks`），T-081 scope coverage check pass
 - [ ] `pytest api/tests/mcp/tools/test_alias_*.py` 全綠
-- [ ] PR description 對照 T-083 §2 表逐條 check
+- [ ] PR description 對照 T-083 **§2 + §3** 表逐條 check（§2: 每個 endpoint 的 ✅/❌、scope、owner；§3: `alias.add` 的完整 bundle list 與 union-derived scopes；兩處 trace 對齊才算完整）
 
 ---
 
