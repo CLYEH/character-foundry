@@ -54,7 +54,7 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 |---|---|---|---|---|---|---|---|
 | `GET` | `/v1/creation-sessions/{id}` | ✅ | `character.get_session`（1:1, resume / debug）| `character:read` | ✅ | T-084 | inspect in-progress session |
 | `POST` | `/v1/creation-sessions/{id}/checkpoints` | ✅ | bundle of `character.create` | `character:write` + `task:read` | ✅ | T-084 | session bootstrap step 2; consumes task SSE |
-| `POST` | `/v1/creation-sessions/{id}/reference-images` | ✅ | bundle of `character.create`（reference mode）+ bundle of `alias.add`（image / mixed mode）| `character:write` | ✅ | T-084 + T-085 | shared upload primitive — both flows accept reference images. Both packaged tools internally invoke it. |
+| `POST` | `/v1/creation-sessions/{id}/reference-images` | ✅ | bundle of `character.create`（reference mode only）| `character:write` | ✅ | T-084 | session-scoped: backend `assert_session_writable` requires `session.status == "in_progress"` (`api/app/services/checkpoint_service.py:96-98`). After `select-base` the session is `completed` and this endpoint rejects with `CONFLICT_SESSION_NOT_ACTIVE`. **Not** reusable by `alias.add` — see §6 Q-D7 for the backend gap. |
 | `POST` | `/v1/creation-sessions/{id}/select-base` | ✅ | bundle of `character.create` | `character:write` | ✅ | T-084 | session bootstrap step 3 (lock Base) |
 | `POST` | `/v1/creation-sessions/{id}/abandon` | ✅ | `character.abandon_session`（1:1）| `character:write` | ✅ | T-084 | mark session abandoned |
 | `GET` | `/v1/checkpoints/{id}` | ✅ | `character.get_checkpoint`（1:1）| `character:read` | ✅ | T-084 | **Drift from spec — see §6 Q-D1.** Code exists; api-shape §5.2 lists only `POST /{id}/fork`. Used by SPA resume flow to refetch a checkpoint by id. |
@@ -65,7 +65,7 @@ A ✅ endpoint becomes either a **1:1 wrap** (one MCP tool ↔ one REST endpoint
 | Method | Path | MCP | Tool / Packaging | Scope | M3 status | Tool ticket | Reason |
 |---|---|---|---|---|---|---|---|
 | `GET` | `/v1/characters/{id}/aliases` | ✅ | `alias.list`（1:1）| `character:read` | ✅ | T-085 | CRUD list |
-| `POST` | `/v1/characters/{id}/aliases` | ✅ | bundle of `alias.add` | `character:write` + `task:read` | ✅ | T-085 | alias creation; consumes task SSE |
+| `POST` | `/v1/characters/{id}/aliases` | ✅ | bundle of `alias.add` | `character:write` + `task:read` | ✅ | T-085 | alias creation; consumes task SSE. **image / mixed modes:** `reference_image_ids` must be existing ids from the Base's source creation session (`alias_service._resolve_reference_keys` doc string: "Phase 1 has no separate alias reference upload endpoint — refs piggyback on the creation session that made the Base"). Brand-new uploads at alias time blocked by §6 Q-D7. |
 | `POST` | `/v1/characters/{id}/aliases/masks` | ✅ | bundle of `alias.add`（inpaint mode only）| `character:write` | ✅ | T-085 | **Drift from spec — see §6 Q-D2.** Code exists; api-shape §5.3 only mentions a `mask` field in the create body. Inpaint mask PNG upload primitive used by `alias.add(input_mode='inpaint')`. |
 | `GET` | `/v1/aliases/{id}` | ✅ | `alias.get`（1:1）| `character:read` | ✅ | T-085 | CRUD detail |
 | `PATCH` | `/v1/aliases/{id}` | ✅ | `alias.rename`（1:1）| `character:write` | ✅ | T-085 | CRUD update |
@@ -157,15 +157,14 @@ Rationale: api-shape §9 "建立 Character (模式 A / B)" flow is exactly these
 ```python
 bundles = [
     "POST /v1/characters/{character_id}/aliases",
-    "POST /v1/creation-sessions/{session_id}/reference-images",  # image / mixed mode
-    "POST /v1/characters/{character_id}/aliases/masks",          # inpaint mode only
+    "POST /v1/characters/{character_id}/aliases/masks",  # inpaint mode only
 ]
 scopes = ["character:write", "task:read"]
 ```
 
-Rationale: alias creation has 4 input modes (`text` / `image` / `inpaint` / `mixed`). The `text` mode needs only endpoint 1; `image` / `mixed` add reference-image upload; `inpaint` adds mask upload. One packaged tool with a polymorphic `input_mode` argument absorbs the dispatch — agent gives the source bytes + mode and gets an `Alias`.
+Rationale: alias creation has 4 input modes (`text` / `image` / `inpaint` / `mixed`). All modes hit endpoint 1; `inpaint` additionally uploads a mask via endpoint 2 (character-scoped — the only character-scoped upload endpoint that exists today). One packaged tool with a polymorphic `input_mode` argument absorbs the dispatch — agent gives the source bytes + mode and gets an `Alias`.
 
-> **Note on reference-images endpoint reuse:** This endpoint also appears in `character.create` (reference mode). Implementation-wise both packaged tools call the same backend service; the wrap is conceptually shared, not duplicated.
+> **Reference-image constraint for `image` / `mixed` modes:** Phase 1 has **no** way to upload a brand-new reference image at alias time — `/v1/creation-sessions/{id}/reference-images` requires `session.status == "in_progress"` and alias creation runs only after the Base is locked (session is `completed`). Agents calling `alias.add(input_mode='image' | 'mixed')` must pass `reference_image_ids` that were uploaded **during** the original Base creation session. The packaged tool's input schema must document this constraint and reject calls that try to inline new image bytes for these modes. See §6 Q-D7 for the backend gap and recommended M4 work.
 
 ### `motion.generate`（T-086）
 
@@ -270,6 +269,15 @@ Items flagged during T-083 enumeration. Each must be resolved before the corresp
 
 - §2.5 / §2.6 / §2.9 list these as 1:1 wraps but they are **not** owned by T-084 / T-085 / T-086.
 - Recommendation: bundle them into a "Wave B miscellany" mini-ticket (or extend one of T-084 / T-085 / T-086 with an explicit "+ task/prompt/meta CRUD" sub-scope). Surfacing in T-083 PR description.
+
+### Q-D7. Backend gap — no character-scoped reference image upload endpoint
+
+- **Surfaced by:** Codex PR #108 review (P1 inline comment at this doc's `alias.add` mapping).
+- **The constraint:** `POST /v1/creation-sessions/{id}/reference-images` is **session-scoped** and rejects non-`in_progress` sessions via `assert_session_writable` (`api/app/services/checkpoint_service.py:96-98`). After `select-base` locks the Base, the session is `completed`, so this endpoint is unusable from alias-creation context.
+- **What the SPA does today:** Calls `POST /v1/characters/{characterId}/reference-images` (`web/src/api/endpoints/aliases.ts:83` → `uploadCharacterReference`), wired into `AliasEditPage.tsx:178`. **No backend route by that path exists** in `api/app/api/routes/` (grep verified). Either the SPA function is dead code, or it 404s in production when the user tries to attach a new reference at alias time. Out of T-083 scope to investigate / fix; a separate bug ticket should pick it up.
+- **What `alias.add` can do today:** `image` / `mixed` modes accept `reference_image_ids` only — and those ids must belong to the **Base's source creation session** (per `alias_service._resolve_reference_keys` doc string: "Phase 1 has no separate alias reference upload endpoint — refs piggyback on the creation session that made the Base"). Agents cannot upload brand-new images for these modes in Phase 1.
+- **Recommended M4 work:** Add `POST /v1/characters/{id}/reference-images` (character-scoped, mirroring the masks endpoint) so the packaged tool can accept inline new references. Open an M4 ticket with three deliverables: (a) backend route + service, (b) update §2 + §3 of this doc, (c) wire SPA `uploadCharacterReference` to the real endpoint (or remove the dead function).
+- **Effect on T-085:** Tool input schema must reject inline image bytes for `image` / `mixed` modes until Q-D7 is fixed. The packaged tool still works for `text` and `inpaint` modes (mask uses character-scoped endpoint, which **does** exist).
 
 ---
 
