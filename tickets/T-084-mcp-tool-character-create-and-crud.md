@@ -152,7 +152,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 | Name | Type | Bundles | Scopes |
 |---|---|---|---|
-| `character.create` | packaged | 4 endpoints（session bootstrap） | `character:write` + `task:read` |
+| `character.create` | packaged | 5 endpoints（4 session bootstrap + internal `GET /v1/tasks/{id}` polling） | `character:write` + `task:read` |
 | `character.list` | 1:1 | `GET /v1/characters` | `character:read` |
 | `character.get` | 1:1 | `GET /v1/characters/{id}` | `character:read` |
 | `character.rename` | 1:1 | `PATCH /v1/characters/{id}` | `character:write` |
@@ -169,7 +169,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## Notes
 
-- **為什麼 packaged `character.create` 是 4 個 endpoint 而非 3**：reference mode 才會呼 reference-images endpoint，template mode 跳過。Tool 內部分支，agent 不感知
+- **為什麼 packaged `character.create` 是 5 個 endpoint（4 session bootstrap + 1 內部 task GET polling）**：session bootstrap 是 4 條（characters → reference-images optional → checkpoints → select-base），其中 reference mode 才會呼 reference-images endpoint、template mode 跳過。再加 tool 內部一律呼 `GET /v1/tasks/{task_id}` polling checkpoint task 完成（per T-083 §3 bundle list；`task:read` scope 從這條進 union）。Tool 內部分支，agent 不感知 mode 差異或 polling chain
 - **`checkpoint_count` 為什麼 default 1**：agent 場景多數一發即用；UI 場景（生 3-5 個讓人挑）是 human 行為。Agent 要多 checkpoint 時自己加迴圈直接呼 REST endpoint `POST /v1/creation-sessions/{id}/checkpoints`。**Endpoint 本身有兩個用法**：
   - (a) **作為 `character.create` packaged tool 的內部 bundled step（本單範圍）**：建 session → 跑 1 次 checkpoint → select-base，agent 看到的是單一 tool call。當 `checkpoint_count > 1` 時 tool 內部迴圈呼此 endpoint
   - (b) **作為獨立 1:1 MCP tool**（如 `character.add_checkpoint`）：**本單不開**，避免 scope 爆。Agent 要多 checkpoint 一律走 (a) 的 `checkpoint_count` 參數，或自己拿 token 直打 REST endpoint。未來若 agent reveal「想對既有 session 補打 checkpoint 而不重啟整套 packaging」的需求，再另開 ticket 加 1:1 tool
