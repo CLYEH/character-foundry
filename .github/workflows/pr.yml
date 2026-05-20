@@ -158,6 +158,23 @@ jobs:
         working-directory: api
         run: mypy app/
 
+      # MCP / scope CI guardrails (T-081). Three required checks run in this
+      # job because two of them import `app.*` (registry + client allowlist)
+      # and reuse the install above — no separate setup, per the ticket Note.
+      # Run as separate steps so a failure points at the specific guardrail.
+      # Mirror `scripts/lint_mcp.sh` for local pre-push runs.
+      - name: MCP guardrail - scope coverage
+        working-directory: api
+        run: python scripts/check_scope_coverage.py
+
+      - name: MCP guardrail - tool scope consistency
+        working-directory: api
+        run: python scripts/check_mcp_tool_scopes.py
+
+      - name: MCP guardrail - client allowlist
+        working-directory: api
+        run: python scripts/check_mcp_clients_allowlist.py
+
       - name: Pytest (with coverage gate)
         # `fail_under` lives in pyproject.toml `[tool.coverage.report]`
         # (T-060, Harness A3). Coverage gates only fire when `--cov=app`

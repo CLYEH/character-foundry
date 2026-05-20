@@ -432,6 +432,22 @@ git config --local core.hooksPath .githooks
 
 **bypass 合理時機：** hotfix、純 docs、純 ticket 文件、review 已完成的二次 push。**禁止：** 用 bypass 取代 review 跳過正常工作流程。
 
+### 7.2 MCP / scope guardrails（T-081）
+
+碰到 **REST endpoint** 或 **MCP tool** 的 PR，push 前先在 `api/` 跑一次：
+
+```bash
+bash scripts/lint_mcp.sh
+```
+
+這條等同 `pr.yml` backend job 的三個 required check，會在本地先擋下常見失誤：
+
+1. **scope coverage** — 每個 `@router.<method>` endpoint 都要 `Depends(require_scope(...))`。新 endpoint 漏掉就 fail；既有未遷移的 endpoint baseline 在 `scripts/check_scope_coverage.py` 的 `KNOWN_MISSING_SCOPE`（require_scope rollout 一條一條清，清掉後要從清單移除，否則 stale 也 fail）。
+2. **tool scope consistency** — `MCPTool.scopes` 必須是 canonical，且（有 `bundles` 時）⊆ bundle 內所有 endpoint scope 的 union。
+3. **client allowlist** — `app/auth/mcp_clients.py` 每個 client 的 scope 都要是 canonical id。
+
+**新增 MCP tool 時**：在 `app/mcp/tools/` 下新增一個 namespace module，用 `register(MCPTool(...))` 自我註冊（import-time auto-discovery 會自動撿，不必改 `app/mcp/app.py`）。`bundles` 直接從 `planning/agent-interface/endpoint-mcp-mapping.md` §3 抄。
+
 ---
 
 ## 8. 特殊情境
