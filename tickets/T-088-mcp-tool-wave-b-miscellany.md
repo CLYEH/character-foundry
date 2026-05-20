@@ -35,7 +35,7 @@ T-083 §6 Q-D6 surfaced：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 
 ### 既有 endpoint 補 `require_scope`
 - **4 個受保護 endpoint** 若 T-054 落地時未套 → 本單順手套（per S3.5-1 pattern）：`GET /v1/tasks/{task_id}`、`GET /v1/tasks`、`POST /v1/tasks/{task_id}/cancel`、`POST /v1/prompt/preview`
-- **加上 `GET /v1/tasks/{task_id}/stream`**（SSE endpoint，T-083 §2.5 表列 owner = T-080，但 T-080 落地時用 `get_current_user_no_pin` 沒套 `require_scope`，留下 scope coverage gap）→ 本單補成 `task:read`，與其它 task endpoint 一致
+- **加上 `GET /v1/tasks/{task_id}/stream`**（SSE endpoint，T-083 §2.5 表列 owner = T-080，但 T-080 落地時用 `get_current_user_no_pin` 沒套 scope check，留下 scope coverage gap）→ 本單補 `task:read`，**但不可用標準 `require_scope`** —— `require_scope` 透過 `Depends(get_current_user)` 鏈到 `db_session`，會在 SSE stream 整個生命週期（i2v 30–120s，斷線前不放）pin 住一條 DB connection，正是 T-080 用 `get_current_user_no_pin` 刻意避開的（Codex P1 round-4）。**改法**：本單新增 `require_scope_no_pin(...)` helper 到 `app/auth/scopes.py`，邏輯與 `require_scope` 同（讀 `request.state.token_scopes` 比對），但 `Depends(get_current_user_no_pin)`。`get_current_user_no_pin` 已會 populate `request.state.token_scopes`（`_resolve_oauth` / `_resolve_jwt` 都寫，deps.py:101/139），所以 scope check 完全可行、不 pin connection。stream endpoint 用 `require_scope_no_pin("task:read")`。
 - **`GET /v1/meta` 保持 public，不套 `require_scope`** —— per `api-shape.md` §5.9 與 §2.9 mapping 行決策（meta 是 health/capability info，必須讓未授權 client 可讀，包含 SPA 啟動時 polling 60s）。本單把 `/v1/meta` 加進 T-081 scope coverage check 的 **explicit public allowlist**（與 `/health` 同 bucket），避免 coverage check 把它當 missing scope。
 - T-081 CI guardrail 1 (scope coverage) 會 enforce 上述
 
@@ -73,7 +73,8 @@ T-083 §6 Q-D6 surfaced：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 - [ ] 每個 tool 的 `scopes` 通過 T-081 CI guardrail 2（scope ⊆ union of bundle endpoint scopes）
 - [ ] `meta.get` 同時透過 `tools/list` extension 露 `degraded_services`，且兩個 surface 來源一致（同 Redis aggregator）
 - [ ] `task.cancel` 4 種 `cancel_outcome` 各一條 e2e test 綠
-- [ ] **5 個受保護 endpoint 都套上 `require_scope`**：4 misc-tool endpoint（`GET /v1/tasks/{task_id}` / `GET /v1/tasks` / `POST /v1/tasks/{task_id}/cancel` / `POST /v1/prompt/preview`）+ 1 SSE endpoint（`GET /v1/tasks/{task_id}/stream`，補 T-080 留下的 coverage gap）
+- [ ] **4 個非 streaming endpoint 套標準 `require_scope`**：`GET /v1/tasks/{task_id}` / `GET /v1/tasks` / `POST /v1/tasks/{task_id}/cancel` / `POST /v1/prompt/preview`
+- [ ] **SSE endpoint `GET /v1/tasks/{task_id}/stream` 套 `require_scope_no_pin("task:read")`**（不是標準 `require_scope`，避免 pin DB connection 整個 stream 生命週期）；本單新增 `require_scope_no_pin` helper 到 `app/auth/scopes.py`，並用 test 釘住它不依賴 `db_session`（chains through `get_current_user_no_pin`）
 - [ ] **`GET /v1/meta` 保持 public，不套 `require_scope`** —— 加進 T-081 scope coverage check 的 explicit public allowlist（與 `/health` 同 bucket）；T-081 scope coverage check 不對它 fail
 - [ ] T-081 scope coverage check pass（all protected + explicit-public allowlist 都被認）
 - [ ] `pytest api/tests/mcp/tools/test_{task,prompt,meta}_tools.py` 全綠
@@ -87,9 +88,11 @@ T-083 §6 Q-D6 surfaced：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 - `api/app/mcp/tools/prompt.py` (new) — 1 個 tool（preview）
 - `api/app/mcp/tools/meta.py` (new) — 1 個 tool（get） + tools/list extension hook
 - `api/app/mcp/schemas/{task,prompt,meta}.py` (new) — input / output pydantic
-- `api/app/api/routes/tasks.py` (edit) — 補 `require_scope`
-- `api/app/api/routes/prompt.py` (edit) — 同上
-- `api/app/api/routes/meta.py` (edit) — 同上（`/v1/meta` 沒有 scope，但 endpoint coverage check 仍要明確 declare）
+- `api/app/auth/scopes.py` (edit) — 新增 `require_scope_no_pin(...)` helper（chains through `get_current_user_no_pin`，供 SSE stream endpoint 用，不 pin DB connection）
+- `api/app/api/routes/tasks.py` (edit) — 4 個非 stream endpoint 補 `require_scope`；`GET /{task_id}/stream` 補 `require_scope_no_pin`
+- `api/app/api/routes/prompt.py` (edit) — 補 `require_scope`
+- `api/app/api/routes/meta.py` (edit) — `/v1/meta` 不套 scope（public）；加進 T-081 scope coverage explicit public allowlist
+- `api/tests/auth/test_require_scope_no_pin.py` (new) — 釘住 `require_scope_no_pin` 不依賴 `db_session` + scope reject 行為
 - `api/tests/mcp/tools/test_task_tools.py` (new)
 - `api/tests/mcp/tools/test_prompt_tools.py` (new)
 - `api/tests/mcp/tools/test_meta_tools.py` (new)
@@ -106,7 +109,7 @@ T-083 §6 Q-D6 surfaced：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 |---|---|
 | `GET /v1/tasks/{task_id}` | `task:read` |
 | `GET /v1/tasks` | `task:read` |
-| `GET /v1/tasks/{task_id}/stream` | `task:read` （SSE endpoint；T-080 落地時用 `get_current_user_no_pin`，本單補 `require_scope` 對齊其他 task endpoint） |
+| `GET /v1/tasks/{task_id}/stream` | `task:read` —— **用 `require_scope_no_pin("task:read")` 不是 `require_scope`**（後者 pin DB connection 整個 SSE 生命週期；見 §Scope 說明 + §Notes）。本單新增 `require_scope_no_pin` helper |
 | `POST /v1/tasks/{task_id}/cancel` | `task:cancel` |
 | `POST /v1/prompt/preview` | `character:read` |
 | `GET /v1/meta` | **public，不套 `require_scope`** —— per `api-shape.md` §5.9（health/capability info，未授權 client 必須可讀，SPA 60s polling）。本單把它加進 T-081 scope coverage check 的 explicit public allowlist（與 `/health` 同 bucket） |
@@ -139,3 +142,5 @@ T-083 §6 Q-D6 surfaced：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 - **`meta.get` 為什麼 public**：`/v1/meta` 暴露 platform constraints / model 版本 / degraded_services，是 client（包含未授權的）必須能讀的 health/capability info，無敏感資料。Endpoint 本身已是 no-auth；MCP tool 對齊
 - **`tools/list` extension 的實作 hint**：MCP server 在 `tools/list` response 加 `_meta` extension field，內含 `degraded_services` array（schema 與 `/v1/meta` 同）。Hook 點通常是 server initialization 時 register 一個 `list_tools` middleware，agent 每次 `tools/list` 都拿到當下 state。具體 SDK API 看 `mcp` package；T-080 落地的 dispatcher 應該已有對應 extension point
 - **如果 T-088 比 T-084 / T-085 / T-086 早 ship**：好事。1:1 wrap 是後三張的 reference pattern；早一步 land 讓 T-084 / T-085 / T-086 可直接抄 `register(MCPTool(...))` 用法。`task.get` 1:1 wrap 早 land 也讓 packaged tool 的內部 polling 心智模型更清晰（雖然實作上不直接呼 1:1 tool，但 agent surface 一致對應）
+- **為什麼 SSE stream endpoint 要 `require_scope_no_pin` 不是 `require_scope`**（Codex PR #108 round-12）：`require_scope(...)` 的內部 dependency 是 `Depends(get_current_user)`，而 `get_current_user` 鏈到 `Depends(db_session)` —— FastAPI 的 yield-based dependency 會 hold 住那條 DB connection 直到 response 結束。對 SSE stream 來說「response 結束」= client 斷線（i2v 可跑 30–120s），整段時間 pin 一條 connection，併發幾條 stream 就把 pool 榨乾。T-080 正是為此把 stream endpoint 的 auth 換成 `get_current_user_no_pin`（開短命 session 查完 user 就關）。本單補 scope check 不能退回標準 `require_scope`，否則 re-introduce 同個 bug。`require_scope_no_pin` 邏輯與 `require_scope` 一字不差（都讀 `request.state.token_scopes` 比對 required），唯一差別是 `Depends(get_current_user_no_pin)`。可行性已驗證：`get_current_user_no_pin` 的兩條 auth path（`_resolve_oauth` / `_resolve_jwt`）都會 populate `request.state.token_scopes`（deps.py:101 / :139），scope check 拿得到資料。
+- **T-081 scope coverage guardrail 要認得 `require_scope_no_pin`**（implementation hint）：T-081 guardrail 1 grep `require_scope(...)` 配對 route decorator。新增 `require_scope_no_pin` 後，那條 grep pattern 要同時認 `require_scope` 與 `require_scope_no_pin`（例如 regex `require_scope(_no_pin)?\(`），否則 stream endpoint 會被誤判成「沒套 scope」。本單動到的是 endpoint 端；grep pattern 的擴充歸 T-081，但本單在 PR description 點名提醒 T-081 owner（兩張可能平行開發）。
