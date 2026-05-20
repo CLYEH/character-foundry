@@ -74,6 +74,14 @@ def test_stale_known_missing_entry_fails(capsys: pytest.CaptureFixture[str]) -> 
     assert "POST /v1/widgets" in err
 
 
+def test_empty_scan_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    # A scan that finds zero endpoints must fail loud, not silently pass —
+    # important once KNOWN_MISSING_SCOPE is driven to empty by the rollout.
+    rc = csc.main([], endpoints=[], known_missing=frozenset())
+    assert rc == 1
+    assert "scanned 0 endpoints" in capsys.readouterr().err
+
+
 def test_real_repo_passes_via_subprocess() -> None:
     # End-to-end: running the script as CI does (resolves `import _route_scan`
     # off sys.path[0], scans the live routes, uses the real baseline).

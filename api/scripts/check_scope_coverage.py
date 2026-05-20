@@ -148,6 +148,18 @@ def main(
     eps = endpoints if endpoints is not None else scan_routes(args.routes_dir)
     baseline = known_missing if known_missing is not None else KNOWN_MISSING_SCOPE
 
+    # Floor: a scan that finds zero endpoints means the routes dir is wrong or a
+    # packaging/glob regression happened. Today the non-empty baseline catches
+    # this (all entries go stale), but once the rollout drives the baseline to
+    # empty that safety net disappears — so refuse an empty scan explicitly.
+    if not eps:
+        print(
+            f"::error::scope-coverage scanned 0 endpoints from {args.routes_dir} - "
+            "wrong directory or a packaging/glob regression. Refusing to pass.",
+            file=sys.stderr,
+        )
+        return 1
+
     unexpected, stale = check(
         eps,
         public_exact=PUBLIC_PATHS_EXACT,

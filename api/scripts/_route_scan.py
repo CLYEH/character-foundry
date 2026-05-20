@@ -34,6 +34,19 @@ from pathlib import Path
 
 HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "trace"})
 
+# Route-registration forms this static scanner does NOT model. If a scanned
+# file uses any of them the scanner would silently undercount endpoints (the
+# dangerous false-negative direction for the scope-coverage gate), so we raise
+# instead — forcing whoever introduces the form to extend the scanner. Per
+# both pre-push reviews (T-081). The modeled form is `@<module_router>.<method>("/path")`.
+_UNMODELED_ROUTE_CALLS = frozenset(
+    {"add_api_route", "add_websocket_route", "include_router", "api_route", "websocket"}
+)
+
+
+class RouteScanError(RuntimeError):
+    """Raised when a route module uses a registration form the scanner can't read."""
+
 
 @dataclass(frozen=True)
 class Endpoint:
@@ -55,6 +68,10 @@ def _router_prefixes(tree: ast.Module) -> dict[str, str]:
         name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
         if name != "APIRouter":
             continue
+        # Only a string-literal `prefix=` is resolved; a non-literal
+        # (`prefix=SOME_CONST`) falls back to "" and would surface the route
+        # under a wrong logical path — a false-positive (the safe direction).
+        # Current routes all use literals; revisit if that changes.
         prefix = ""
         for kw in node.value.keywords:
             if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
@@ -66,30 +83,48 @@ def _router_prefixes(tree: ast.Module) -> dict[str, str]:
     return prefixes
 
 
-def _require_scope_tokens(func_node: ast.AST) -> tuple[bool, tuple[str, ...]]:
-    """Find any `require_scope(...)` call within `func_node`.
+def _named_call(call: ast.Call, name: str) -> bool:
+    """True if `call` invokes a function named `name` (bare or attribute)."""
+    func = call.func
+    return (isinstance(func, ast.Name) and func.id == name) or (
+        isinstance(func, ast.Attribute) and func.attr == name
+    )
 
-    Walks the whole function (decorators + signature defaults + body), so it
-    catches both the `dependencies=[Depends(require_scope(...))]` decorator
-    form and the `_: None = Depends(require_scope(...))` parameter-default
-    form. Returns (found, tokens) where tokens are the string values of
-    string-literal args plus the identifier names of Name args.
+
+def _require_scope_tokens(
+    func_node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[bool, tuple[str, ...]]:
+    """Detect `Depends(require_scope(...))` in the legitimate dependency slots.
+
+    Only the route decorator(s) (`dependencies=[Depends(require_scope(...))]`)
+    and parameter defaults (`_: None = Depends(require_scope(...))`) count. The
+    function BODY is deliberately EXCLUDED: a dead or nested `require_scope(...)`
+    call there is not real enforcement, and counting it would let an endpoint
+    pass the coverage gate without an actual dependency — a silent false-negative
+    flagged by both T-081 pre-push reviews. We further require the call to be
+    wrapped in `Depends(...)` so a stray reference can't be miscounted.
+
+    Returns (found, tokens) where tokens are the string values of string-literal
+    args plus the identifier names of Name args to each matched require_scope.
     """
+    args = func_node.args
+    regions: list[ast.AST] = [*func_node.decorator_list]
+    regions.extend(d for d in (*args.defaults, *args.kw_defaults) if d is not None)
+
     found = False
     tokens: list[str] = []
-    for node in ast.walk(func_node):
-        if not isinstance(node, ast.Call):
-            continue
-        callee = node.func
-        callee_name = callee.id if isinstance(callee, ast.Name) else getattr(callee, "attr", None)
-        if callee_name != "require_scope":
-            continue
-        found = True
-        for arg in node.args:
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                tokens.append(arg.value)
-            elif isinstance(arg, ast.Name):
-                tokens.append(arg.id)
+    for region in regions:
+        for node in ast.walk(region):
+            if not (isinstance(node, ast.Call) and _named_call(node, "Depends")):
+                continue
+            for dep_arg in node.args:
+                if isinstance(dep_arg, ast.Call) and _named_call(dep_arg, "require_scope"):
+                    found = True
+                    for arg in dep_arg.args:
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                            tokens.append(arg.value)
+                        elif isinstance(arg, ast.Name):
+                            tokens.append(arg.id)
     return found, tuple(tokens)
 
 
@@ -123,6 +158,17 @@ def scan_routes(routes_dir: Path) -> list[Endpoint]:
     for py in sorted(routes_dir.glob("*.py")):
         source = py.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(py))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _UNMODELED_ROUTE_CALLS
+            ):
+                raise RouteScanError(
+                    f"{py.name}:{node.lineno} uses `.{node.func.attr}(...)`, a route-registration "
+                    "form the static scanner does not model. Extend _route_scan.py to cover it "
+                    "before merging — otherwise the scope-coverage gate would silently undercount."
+                )
         prefixes = _router_prefixes(tree)
         if not prefixes:
             continue
