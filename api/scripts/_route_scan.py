@@ -153,9 +153,16 @@ def _route_decorators(
 
 
 def scan_routes(routes_dir: Path) -> list[Endpoint]:
-    """Parse every `*.py` under `routes_dir` and return the endpoints found."""
+    """Parse every `*.py` recursively under `routes_dir` and return endpoints.
+
+    `rglob` (not `glob`) so a nested route package — e.g. `routes/v2/*.py` for
+    API versioning — can't silently escape the coverage gate (Codex review #109
+    P2). The `file` field carries the path relative to `routes_dir` so two
+    same-named modules in different subdirs stay distinguishable in errors.
+    """
     endpoints: list[Endpoint] = []
-    for py in sorted(routes_dir.glob("*.py")):
+    for py in sorted(routes_dir.rglob("*.py")):
+        rel = str(py.relative_to(routes_dir))
         source = py.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(py))
         for node in ast.walk(tree):
@@ -165,7 +172,7 @@ def scan_routes(routes_dir: Path) -> list[Endpoint]:
                 and node.func.attr in _UNMODELED_ROUTE_CALLS
             ):
                 raise RouteScanError(
-                    f"{py.name}:{node.lineno} uses `.{node.func.attr}(...)`, a route-registration "
+                    f"{rel}:{node.lineno} uses `.{node.func.attr}(...)`, a route-registration "
                     "form the static scanner does not model. Extend _route_scan.py to cover it "
                     "before merging — otherwise the scope-coverage gate would silently undercount."
                 )
@@ -184,7 +191,7 @@ def scan_routes(routes_dir: Path) -> list[Endpoint]:
                     Endpoint(
                         method=method,
                         path=path,
-                        file=py.name,
+                        file=rel,
                         lineno=lineno,
                         has_scope=has_scope,
                         scope_tokens=tokens,

@@ -83,6 +83,24 @@ def test_no_prefix_router(tmp_path: Path) -> None:
     assert ep.has_scope is False
 
 
+def test_nested_route_module_is_scanned(tmp_path: Path) -> None:
+    # rglob, not glob: a nested route package (e.g. routes/v2/) must not
+    # silently escape the gate (Codex review #109 P2).
+    nested = tmp_path / "v2"
+    nested.mkdir()
+    _write(
+        nested,
+        "things.py",
+        "from fastapi import APIRouter\n"
+        "router = APIRouter(prefix='/v2/things')\n"
+        "@router.get('')\n"
+        "async def list_things(): ...\n",
+    )
+    (ep,) = scan_routes(tmp_path)
+    assert ep.path == "/v2/things"
+    assert ep.file == str(Path("v2") / "things.py")
+
+
 def test_unmodeled_registration_form_raises(tmp_path: Path) -> None:
     _write(
         tmp_path,
