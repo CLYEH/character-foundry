@@ -95,6 +95,8 @@ character_list = MCPTool(
 
 判斷規則：若 agent 為了完成「一件事」需要連呼 ≥2 個 endpoint，packaging。
 
+> 每條 endpoint 套用此規則的判定結果（含 packaged tool 的 bundles 清單）見 [`../agent-interface/endpoint-mcp-mapping.md`](../agent-interface/endpoint-mcp-mapping.md)。Wave B tool ticket（T-084 / T-085 / T-086）的 `bundles=[...]` 直接從該表 §3 抄。
+
 ### 3.4 Scope 推導
 
 Tool 的 `scopes` field 必須是 `bundles` 內所有 endpoint scope 的 union——CI 會驗證這個不一致。

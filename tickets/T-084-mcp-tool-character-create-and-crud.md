@@ -3,7 +3,7 @@
 **Status:** TODO
 **Sprint:** 3.5b
 **Est:** M
-**Depends on:** T-080（MCP skeleton）、T-081（registry pattern + CI guardrail）、T-083（endpoint mapping doc 提供權威 bundle list）
+**Depends on:** T-080（MCP skeleton）、T-081（registry pattern + CI guardrail）、T-083（endpoint mapping doc 提供權威 bundle list）、**T-088**（task endpoint `require_scope` 必須先 land 才能讓 T-084 packaged tool 的 `task:read` 通過 T-081 guardrail 2 的 union check）
 **Related:** T-085 / T-086（同 Wave B、共用 pattern）、T-087（progress 機制是 Last-Event-ID 的對象）
 
 ---
@@ -15,10 +15,11 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 **In scope:**
 
 ### Packaged tool — `character.create`
-- Bundles（以 T-083 endpoint-mcp-mapping.md §2 表為權威，本單實作時對齊）：
+- Bundles（以 T-083 endpoint-mcp-mapping.md §3 表為權威，本單實作時對齊；scope = union of bundle endpoint scopes per `oauth-mcp-integration.md §3.4`）：
   - `POST /v1/characters`（建 character skeleton + creation session）
   - `POST /v1/creation-sessions/{id}/reference-images`（input_mode=reference 才呼）
   - `POST /v1/creation-sessions/{id}/checkpoints`（跑 checkpoint generation；async task）
+  - `GET /v1/tasks/{task_id}`（內部 polling 用，等 checkpoint task 跑完；scope `task:read` 從這條進 union）
   - `POST /v1/creation-sessions/{id}/select-base`（鎖死 base）
 - Input schema（pydantic）：
   ```python
@@ -53,6 +54,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 - `character.fork`：wraps `POST /v1/checkpoints/{id}/fork`，scope `character:write`
 - `character.get_session`：wraps `GET /v1/creation-sessions/{id}`，scope `character:read`（debug / resume 用）
 - `character.abandon_session`：wraps `POST /v1/creation-sessions/{id}/abandon`，scope `character:write`
+- `character.get_checkpoint`：wraps `GET /v1/checkpoints/{id}`，scope `character:read`（drift from api-shape §5.2 — endpoint exists in code, see T-083 endpoint-mcp-mapping.md §6 Q-D1）
 
 ### Registry 條目
 - 每個 tool 在 `app/mcp/tools/character.py` 用 `register(MCPTool(...))` 註冊
@@ -92,24 +94,25 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## Acceptance criteria
 
-- [ ] `character.create` packaged tool 註冊進 registry，bundles 與 T-083 §2 表完全一致
-- [ ] 全部 8 條 CRUD 1:1 tool 註冊進 registry（`list` / `get` / `rename` / `delete` / `restore` / `fork` / `get_session` / `abandon_session`；M4-deferred 的 `get_manifest` / `copy` / `export` 不在本單）
+- [ ] `character.create` packaged tool 註冊進 registry，bundles 與 T-083 **§3** 表完全一致（§3 是 packaged-tool 的權威 bundle list，含 internal `GET /v1/tasks/{task_id}` polling endpoint；§2 只列個別 endpoint metadata。對齊 §2 而不對 §3 會漏 task GET、撞 T-081 guardrail 2 對 `task:read` 的 union check）
+- [ ] 全部 9 條 CRUD 1:1 tool 註冊進 registry（`list` / `get` / `rename` / `delete` / `restore` / `fork` / `get_session` / `abandon_session` / `get_checkpoint`；M4-deferred 的 `get_manifest` / `copy` / `export` 不在本單）
 - [ ] 每個 tool 的 `scopes` 通過 T-081 CI guardrail 2（⊆ union of bundle endpoint scopes）
 - [ ] `character.create` template mode + reference mode 各自一條 e2e test 綠（含 progress notification 驗證）
 - [ ] 失敗 path test 綠（checkpoint 失敗、reference upload 失敗、abandon 被呼）
 - [ ] 所有 character 領域 endpoint 都套上 `require_scope`，T-081 scope coverage check pass（不放 known-allowed）
 - [ ] `pytest api/tests/mcp/tools/test_character_*.py` 全綠
-- [ ] PR description 對照 T-083 §2 表逐條 check（每個 bundle / scope / packaging 決定 trace 回 doc）
+- [ ] PR description 對照 T-083 **§2 + §3** 表逐條 check（§2: 每個 endpoint 的 ✅/❌、scope、owner；§3: 每個 packaged tool 的完整 bundle list 與 union-derived scopes；兩處 trace 對齊才算完整）
 
 ---
 
 ## Files expected to touch
 
-- `api/app/mcp/tools/character.py` (new) — 9 個 tool（1 packaged create + 8 CRUD 1:1；M4-deferred 的 manifest/copy/export 不在本單）
+- `api/app/mcp/tools/character.py` (new) — 10 個 tool（1 packaged create + 9 CRUD 1:1；M4-deferred 的 manifest/copy/export 不在本單）
 - `api/app/mcp/schemas/character.py` (new) — input / output pydantic schema
 - `api/app/api/routes/characters.py` (edit) — 補 `require_scope` decorator（若 T-054 後續未套）
-- `api/app/api/routes/creation_sessions.py` (edit) — 同上
-- `api/app/api/routes/checkpoints.py` (edit) — 同上
+- `api/app/api/routes/creation_sessions.py` (edit) — 同上（GET/POST checkpoints / select-base / abandon / GET session）
+- `api/app/api/routes/reference_images.py` (edit) — 同上（`POST /v1/creation-sessions/{id}/reference-images` 在獨立檔案，prefix 同為 `/v1/creation-sessions` 但 router 物件分開；reference mode `character.create` 必含此 endpoint）
+- `api/app/api/routes/checkpoints.py` (edit) — 同上（GET / fork）
 - `api/tests/mcp/tools/__init__.py` (new)
 - `api/tests/mcp/tools/test_character_create.py` (new)
 - `api/tests/mcp/tools/test_character_crud.py` (new)
@@ -132,10 +135,11 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 | `POST /v1/characters/{id}/restore` | `character:write` |
 | `POST /v1/checkpoints/{id}/fork` | `character:write` |
 | `GET /v1/creation-sessions/{id}` | `character:read` |
-| `POST /v1/creation-sessions/{id}/checkpoints` | `character:write` + `task:read` |
+| `POST /v1/creation-sessions/{id}/checkpoints` | `character:write` |
 | `POST /v1/creation-sessions/{id}/reference-images` | `character:write` |
 | `POST /v1/creation-sessions/{id}/select-base` | `character:write` |
 | `POST /v1/creation-sessions/{id}/abandon` | `character:write` |
+| `GET /v1/checkpoints/{id}` | `character:read` |
 
 > ⚠ M4 endpoints（`/v1/characters/{id}/manifest` / `/v1/characters/{id}/copy` / `/v1/characters/{id}/export`）**未實作**，由 M4 ticket 從 day 1 帶 scope decorator + MCP tool 條目（per scope.md §1）
 
@@ -145,11 +149,11 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## MCP tool delta
 
-**新 tool（9 條 = 1 packaged + 8 CRUD 1:1）：**
+**新 tool（10 條 = 1 packaged + 9 CRUD 1:1）：**
 
 | Name | Type | Bundles | Scopes |
 |---|---|---|---|
-| `character.create` | packaged | 4 endpoints（session bootstrap） | `character:write` + `task:read` |
+| `character.create` | packaged | 5 endpoints（4 session bootstrap + internal `GET /v1/tasks/{id}` polling） | `character:write` + `task:read` |
 | `character.list` | 1:1 | `GET /v1/characters` | `character:read` |
 | `character.get` | 1:1 | `GET /v1/characters/{id}` | `character:read` |
 | `character.rename` | 1:1 | `PATCH /v1/characters/{id}` | `character:write` |
@@ -158,6 +162,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 | `character.fork` | 1:1 | `POST /v1/checkpoints/{id}/fork` | `character:write` |
 | `character.get_session` | 1:1 | `GET /v1/creation-sessions/{id}` | `character:read` |
 | `character.abandon_session` | 1:1 | `POST /v1/creation-sessions/{id}/abandon` | `character:write` |
+| `character.get_checkpoint` | 1:1 | `GET /v1/checkpoints/{id}` | `character:read` |
 
 決策出處：`planning/agent-interface/endpoint-mcp-mapping.md` §3
 
@@ -165,7 +170,7 @@ Wave B 第 1 張：把 character 領域的 packaged tool（`character.create`）
 
 ## Notes
 
-- **為什麼 packaged `character.create` 是 4 個 endpoint 而非 3**：reference mode 才會呼 reference-images endpoint，template mode 跳過。Tool 內部分支，agent 不感知
+- **為什麼 packaged `character.create` 是 5 個 endpoint（4 session bootstrap + 1 內部 task GET polling）**：session bootstrap 是 4 條（characters → reference-images optional → checkpoints → select-base），其中 reference mode 才會呼 reference-images endpoint、template mode 跳過。再加 tool 內部一律呼 `GET /v1/tasks/{task_id}` polling checkpoint task 完成（per T-083 §3 bundle list；`task:read` scope 從這條進 union）。Tool 內部分支，agent 不感知 mode 差異或 polling chain
 - **`checkpoint_count` 為什麼 default 1**：agent 場景多數一發即用；UI 場景（生 3-5 個讓人挑）是 human 行為。Agent 要多 checkpoint 時自己加迴圈直接呼 REST endpoint `POST /v1/creation-sessions/{id}/checkpoints`。**Endpoint 本身有兩個用法**：
   - (a) **作為 `character.create` packaged tool 的內部 bundled step（本單範圍）**：建 session → 跑 1 次 checkpoint → select-base，agent 看到的是單一 tool call。當 `checkpoint_count > 1` 時 tool 內部迴圈呼此 endpoint
   - (b) **作為獨立 1:1 MCP tool**（如 `character.add_checkpoint`）：**本單不開**，避免 scope 爆。Agent 要多 checkpoint 一律走 (a) 的 `checkpoint_count` 參數，或自己拿 token 直打 REST endpoint。未來若 agent reveal「想對既有 session 補打 checkpoint 而不重啟整套 packaging」的需求，再另開 ticket 加 1:1 tool

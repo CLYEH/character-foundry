@@ -3,7 +3,7 @@
 **Status:** TODO
 **Sprint:** 3.5b
 **Est:** M
-**Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）、T-084（pattern reference；progress phase 命名 align）
+**Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）、T-084（pattern reference；progress phase 命名 align）、**T-088**（task endpoint `require_scope` 必須先 land 才能讓 motion.generate 的 `task:read` 通過 T-081 guardrail 2 的 union check）
 **Related:** T-085（同 Wave B）、T-087（i2v 是 Last-Event-ID 最關鍵的對象——本單實作 progress 但不處理斷線重連，T-087 補上）
 
 ---
@@ -15,9 +15,9 @@ Wave B 第 3 張：把 motion 領域全部 MCP tool 落地。motion.generate 是
 **In scope:**
 
 ### Packaged tool — `motion.generate`
-- Bundles（per T-083 §3）：
+- Bundles（per T-083 §3；scope = union of bundle endpoint scopes per `oauth-mcp-integration.md §3.4`）：
   - `POST /v1/bases/{base_id}/motions` **OR** `POST /v1/aliases/{alias_id}/motions`（target 二選一）
-  - 內部 task polling（不對應獨立 endpoint，是 backend task subscription）
+  - `GET /v1/tasks/{task_id}`（內部 polling 用，等 i2v task 跑完；scope `task:read` 從這條進 union。SSE 變體 `GET /v1/tasks/{task_id}/stream` 不在 bundle 列表內 —— 該 endpoint per §2.5 已 absorbed 進 packaged tool 的 MCP progress notification path，不另列）
 - Input schema：
   ```python
   class MotionGenerateIn(BaseModel):
@@ -120,8 +120,8 @@ Wave B 第 3 張：把 motion 領域全部 MCP tool 落地。motion.generate 是
 |---|---|
 | `GET /v1/bases/{id}/motions` | `character:read` |
 | `GET /v1/aliases/{id}/motions` | `character:read` |
-| `POST /v1/bases/{id}/motions` | `character:write` + `task:read` |
-| `POST /v1/aliases/{id}/motions` | `character:write` + `task:read` |
+| `POST /v1/bases/{id}/motions` | `character:write` |
+| `POST /v1/aliases/{id}/motions` | `character:write` |
 | `GET /v1/motions/{id}` | `character:read` |
 | `PATCH /v1/motions/{id}` | `character:write` |
 | `DELETE /v1/motions/{id}` | `character:write` |
@@ -136,7 +136,7 @@ Wave B 第 3 張：把 motion 領域全部 MCP tool 落地。motion.generate 是
 
 | Name | Type | Bundles | Scopes |
 |---|---|---|---|
-| `motion.generate` | packaged（polymorphic） | base or alias motion create + task wait | `character:write` + `task:read` |
+| `motion.generate` | packaged（polymorphic） | base or alias motion create + `GET /v1/tasks/{task_id}` polling | `character:write` + `task:read`（`task:read` 由 task GET 進 union） |
 | `motion.list_for_base` | 1:1 | `GET /v1/bases/{id}/motions` | `character:read` |
 | `motion.list_for_alias` | 1:1 | `GET /v1/aliases/{id}/motions` | `character:read` |
 | `motion.get` | 1:1 | `GET /v1/motions/{id}` | `character:read` |
