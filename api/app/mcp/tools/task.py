@@ -28,6 +28,9 @@ drift from REST.
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
+
+from pydantic import Field
 
 from app.auth.scopes import SCOPE_TASK_CANCEL, SCOPE_TASK_READ
 from app.core.errors import not_found_task
@@ -73,12 +76,17 @@ async def task_get(task_id: uuid.UUID) -> TaskResponse:
 
 async def task_list(
     status: TaskStatus | None = None,
-    limit: int = 50,
+    limit: Annotated[int, Field(ge=1, le=200)] = 50,
 ) -> TaskListResponse:
     """List the calling user's tasks, newest first.
 
     Optional `status` filters by lifecycle state; `limit` (1–200, default 50)
     caps the page. Queue positions are resolved in one bulk arq scan.
+
+    The `ge=1, le=200` bound lives on the SIGNATURE (not just `TaskListInput`)
+    because FastMCP derives the wire schema from the signature — a bound only
+    in the metadata schema would leave the tool accepting an unbounded `limit`
+    over the wire, unlike the REST route's `Query(ge=1, le=200)` (eng review).
     """
     auth = require_mcp_scopes(SCOPE_TASK_READ)
     user_id = require_user_context(auth)

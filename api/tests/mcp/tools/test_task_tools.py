@@ -64,6 +64,31 @@ async def test_task_get_m2m_no_user_context() -> None:
     assert tool_error_code(ei.value) == "AUTH_USER_CONTEXT_REQUIRED"
 
 
+async def test_task_list_limit_bound_in_wire_schema() -> None:
+    """`task.list` `limit` must be bounded 1–200 in the FastMCP-DERIVED schema.
+
+    FastMCP builds the wire schema from the handler signature, not from
+    `TaskListInput`, so the `ge/le` bound has to live on the signature. Without
+    it an MCP client could pass an unbounded `limit` the REST route forbids
+    (eng review of T-088). Asserting against the built server keeps that
+    regression caught even though the direct-call handler tests bypass
+    FastMCP's validation entirely.
+    """
+    from pydantic import ValidationError
+
+    from app.mcp.app import _build_mcp_server
+
+    mcp = _build_mcp_server()
+    tool = next(t for t in await mcp.list_tools() if t.name == "task.list")
+    limit_schema = tool.inputSchema["properties"]["limit"]
+    assert limit_schema["minimum"] == 1
+    assert limit_schema["maximum"] == 200
+
+    arg_model = mcp._tool_manager.get_tool("task.list").fn_metadata.arg_model
+    with pytest.raises(ValidationError):
+        arg_model.model_validate({"limit": 10_000_000})
+
+
 # ---------------------------------------------------------------------------
 # task.get — DB-backed
 # ---------------------------------------------------------------------------
