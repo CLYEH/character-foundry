@@ -167,6 +167,22 @@ def test_param_default_scope_covers_all_stacked_decorators(tmp_path: Path) -> No
     assert by_route[("POST", "/v1/b")].has_scope is True
 
 
+def test_empty_require_scope_raises(tmp_path: Path) -> None:
+    # `Depends(require_scope())` with no scopes authorizes any authenticated
+    # token (required=frozenset()), so it must fail loud, not count as scoped
+    # (Codex #109 P1).
+    _write(
+        tmp_path,
+        "r.py",
+        "from fastapi import APIRouter, Depends\n"
+        "router = APIRouter(prefix='/v1')\n"
+        "@router.post('')\n"
+        "async def create(_: None = Depends(require_scope())): ...\n",
+    )
+    with pytest.raises(RouteScanError, match="no scopes"):
+        scan_routes(tmp_path)
+
+
 def test_unmodeled_registration_form_raises(tmp_path: Path) -> None:
     _write(
         tmp_path,

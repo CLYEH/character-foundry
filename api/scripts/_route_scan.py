@@ -91,7 +91,7 @@ def _named_call(call: ast.Call, name: str) -> bool:
     )
 
 
-def _scope_tokens_in(region: ast.AST) -> tuple[bool, list[str]]:
+def _scope_tokens_in(region: ast.AST, *, file_label: str) -> tuple[bool, list[str]]:
     """Find `Depends(require_scope(...))` within one AST region.
 
     Returns (found, tokens). Requires the `Depends(...)` wrapper so a stray
@@ -99,6 +99,11 @@ def _scope_tokens_in(region: ast.AST) -> tuple[bool, list[str]]:
     region is searched (parameter defaults vs a single decorator) so dead /
     nested body calls never reach here — a silent false-negative both T-081
     pre-push reviews flagged.
+
+    Raises RouteScanError on `Depends(require_scope())` with no scope args:
+    an empty require_scope yields `required = frozenset()` and authorizes any
+    authenticated token (no enforcement), so counting it as scoped would be a
+    false-negative for the common typo (Codex #109 P1).
     """
     found = False
     tokens: list[str] = []
@@ -107,6 +112,13 @@ def _scope_tokens_in(region: ast.AST) -> tuple[bool, list[str]]:
             continue
         for dep_arg in node.args:
             if isinstance(dep_arg, ast.Call) and _named_call(dep_arg, "require_scope"):
+                if not dep_arg.args:
+                    raise RouteScanError(
+                        f"{file_label}:{dep_arg.lineno} `Depends(require_scope())` has no scopes — "
+                        "an empty require_scope authorizes any authenticated token (no scope "
+                        "enforcement). Pass at least one scope, or drop the dependency if the "
+                        "route is intentionally public."
+                    )
                 found = True
                 for arg in dep_arg.args:
                     if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
@@ -118,6 +130,8 @@ def _scope_tokens_in(region: ast.AST) -> tuple[bool, list[str]]:
 
 def _param_default_scope(
     func_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    file_label: str,
 ) -> tuple[bool, list[str]]:
     """Scope deps in parameter defaults — these apply to EVERY route on the function.
 
@@ -132,7 +146,7 @@ def _param_default_scope(
     for default in (*args.defaults, *args.kw_defaults):
         if default is None:
             continue
-        f, t = _scope_tokens_in(default)
+        f, t = _scope_tokens_in(default, file_label=file_label)
         found = found or f
         tokens.extend(t)
     return found, tokens
@@ -186,7 +200,7 @@ def _route_decorators(
                 "string-literal path (neither positional nor `path=`). The scanner can't read "
                 "its route path; use a literal or extend _route_scan.py before merging."
             )
-        deco_found, deco_tokens = _scope_tokens_in(deco)
+        deco_found, deco_tokens = _scope_tokens_in(deco, file_label=file_label)
         full_path = prefixes[target.value.id] + route_path
         out.append((target.attr.upper(), full_path, deco.lineno, deco_found, tuple(deco_tokens)))
     return out
@@ -228,7 +242,7 @@ def scan_routes(routes_dir: Path) -> list[Endpoint]:
             # Parameter-default scope applies to every decorator on the
             # function; decorator-level `dependencies=[...]` applies only to
             # that decorator (Codex #109 P2). Combine per route.
-            param_found, param_tokens = _param_default_scope(node)
+            param_found, param_tokens = _param_default_scope(node, file_label=rel)
             for method, path, lineno, deco_found, deco_tokens in decos:
                 endpoints.append(
                     Endpoint(
