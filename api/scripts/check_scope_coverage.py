@@ -82,15 +82,12 @@ KNOWN_MISSING_SCOPE: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/v1/motions/{motion_id}"),
         ("PATCH", "/v1/motions/{motion_id}"),
         ("DELETE", "/v1/motions/{motion_id}"),
-        # prompt.py
-        ("POST", "/v1/prompt/preview"),
         # reference_images.py
         ("POST", "/v1/creation-sessions/{session_id}/reference-images"),
-        # tasks.py
-        ("GET", "/v1/tasks/{task_id}"),
-        ("POST", "/v1/tasks/{task_id}/cancel"),
-        ("GET", "/v1/tasks"),
-        ("GET", "/v1/tasks/{task_id}/stream"),
+        # NOTE: tasks.py (GET /{id}, GET, POST /{id}/cancel, GET /{id}/stream)
+        # and prompt.py (POST /preview) migrated onto require_scope* in T-088 —
+        # removed from this baseline so a future regression (someone dropping
+        # the scope dep) fails the gate instead of being silently re-baselined.
     }
 )
 

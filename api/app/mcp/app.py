@@ -42,10 +42,12 @@ from typing import Final
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ListToolsResult
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.mcp.auth import MCPAuthContextMiddleware
 from app.mcp.tools import register_all
+from app.services import degraded_services
 
 _logger = logging.getLogger(__name__)
 
@@ -104,7 +106,44 @@ def _build_mcp_server() -> FastMCP:
         transport_security=_build_transport_security(),
     )
     register_all(mcp)
+    _install_tools_list_meta_extension(mcp)
     return mcp
+
+
+def _install_tools_list_meta_extension(mcp: FastMCP) -> None:
+    """Surface `degraded_services` on the `tools/list` response `_meta` (T-088).
+
+    Per `planning/agent-interface/endpoint-mcp-mapping.md` §5, agents must be
+    able to read degraded state WITHOUT an explicit `meta.get` call, so the same
+    Redis-aggregated list that `/v1/meta` and the `meta.get` tool serve also
+    rides on every `tools/list` response's `_meta` field. This is the only MCP
+    surface with two views of one datum (a tool AND a transport-level extension).
+
+    Mechanism: FastMCP wires a default `list_tools` handler in its `__init__`
+    that returns `list[Tool]`. The low-level server's `list_tools()` decorator
+    (`mcp/server/lowlevel/server.py`) ALSO accepts a handler returning a full
+    `ListToolsResult` and passes its `_meta` through unchanged (plus refreshes
+    the tool cache from `result.tools`). We re-register such a handler here,
+    reusing `FastMCP.list_tools()` for the tool list itself so the per-tool
+    schemas stay identical — we only attach the response-level `_meta`.
+
+    Both this extension and `meta.get` call the SAME
+    `degraded_services.aggregate_degraded_services()` (resolved at call time via
+    the module attribute), so they can't drift — and a Redis outage degrades to
+    an empty list rather than failing `tools/list` (which agents call on every
+    connect).
+    """
+
+    async def _list_tools_with_meta() -> ListToolsResult:
+        tools = await mcp.list_tools()
+        degraded = await degraded_services.aggregate_degraded_services()
+        return ListToolsResult(tools=tools, _meta={"degraded_services": degraded})
+
+    # `mcp._mcp_server` is the underlying low-level Server; re-registering the
+    # ListToolsRequest handler overrides FastMCP's default. This is the SDK's
+    # documented extension seam (the low-level `@server.list_tools()` API).
+    # `list_tools()` is an untyped decorator factory in the SDK stubs.
+    mcp._mcp_server.list_tools()(_list_tools_with_meta)  # type: ignore[no-untyped-call]
 
 
 class MCPPathNormalizationMiddleware:

@@ -264,6 +264,39 @@ def auth_m2m_wrong_surface() -> AgentErrorException:
     )
 
 
+def auth_user_context_required() -> AgentErrorException:
+    """An M2M (client_credentials) token reached an MCP tool that operates on
+    user-owned resources (tasks, prompt preview).
+
+    M2M tokens are sanctioned on `/mcp/*` (per agent-interface Q5 — headless
+    agents are first-class there), but they carry no human identity, so
+    `MCPAuthContext.user_id is None`. Tools that scope data to the calling
+    user (`task.get` / `task.list` / `task.cancel` / `prompt.preview`) can't
+    resolve an owner from such a token. Rather than silently 404 (which a
+    `user_id=None` ownership query would do) or 500 (passing None where a UUID
+    is expected), fail closed with an actionable error pointing the client at
+    delegated Auth Code + PKCE — the grant that DOES carry a user identity.
+    Distinct from `auth_m2m_wrong_surface` (that one is for M2M hitting `/v1/*`;
+    here the client is correctly on `/mcp/*`, just calling a user-scoped tool).
+    """
+    return AgentErrorException(
+        AgentError(
+            code="AUTH_USER_CONTEXT_REQUIRED",
+            message="此操作需要使用者身分，M2M 用戶端請改用委派授權流程",
+            problem="An M2M (client_credentials) access token called an MCP tool that "
+            "operates on user-owned resources, but the token carries no user identity.",
+            cause="client_credentials tokens authenticate a headless client, not a human. "
+            "Tools like task.get / task.list / task.cancel / prompt.preview scope data to "
+            "the calling user, which an M2M token cannot supply.",
+            fix="Re-issue the token via the delegated Auth Code + PKCE flow so a human "
+            "identity is attached, then retry. Pure-M2M clients can only use tools that "
+            "don't require a user context.",
+            retryable=False,
+        ),
+        status_code=403,
+    )
+
+
 def auth_oauth_expired() -> AgentErrorException:
     return AgentErrorException(
         AgentError(

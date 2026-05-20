@@ -15,6 +15,7 @@ from typing import Any
 from redis.asyncio import Redis
 
 from app.core.constants import DEGRADED_KEY_PREFIX
+from app.core.redis_client import get_redis
 
 _logger = logging.getLogger(__name__)
 
@@ -96,3 +97,29 @@ async def get_degraded_services(redis: Redis) -> list[dict[str, Any]]:
 
     services.sort(key=lambda s: s["service"])
     return services
+
+
+async def aggregate_degraded_services() -> list[dict[str, Any]]:
+    """`get_degraded_services` for callers that have no DI-injected Redis.
+
+    `/v1/meta` reads degraded state through its FastAPI `Depends(get_redis)`.
+    The MCP surface (the `meta.get` tool and the `tools/list` `_meta`
+    extension, both T-088) runs inside the JSON-RPC dispatch loop with no
+    FastAPI request scope, so it can't use that dependency. This helper
+    acquires the process-wide Redis client itself and delegates to
+    `get_degraded_services`, giving BOTH MCP surfaces a SINGLE source that
+    matches what `/v1/meta` serves (the api-shape §5.9 contract).
+
+    Redis being unconfigured/unavailable is non-fatal — same posture as
+    `/v1/meta`'s `_MetaSafeRoute`: degraded info is best-effort capability
+    metadata, and `tools/list` must keep answering even during an infra
+    incident. `get_redis()` raises `RuntimeError` only when `REDIS_URL` is
+    unset; `get_degraded_services` already swallows operational Redis errors
+    and returns `[]`.
+    """
+    try:
+        redis = await get_redis()
+    except RuntimeError:
+        _logger.warning("aggregate_degraded_services: REDIS_URL unset; returning empty list")
+        return []
+    return await get_degraded_services(redis)
