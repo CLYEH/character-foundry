@@ -45,7 +45,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.mcp.auth import MCPAuthContextMiddleware
-from app.mcp.tools.hello import register as register_hello
+from app.mcp.tools import register_all
 
 _logger = logging.getLogger(__name__)
 
@@ -92,9 +92,10 @@ def _build_mcp_server() -> FastMCP:
     lifespan cycle and crash.
     """
     # See `_build_transport_security` docstring for the security knob set.
-    # See `app/mcp/tools/hello.py` for tool implementation; T-081 lands
-    # the registry pattern that replaces direct `register_hello(mcp)`
-    # calls with a loop over `app.mcp.tools.REGISTRY`.
+    # `register_all` (T-081) applies every tool in `app.mcp.registry.REGISTRY`
+    # — populated at import time by `app/mcp/tools/__init__.py` auto-discovery
+    # — onto this fresh FastMCP instance. Adding a Wave B tool needs no edit
+    # here.
     mcp = FastMCP(
         "character-foundry",
         stateless_http=True,
@@ -102,7 +103,7 @@ def _build_mcp_server() -> FastMCP:
         streamable_http_path="/",
         transport_security=_build_transport_security(),
     )
-    register_hello(mcp)
+    register_all(mcp)
     return mcp
 
 
