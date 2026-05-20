@@ -1,6 +1,6 @@
 # T-081: MCP tool registry + 3 條 CI guardrails
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 3.5b
 **Est:** S
 **Depends on:** **T-080**（for `hello.world` migration step only — registry pattern + CI script 開發階段可與 T-080 / T-082 / T-083 純並行；最後把 T-080 落地的 `app/mcp/tools/hello.py` 改成走 registry 的 migration commit 必須等 T-080 merge 才能合進來。**Wave A 並行性僅微幅受影響**：本單與 T-082 / T-083 仍可全並行，只與 T-080 在「migration commit」這條晚一步耦合）
@@ -79,15 +79,15 @@
 
 ## Acceptance criteria
 
-- [ ] `app/mcp/registry.py` 的 `MCPTool` dataclass + `register()` + `REGISTRY` dict 可用；import `app.mcp.tools` 後 `hello.world` 已被註冊
-- [ ] T-080 的 `hello.world` smoke tool 改成走 registry 註冊，behaviour 不變
-- [ ] `python api/scripts/check_scope_coverage.py` 對當前 repo 跑 exit 0（既有 endpoint 該補 require_scope 的，T-054 後續 ticket / 本單若觸及就順手補；本單**主要交付 script + whitelist 機制**，缺漏 endpoint 不在 scope，可加入 known-allowed 清單 + 開 follow-up ticket）
-- [ ] `python api/scripts/check_mcp_tool_scopes.py` 對 `hello.world` 跑 exit 0（bundles 空集合 → trivial pass）
-- [ ] `python api/scripts/check_mcp_clients_allowlist.py` 對當前 `mcp_clients.py` 跑 exit 0
-- [ ] 3 條 script 都有 negative-case test 證明缺漏 / 不一致時 exit 1 + 明確錯誤訊息
-- [ ] `.github/workflows/pr.yml` 新增 3 條 check 為 required step（同 job 或 sibling job）
-- [ ] `pytest api/tests/mcp/test_registry.py api/tests/scripts/` 全綠
-- [ ] PR description 列「known-allowed endpoint」清單（若有），交給後續 ticket 補
+- [x] `app/mcp/registry.py` 的 `MCPTool` dataclass + `register()` + `REGISTRY` dict 可用；import `app.mcp.tools` 後 `hello.world` 已被註冊
+- [x] T-080 的 `hello.world` smoke tool 改成走 registry 註冊，behaviour 不變（11 條 `test_skeleton.py` 全綠）
+- [x] `python api/scripts/check_scope_coverage.py` 對當前 repo 跑 exit 0（whitelist + `KNOWN_MISSING_SCOPE` baseline 31 個未遷移 endpoint；require_scope rollout 為後續 ticket / S3.5-1）
+- [x] `python api/scripts/check_mcp_tool_scopes.py` 對 `hello.world` 跑 exit 0（bundles 空集合 → trivial pass）
+- [x] `python api/scripts/check_mcp_clients_allowlist.py` 對當前 `mcp_clients.py` 跑 exit 0
+- [x] 3 條 script 都有 negative-case test 證明缺漏 / 不一致時 exit 1 + 明確錯誤訊息
+- [x] `.github/workflows/pr.yml` 新增 3 條 check 為 required step（backend-lint-test job 內 3 個 step）
+- [x] `pytest api/tests/mcp/test_registry.py api/tests/scripts/` 全綠
+- [x] PR description 列「known-allowed endpoint」清單（若有），交給後續 ticket 補
 
 ---
 
