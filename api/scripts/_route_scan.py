@@ -34,6 +34,13 @@ from pathlib import Path
 
 HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "trace"})
 
+# Scope-dependency factory names the scanner treats as "this endpoint declares a
+# scope". `require_scope` is the standard gate; `require_scope_no_pin` (T-088) is
+# the SSE / long-lived variant that enforces the same scopes without pinning a DB
+# connection (see `app/auth/scopes.py`). Both must be recognized or an endpoint
+# guarded with the no-pin variant would be miscounted as unprotected.
+_SCOPE_DEP_FUNCS = frozenset({"require_scope", "require_scope_no_pin"})
+
 # Route-registration forms this static scanner does NOT model. If a scanned
 # file uses any of them the scanner would silently undercount endpoints (the
 # dangerous false-negative direction for the scope-coverage gate), so we raise
@@ -91,6 +98,13 @@ def _named_call(call: ast.Call, name: str) -> bool:
     )
 
 
+def _named_call_in(call: ast.Call, names: frozenset[str]) -> bool:
+    """True if `call` invokes any function whose name is in `names`."""
+    func = call.func
+    candidate = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+    return candidate in names
+
+
 def _scope_tokens_in(region: ast.AST, *, file_label: str) -> tuple[bool, list[str]]:
     """Find `Depends(require_scope(...))` within one AST region.
 
@@ -111,10 +125,10 @@ def _scope_tokens_in(region: ast.AST, *, file_label: str) -> tuple[bool, list[st
         if not (isinstance(node, ast.Call) and _named_call(node, "Depends")):
             continue
         for dep_arg in node.args:
-            if isinstance(dep_arg, ast.Call) and _named_call(dep_arg, "require_scope"):
+            if isinstance(dep_arg, ast.Call) and _named_call_in(dep_arg, _SCOPE_DEP_FUNCS):
                 if not dep_arg.args:
                     raise RouteScanError(
-                        f"{file_label}:{dep_arg.lineno} `Depends(require_scope())` has no scopes — "
+                        f"{file_label}:{dep_arg.lineno} `Depends(require_scope*())` has no scopes — "
                         "an empty require_scope authorizes any authenticated token (no scope "
                         "enforcement). Pass at least one scope, or drop the dependency if the "
                         "route is intentionally public."

@@ -1,6 +1,6 @@
 # T-088: Wave B miscellany — `task` / `prompt` / `meta` 1:1 wraps
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 3.5b
 **Est:** S
 **Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）
@@ -69,16 +69,16 @@ T-083 §6 Q-D6 surfaced：`planning/agent-interface/endpoint-mcp-mapping.md` §2
 
 ## Acceptance criteria
 
-- [ ] 5 條 1:1 tool 全部註冊進 registry（`task.get` / `task.list` / `task.cancel` / `prompt.preview` / `meta.get`）
-- [ ] 每個 tool 的 `scopes` 通過 T-081 CI guardrail 2（scope ⊆ union of bundle endpoint scopes）
-- [ ] `meta.get` 同時透過 `tools/list` extension 露 `degraded_services`，且兩個 surface 來源一致（同 Redis aggregator）
-- [ ] `task.cancel` 4 種 `cancel_outcome` 各一條 e2e test 綠
-- [ ] **4 個非 streaming endpoint 套標準 `require_scope`**：`GET /v1/tasks/{task_id}` / `GET /v1/tasks` / `POST /v1/tasks/{task_id}/cancel` / `POST /v1/prompt/preview`
-- [ ] **SSE endpoint `GET /v1/tasks/{task_id}/stream` 套 `require_scope_no_pin("task:read")`**（不是標準 `require_scope`，避免 pin DB connection 整個 stream 生命週期）；本單新增 `require_scope_no_pin` helper 到 `app/auth/scopes.py`，並用 test 釘住它不依賴 `db_session`（chains through `get_current_user_no_pin`）
-- [ ] **`GET /v1/meta` 保持 public，不套 `require_scope`** —— 加進 T-081 scope coverage check 的 explicit public allowlist（與 `/health` 同 bucket）；T-081 scope coverage check 不對它 fail
-- [ ] T-081 scope coverage check pass（all protected + explicit-public allowlist 都被認）
-- [ ] `pytest api/tests/mcp/tools/test_{task,prompt,meta}_tools.py` 全綠
-- [ ] PR description 對照 T-083 §2 表逐條 check（5 條都標 T-088 owner）
+- [x] 5 條 1:1 tool 全部註冊進 registry（`task.get` / `task.list` / `task.cancel` / `prompt.preview` / `meta.get`）—— `check_mcp_tool_scopes.py` 報 6 tool（含 hello.world）
+- [x] 每個 tool 的 `scopes` 通過 T-081 CI guardrail 2（scope ⊆ union of bundle endpoint scopes）—— `lint_mcp.sh` 全綠
+- [x] `meta.get` 同時透過 `tools/list` extension 露 `degraded_services`，且兩個 surface 來源一致（同 `aggregate_degraded_services` aggregator）—— `test_tools_list_meta_carries_degraded` contract lock-in
+- [x] `task.cancel` 4 種 `cancel_outcome` 各一條 test 綠（real Postgres for the row-lock matrix）
+- [x] **4 個非 streaming endpoint 套標準 `require_scope`**：`GET /v1/tasks/{task_id}` / `GET /v1/tasks` / `POST /v1/tasks/{task_id}/cancel` / `POST /v1/prompt/preview`
+- [x] **SSE endpoint `GET /v1/tasks/{task_id}/stream` 套 `require_scope_no_pin("task:read")`** —— 新增 `require_scope_no_pin` helper（chains `get_current_user_no_pin`）+ `test_require_scope_no_pin.py` 釘住它不依賴 `db_session`
+- [x] **`GET /v1/meta` 保持 public，不套 `require_scope`** —— 已在 T-081 `PUBLIC_PATHS_EXACT`（與 `/health` 同 bucket）；scope coverage check 不對它 fail
+- [x] T-081 scope coverage check pass —— 38 endpoints scanned, all covered/whitelisted/baselined（`_route_scan` 擴充認 `require_scope_no_pin`，5 entries 從 `KNOWN_MISSING_SCOPE` 移除）
+- [x] `pytest tests/mcp/tools/test_{task,prompt,meta}_tools.py` + `tests/auth/test_require_scope_no_pin.py` 全綠（28 passed）
+- [x] PR description 對照 T-083 §2 表逐條 check（5 條都標 T-088 owner）
 
 ---
 

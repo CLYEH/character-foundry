@@ -33,6 +33,7 @@ from typing import Any
 import fakeredis
 import fakeredis.aioredis
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from app.api.deps import (
@@ -41,6 +42,7 @@ from app.api.deps import (
     get_prompt_reconciler_dep,
     get_storage,
 )
+from app.auth.scopes import CANONICAL_SCOPES
 from app.core.redis_client import get_redis
 from app.main import app
 from app.models.user import User
@@ -137,7 +139,11 @@ def client(
         # so cache-hit semantics still hold.
         return fakeredis.aioredis.FakeRedis(server=fake_server, decode_responses=True)
 
-    async def _user_override() -> User:
+    async def _user_override(request: Request) -> User:
+        # `require_scope(SCOPE_CHARACTER_READ)` on POST /v1/prompt/preview (T-088)
+        # reads `request.state.token_scopes`; the real auth deps populate it, so
+        # this override must too — otherwise the scope check 401s the request.
+        request.state.token_scopes = CANONICAL_SCOPES
         return fake_user
 
     async def _reconciler_override() -> PromptReconciler:

@@ -131,3 +131,55 @@ def require_scope(
         return None
 
     return dependency
+
+
+def require_scope_no_pin(
+    *required_scopes: str,
+) -> Callable[..., Awaitable[None]]:
+    """`require_scope` for SSE / long-lived endpoints — does NOT pin a DB connection.
+
+    Identical scope logic to `require_scope` (read `request.state.token_scopes`,
+    assert the AND-set), but the underlying auth dependency is
+    `get_current_user_no_pin` instead of `get_current_user`. The standard
+    `require_scope` chains through `get_current_user` → `Depends(db_session)`,
+    and FastAPI's yield-based dependency holds that DB connection until the
+    response finishes — which for an open SSE stream means "until the client
+    disconnects" (i2v can run 30–120s). `get_current_user_no_pin` opens its own
+    short-lived session for the user lookup and closes it before the handler
+    runs, so the scope check costs no held connection.
+
+    Used by `GET /v1/tasks/{task_id}/stream` (T-088): T-080 deliberately moved
+    that endpoint's auth onto `get_current_user_no_pin` to avoid pinning a
+    connection for the stream's lifetime, and adding scope enforcement must not
+    re-introduce the pin. `get_current_user_no_pin` populates
+    `request.state.token_scopes` on both auth paths (see `app/api/deps.py`), so
+    the check below has the data it needs.
+
+    The static scope-coverage scanner (`scripts/_route_scan.py`) recognizes
+    BOTH `require_scope` and `require_scope_no_pin`, so an endpoint guarded with
+    this helper is counted as covered.
+    """
+    unknown = set(required_scopes) - CANONICAL_SCOPES
+    if unknown:
+        raise ValueError(
+            f"require_scope_no_pin() called with non-canonical scope(s): {sorted(unknown)}. "
+            f"Canonical scopes are: {sorted(CANONICAL_SCOPES)}."
+        )
+    required = frozenset(required_scopes)
+
+    # Lazy import for the same import-cycle reason documented in
+    # `require_scope` above.
+    from app.api.deps import get_current_user_no_pin
+
+    async def dependency(
+        request: Request,
+        _user: object = Depends(get_current_user_no_pin),
+    ) -> None:
+        token_scopes = getattr(request.state, "token_scopes", None)
+        if token_scopes is None:
+            raise auth_missing_token()
+        if not required <= token_scopes:
+            raise auth_insufficient_scope()
+        return None
+
+    return dependency

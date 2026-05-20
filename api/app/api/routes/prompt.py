@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session, get_current_user, get_prompt_reconciler_dep, get_storage
+from app.auth.scopes import SCOPE_CHARACTER_READ, require_scope
 from app.models.user import User
 from app.prompt.reconciler import PromptReconciler
 from app.schemas.prompt import (
@@ -56,6 +57,7 @@ async def preview_prompt(
     storage: Annotated[StorageBackend, Depends(get_storage)],
     reconciler: Annotated[PromptReconciler, Depends(get_prompt_reconciler_dep)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> PromptPreviewResponse:
     if isinstance(body, CreateBasePreviewRequest):
         return await prompt_service.preview_create_base(

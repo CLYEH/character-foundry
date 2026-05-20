@@ -34,6 +34,12 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session, get_current_user, get_current_user_no_pin
+from app.auth.scopes import (
+    SCOPE_TASK_CANCEL,
+    SCOPE_TASK_READ,
+    require_scope,
+    require_scope_no_pin,
+)
 from app.core.errors import not_found_task
 from app.core.redis_client import (
     get_arq_pool,
@@ -87,6 +93,7 @@ async def get_task(
     db: Annotated[AsyncSession, Depends(db_session)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_TASK_READ)),
 ) -> TaskResponse:
     task = await task_repo.get_owned(db, task_id=task_id, user_id=user.id)
     if task is None:
@@ -102,6 +109,7 @@ async def cancel_task(
     redis: Annotated[Redis, Depends(get_redis)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_TASK_CANCEL)),
 ) -> CancelTaskResponse:
     result = await task_service.cancel_task(
         db,
@@ -124,6 +132,7 @@ async def list_tasks(
     user: Annotated[User, Depends(get_current_user)],
     status: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    _: None = Depends(require_scope(SCOPE_TASK_READ)),
 ) -> TaskListResponse:
     tasks = await task_service.list_user_tasks(db, user_id=user.id, status=status, limit=limit)
     queued_ids = [t.id for t in tasks if t.status == "queued"]
@@ -247,6 +256,7 @@ async def stream_task(
     task_id: uuid.UUID,
     redis: Annotated[Redis, Depends(get_redis)],
     user: Annotated[User, Depends(get_current_user_no_pin)],
+    _: None = Depends(require_scope_no_pin(SCOPE_TASK_READ)),
 ) -> StreamingResponse:
     """Open an SSE stream for a task.
 

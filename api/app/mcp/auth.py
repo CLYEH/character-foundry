@@ -44,9 +44,11 @@ tool handler.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import uuid
+from collections.abc import Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
@@ -65,6 +67,7 @@ from app.core.errors import (
     auth_insufficient_scope,
     auth_invalid_token,
     auth_missing_token,
+    auth_user_context_required,
 )
 from app.db.session import async_session_factory
 from app.models.user import User
@@ -172,6 +175,46 @@ def require_mcp_scopes(*required_scopes: str) -> MCPAuthContext:
     if not required <= state.scopes:
         raise ToolError(_agent_error_payload(auth_insufficient_scope()))
     return state
+
+
+def require_user_context(auth: MCPAuthContext) -> uuid.UUID:
+    """Return the calling user's id, or raise for M2M tokens that have none.
+
+    Call this in tools that operate on user-owned resources (tasks, prompt
+    preview) AFTER `require_mcp_scopes(...)`. M2M (client_credentials) tokens
+    are sanctioned on `/mcp/*` but carry no human identity — `auth.user_id` is
+    None — so a user-scoped tool can't resolve an owner. Fail closed with
+    `AUTH_USER_CONTEXT_REQUIRED` rather than letting `None` flow into an
+    ownership query (which would 404) or a typed `uuid.UUID` parameter (which
+    would 500 / fail mypy). Tools that need no user (e.g. `meta.get`) never
+    call this.
+    """
+    if auth.user_id is None:
+        raise ToolError(_agent_error_payload(auth_user_context_required()))
+    return auth.user_id
+
+
+@contextlib.contextmanager
+def translate_agent_errors() -> Iterator[None]:
+    """Convert a service-layer `AgentErrorException` into an MCP `ToolError`.
+
+    The service / repository layer raises `AgentErrorException` (e.g.
+    `not_found_task()`, `conflict_task_already_terminal()`). On `/v1/*` the
+    `agent_error_handler` turns those into a JSON body with an HTTP status; on
+    `/mcp/*` there is no HTTP error contract (auth + tool failures both ride
+    inside a 200 `CallToolResult` with `isError=True`). Wrapping a tool's
+    service calls in this context manager re-raises any `AgentErrorException`
+    as a `ToolError` carrying the SAME serialized AgentError envelope clients
+    already parse from `/v1/*` and from the auth failures above — so a
+    `NOT_FOUND_TASK` looks identical whether it surfaces over REST or MCP.
+
+    Used as a sync `with` around `async with` / `await` blocks; the exception
+    propagates synchronously through the context manager regardless.
+    """
+    try:
+        yield
+    except AgentErrorException as exc:
+        raise ToolError(_agent_error_payload(exc)) from exc
 
 
 async def resolve_mcp_token(token: str) -> MCPAuthContext | MCPAuthFailure:
