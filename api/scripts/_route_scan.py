@@ -91,49 +91,86 @@ def _named_call(call: ast.Call, name: str) -> bool:
     )
 
 
-def _require_scope_tokens(
-    func_node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[bool, tuple[str, ...]]:
-    """Detect `Depends(require_scope(...))` in the legitimate dependency slots.
+def _scope_tokens_in(region: ast.AST) -> tuple[bool, list[str]]:
+    """Find `Depends(require_scope(...))` within one AST region.
 
-    Only the route decorator(s) (`dependencies=[Depends(require_scope(...))]`)
-    and parameter defaults (`_: None = Depends(require_scope(...))`) count. The
-    function BODY is deliberately EXCLUDED: a dead or nested `require_scope(...)`
-    call there is not real enforcement, and counting it would let an endpoint
-    pass the coverage gate without an actual dependency — a silent false-negative
-    flagged by both T-081 pre-push reviews. We further require the call to be
-    wrapped in `Depends(...)` so a stray reference can't be miscounted.
-
-    Returns (found, tokens) where tokens are the string values of string-literal
-    args plus the identifier names of Name args to each matched require_scope.
+    Returns (found, tokens). Requires the `Depends(...)` wrapper so a stray
+    `require_scope` reference can't be miscounted; the caller controls WHICH
+    region is searched (parameter defaults vs a single decorator) so dead /
+    nested body calls never reach here — a silent false-negative both T-081
+    pre-push reviews flagged.
     """
-    args = func_node.args
-    regions: list[ast.AST] = [*func_node.decorator_list]
-    regions.extend(d for d in (*args.defaults, *args.kw_defaults) if d is not None)
-
     found = False
     tokens: list[str] = []
-    for region in regions:
-        for node in ast.walk(region):
-            if not (isinstance(node, ast.Call) and _named_call(node, "Depends")):
-                continue
-            for dep_arg in node.args:
-                if isinstance(dep_arg, ast.Call) and _named_call(dep_arg, "require_scope"):
-                    found = True
-                    for arg in dep_arg.args:
-                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                            tokens.append(arg.value)
-                        elif isinstance(arg, ast.Name):
-                            tokens.append(arg.id)
-    return found, tuple(tokens)
+    for node in ast.walk(region):
+        if not (isinstance(node, ast.Call) and _named_call(node, "Depends")):
+            continue
+        for dep_arg in node.args:
+            if isinstance(dep_arg, ast.Call) and _named_call(dep_arg, "require_scope"):
+                found = True
+                for arg in dep_arg.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        tokens.append(arg.value)
+                    elif isinstance(arg, ast.Name):
+                        tokens.append(arg.id)
+    return found, tokens
+
+
+def _param_default_scope(
+    func_node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[bool, list[str]]:
+    """Scope deps in parameter defaults — these apply to EVERY route on the function.
+
+    A `_: None = Depends(require_scope(...))` default runs for the handler
+    regardless of which decorator dispatched the request, so it legitimately
+    covers all of a multi-route handler's decorators. Decorator-level
+    `dependencies=[...]` are evaluated separately, per decorator (Codex #109 P2).
+    """
+    args = func_node.args
+    found = False
+    tokens: list[str] = []
+    for default in (*args.defaults, *args.kw_defaults):
+        if default is None:
+            continue
+        f, t = _scope_tokens_in(default)
+        found = found or f
+        tokens.extend(t)
+    return found, tokens
+
+
+def _decorator_path(deco: ast.Call) -> str | None:
+    """Extract the route path from a decorator: positional[0] or keyword `path=`.
+
+    FastAPI accepts both `@router.get("/x")` and `@router.get(path="/x")`
+    (Codex #109 P1). Returns None when neither is a string literal (e.g. a
+    variable path) so the caller can fail loud rather than silently drop the route.
+    """
+    if deco.args and isinstance(deco.args[0], ast.Constant) and isinstance(deco.args[0].value, str):
+        return deco.args[0].value
+    for kw in deco.keywords:
+        if (
+            kw.arg == "path"
+            and isinstance(kw.value, ast.Constant)
+            and isinstance(kw.value.value, str)
+        ):
+            return kw.value.value
+    return None
 
 
 def _route_decorators(
     func_node: ast.FunctionDef | ast.AsyncFunctionDef,
     prefixes: dict[str, str],
-) -> list[tuple[str, str, int]]:
-    """Return (METHOD, path, lineno) for each `@<router>.<method>(...)` deco."""
-    out: list[tuple[str, str, int]] = []
+    *,
+    file_label: str,
+) -> list[tuple[str, str, int, bool, tuple[str, ...]]]:
+    """Return (METHOD, path, lineno, has_scope, tokens) per `@<router>.<method>(...)`.
+
+    `has_scope` / `tokens` here are the DECORATOR-level dependencies only; the
+    caller ORs in the function-wide parameter-default scope. Raises
+    RouteScanError when a recognized route decorator has no readable string path
+    (Codex #109 P1) — silently skipping it would drop the endpoint from the gate.
+    """
+    out: list[tuple[str, str, int, bool, tuple[str, ...]]] = []
     for deco in func_node.decorator_list:
         if not isinstance(deco, ast.Call):
             continue
@@ -142,13 +179,16 @@ def _route_decorators(
             continue
         if target.value.id not in prefixes or target.attr not in HTTP_METHODS:
             continue
-        if not deco.args or not isinstance(deco.args[0], ast.Constant):
-            continue
-        route_path = deco.args[0].value
-        if not isinstance(route_path, str):
-            continue
+        route_path = _decorator_path(deco)
+        if route_path is None:
+            raise RouteScanError(
+                f"{file_label}:{deco.lineno} `@{target.value.id}.{target.attr}(...)` has no "
+                "string-literal path (neither positional nor `path=`). The scanner can't read "
+                "its route path; use a literal or extend _route_scan.py before merging."
+            )
+        deco_found, deco_tokens = _scope_tokens_in(deco)
         full_path = prefixes[target.value.id] + route_path
-        out.append((target.attr.upper(), full_path, deco.lineno))
+        out.append((target.attr.upper(), full_path, deco.lineno, deco_found, tuple(deco_tokens)))
     return out
 
 
@@ -182,19 +222,22 @@ def scan_routes(routes_dir: Path) -> list[Endpoint]:
         for node in tree.body:
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
-            decos = _route_decorators(node, prefixes)
+            decos = _route_decorators(node, prefixes, file_label=rel)
             if not decos:
                 continue
-            has_scope, tokens = _require_scope_tokens(node)
-            for method, path, lineno in decos:
+            # Parameter-default scope applies to every decorator on the
+            # function; decorator-level `dependencies=[...]` applies only to
+            # that decorator (Codex #109 P2). Combine per route.
+            param_found, param_tokens = _param_default_scope(node)
+            for method, path, lineno, deco_found, deco_tokens in decos:
                 endpoints.append(
                     Endpoint(
                         method=method,
                         path=path,
                         file=rel,
                         lineno=lineno,
-                        has_scope=has_scope,
-                        scope_tokens=tokens,
+                        has_scope=param_found or deco_found,
+                        scope_tokens=(*param_tokens, *deco_tokens),
                     )
                 )
     return endpoints

@@ -101,6 +101,72 @@ def test_nested_route_module_is_scanned(tmp_path: Path) -> None:
     assert ep.file == str(Path("v2") / "things.py")
 
 
+def test_keyword_path_decorator_detected(tmp_path: Path) -> None:
+    # `@router.get(path="/x")` is valid FastAPI and must not be dropped
+    # (Codex #109 P1).
+    _write(
+        tmp_path,
+        "r.py",
+        "from fastapi import APIRouter\n"
+        "router = APIRouter(prefix='/v1/things')\n"
+        "@router.get(path='/{id}')\n"
+        "async def get_one(id: str): ...\n",
+    )
+    (ep,) = scan_routes(tmp_path)
+    assert ep.method == "GET"
+    assert ep.path == "/v1/things/{id}"
+
+
+def test_unreadable_path_decorator_raises(tmp_path: Path) -> None:
+    # A recognized route decorator whose path isn't a string literal must fail
+    # loud, not silently drop the endpoint (Codex #109 P1).
+    _write(
+        tmp_path,
+        "r.py",
+        "from fastapi import APIRouter\n"
+        "router = APIRouter(prefix='/v1')\n"
+        "DYN = '/dyn'\n"
+        "@router.get(DYN)\n"
+        "async def h(): ...\n",
+    )
+    with pytest.raises(RouteScanError, match="path"):
+        scan_routes(tmp_path)
+
+
+def test_stacked_decorators_scope_is_per_decorator(tmp_path: Path) -> None:
+    # Decorator-level dependencies bind to that decorator only: the route
+    # without the dependency must read has_scope=False (Codex #109 P2).
+    _write(
+        tmp_path,
+        "r.py",
+        "from fastapi import APIRouter, Depends\n"
+        "router = APIRouter(prefix='/v1')\n"
+        "@router.get('/a', dependencies=[Depends(require_scope(SCOPE_CHARACTER_READ))])\n"
+        "@router.post('/b')\n"
+        "async def multi(): ...\n",
+    )
+    by_route = {(e.method, e.path): e for e in scan_routes(tmp_path)}
+    assert by_route[("GET", "/v1/a")].has_scope is True
+    assert by_route[("POST", "/v1/b")].has_scope is False
+
+
+def test_param_default_scope_covers_all_stacked_decorators(tmp_path: Path) -> None:
+    # A parameter-default dependency runs for the handler regardless of which
+    # decorator dispatched, so it covers every stacked route.
+    _write(
+        tmp_path,
+        "r.py",
+        "from fastapi import APIRouter, Depends\n"
+        "router = APIRouter(prefix='/v1')\n"
+        "@router.get('/a')\n"
+        "@router.post('/b')\n"
+        "async def multi(_: None = Depends(require_scope(SCOPE_CHARACTER_WRITE))): ...\n",
+    )
+    by_route = {(e.method, e.path): e for e in scan_routes(tmp_path)}
+    assert by_route[("GET", "/v1/a")].has_scope is True
+    assert by_route[("POST", "/v1/b")].has_scope is True
+
+
 def test_unmodeled_registration_form_raises(tmp_path: Path) -> None:
     _write(
         tmp_path,
