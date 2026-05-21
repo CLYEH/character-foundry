@@ -657,17 +657,20 @@ async def character_create(
     """
     auth = require_mcp_scopes(SCOPE_CHARACTER_WRITE, SCOPE_TASK_READ)
     user_id = require_user_context(auth)
-    redis = await get_redis()
-    arq_pool = await get_arq_pool()
-    storage = get_storage()
-    factory = async_session_factory()
 
-    # Phase 1: create character + session. No cleanup possible (nothing
-    # committed yet if this fails — create_character commits atomically), so it
-    # sits outside the abandon-wrapped block. Both AgentError and infra failures
-    # surface as a phase-tagged error.
+    # Phase 1: acquire infra deps + create character + session. The dep
+    # accessors (get_redis / get_arq_pool) are awaited INSIDE this try so a
+    # Redis/arq outage — a likely transient/startup failure — surfaces as the
+    # documented `creating_session` phase-tagged error rather than a raw
+    # exception (Codex PR #111 P2). No cleanup possible here (nothing committed
+    # yet — create_character commits atomically), so it sits outside the
+    # abandon-wrapped block.
     await report_progress(ctx, progress=0.05, total=1.0, message=_PHASE_CREATING)
     try:
+        redis = await get_redis()
+        arq_pool = await get_arq_pool()
+        storage = get_storage()
+        factory = async_session_factory()
         async with factory() as db:
             user = await _load_user(db, user_id)
             created = await character_service.create_character(

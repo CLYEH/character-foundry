@@ -301,6 +301,30 @@ async def test_storage_failure_surfaces_phase_and_abandons(
     assert status == "abandoned"
 
 
+async def test_preflight_infra_failure_surfaces_creating_phase(
+    make_character_create_deps: Any,
+    seeded_user: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preflight dep failure (Redis/arq outage during `get_redis()`) surfaces
+    as a `creating_session` phase-tagged error, not a raw exception — the dep
+    accessors are awaited inside the phase-1 try (Codex PR #111 P2). No session
+    is created yet, so there's nothing to abandon."""
+    make_character_create_deps(StubAIClient())
+
+    async def _boom() -> Any:
+        raise RuntimeError("redis outage (test)")
+
+    monkeypatch.setattr("app.mcp.tools.character.get_redis", _boom)
+
+    with auth_as(user_id=seeded_user["id"]):
+        with pytest.raises(ToolError) as excinfo:
+            await character_create(name="Redis-Down-Hero", input_mode="template")
+    payload = _tool_error_payload(excinfo.value)
+    assert payload["phase"] == "creating_session"
+    assert payload["error"]["code"] == "INTERNAL_UNEXPECTED_ERROR"
+
+
 async def test_reference_mode_requires_images(
     make_character_create_deps: Any,
     bind_character_db: async_sessionmaker[Any],
