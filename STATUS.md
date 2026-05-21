@@ -205,7 +205,15 @@ ZIP 匯出、Copy Character、Usage dashboard。
 
 #### Sprint 3.5c — Agent E2E smoke（未開單；3.5b ship 完再開）
 
-對照 `planning/agent-interface/scope.md` §5.3「Sprint 3.5c = 用一個外部 agent 跑完 §1 完成條件（登入 → 建 character → 確立 base → 加 alias → 生 motion）」。0.5 週估時。
+對照 `planning/agent-interface/scope.md` §5.3「Sprint 3.5c = 用一個外部 agent 跑完 §1 完成條件（登入 → 建 character → 確立 base → 加 alias → 生 motion）」。0.5 週估時。**3.5c 的 agent 走 M2M client_credentials（headless，不需人登入）**，已由 T-080 dual-stack 支援；不依賴下方 T-089。
+
+#### Post-M3.5 — MCP delegated-client 自動登入（已開單 2026-05-21）
+
+| # | Ticket | Status |
+|---|--------|--------|
+| T-089 | MCP delegated-client OAuth discovery（PRM / RFC 9728 + `WWW-Authenticate` → 真人用 MCP client 連 `/mcp/` 自動導向 Authentik/Google 登入取 token）| TODO |
+
+**理由 / 排程：** 使用者 2026-05-21 在 T-084 MCP 手測時拍板「要支援真人用 MCP client 連進來 + 自動登入」。不擋 3.5b 收尾 / 3.5c（那條走 M2M）。**Hard-depends on S3.5-6**——`/mcp/` 走 strict `require_mcp_scopes`（不 grandfather），真人登入後 token 若沒帶 app scope 仍 `AUTH_INSUFFICIENT_SCOPE`，所以正確順序是 **S3.5-6（修 Authentik scope emission）→ T-089（discovery / auto-login）**。開工前需先跑 plan phase（agent-interface + auth 視角），核心 trade-off 是 discovery 觸發點（T-080 的 200+tool-error vs OAuth 慣例的 401+`WWW-Authenticate`）怎麼相容。
 
 ---
 
