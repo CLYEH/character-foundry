@@ -98,7 +98,21 @@ async def _resolve_oauth(
         # downstream deps that would read it.
         raise auth_m2m_wrong_surface()
 
-    request.state.token_scopes = claims.scopes
+    # Delegated (human) OAuth sessions are grandfathered to the full canonical
+    # scope set on `/v1/*`, exactly like legacy JWTs in `_resolve_jwt` — `/v1/*`
+    # is the human-user surface (M2M is rejected just above), so an Authentik
+    # SPA session is the OAuth analog of a legacy JWT session and gets the same
+    # "full access" treatment through any `require_scope` gate. This is what
+    # keeps the require_scope rollout (S3.5-1) from 403-ing real human OAuth
+    # callers whose Authentik token doesn't carry the 5 app scopes (the
+    # consent-time scope emission was never wired end-to-end — tracked in
+    # STATUS backlog S3.5-6). Per-scope enforcement that actually matters lives
+    # on `/mcp/*`, where `require_mcp_scopes` reads the token's REAL
+    # `claims.scopes` (via `MCPAuthContext`), NOT this grandfathered set — so
+    # agents stay constrained while humans get uniform `/v1/*` access. If a
+    # delegated *agent* client ever needs per-scope limits on `/v1/*`, revisit
+    # this with the token's `oauth_client_id` (preserved below).
+    request.state.token_scopes = CANONICAL_SCOPES
     request.state.oauth_client_id = claims.client_id
     request.state.is_m2m = claims.is_m2m
 

@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.scopes import SCOPE_CHARACTER_READ
 from app.mcp.auth import require_mcp_scopes
+from app.mcp.progress import report_progress
 from app.mcp.registry import MCPTool, register
 
 
@@ -38,45 +39,6 @@ class HelloIn(BaseModel):
 
 class HelloOut(BaseModel):
     reply: str
-
-
-async def _report_progress_with_request_id(
-    ctx: Context[Any, Any, Any],
-    *,
-    progress: float,
-    total: float | None,
-    message: str | None,
-) -> None:
-    """Workaround for an unreleased fix in `Context.report_progress`.
-
-    Per agent-interface Round 1 Q3 implementation gotcha 1 and the T-080
-    ticket Notes, MCP Python SDK PR #2038 was supposed to make
-    `ctx.report_progress` pass `related_request_id=self.request_id` so
-    progress notifications route back over the per-request SSE response
-    stream. As of v1.27.1 (the latest release at T-080 ship time on
-    2026-05-18) that change has merged on `main` but has NOT been
-    cut into a release tag — the installed `report_progress` still
-    omits the parameter, so notifications get routed to the GET-stream
-    bucket and the client never sees them.
-
-    We pin `mcp>=1.27.0` for the future fix and call
-    `send_progress_notification` directly here with the explicit
-    `related_request_id` so the smoke test in
-    `tests/mcp/test_skeleton.py::test_progress_notification_reaches_client`
-    actually validates the round-trip TODAY. Once the SDK ships the fix
-    in 1.28.x+ this helper becomes a passthrough that can be removed —
-    the test stays valid either way.
-    """
-    progress_token = ctx.request_context.meta.progressToken if ctx.request_context.meta else None
-    if progress_token is None:
-        return
-    await ctx.request_context.session.send_progress_notification(
-        progress_token=progress_token,
-        progress=progress,
-        total=total,
-        message=message,
-        related_request_id=ctx.request_id,
-    )
 
 
 # Description passed verbatim to `mcp.tool(description=...)` by
@@ -108,7 +70,7 @@ async def hello_world(echo: str, ctx: Context[Any, Any, Any]) -> HelloOut:
     """
     auth = require_mcp_scopes(SCOPE_CHARACTER_READ)
     await anyio.sleep(0.2)
-    await _report_progress_with_request_id(
+    await report_progress(
         ctx,
         progress=0.5,
         total=1.0,

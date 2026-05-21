@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session, get_current_user, get_storage
 from app.api.routes.characters import build_character_list_dto
+from app.auth.scopes import SCOPE_CHARACTER_READ, SCOPE_CHARACTER_WRITE, require_scope
 from app.core.redis_client import get_arq_pool, get_redis
 from app.models.user import User
 from app.schemas.base import SelectBaseRequest, SelectBaseResponse
@@ -40,6 +41,7 @@ async def get_creation_session(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> CreationSessionDetailResponse:
     result = await creation_session_service.get_session_for_read(
         db, user=user, session_id=session_id
@@ -84,6 +86,7 @@ async def enqueue_checkpoint(
     redis: Annotated[Redis, Depends(get_redis)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> CreateCheckpointResponse:
     enqueued = await checkpoint_service.enqueue_checkpoint(
         db,
@@ -114,6 +117,7 @@ async def select_base(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> SelectBaseResponse:
     """Promote a checkpoint into the Character's immutable Base.
 
@@ -137,6 +141,7 @@ async def abandon_session(
     session_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> Response:
     """Mark the session abandoned. Idempotent on already-abandoned;
     409 CONFLICT_BASE_LOCKED if the Base has already been selected

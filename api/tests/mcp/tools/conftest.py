@@ -49,7 +49,7 @@ from sqlalchemy.ext.asyncio import (
 
 from alembic import command
 from app.auth.scopes import CANONICAL_SCOPES
-from tests.tasks.conftest import FakeArqPool
+from tests.tasks.conftest import FakeArqPool, FakeJob
 
 JWT_SECRET = "test-jwt-secret-dont-use-in-prod"
 
@@ -271,8 +271,12 @@ async def _insert_character(
 
 async def _insert_session_checkpoint_base(
     database_url: str, *, character_id: uuid.UUID, initiator_id: uuid.UUID
-) -> tuple[uuid.UUID, str]:
-    """Seed completed session + checkpoint + Base; return (base_id, image_key)."""
+) -> tuple[uuid.UUID, str, uuid.UUID, uuid.UUID]:
+    """Seed completed session + checkpoint + Base.
+
+    Returns (base_id, image_key, session_id, checkpoint_id) — the session /
+    checkpoint ids feed the T-084 fork / get_session / get_checkpoint tools.
+    """
     engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
@@ -311,7 +315,12 @@ async def _insert_session_checkpoint_base(
                 text("UPDATE characters SET base_id = :b WHERE id = :c"),
                 {"b": base_id, "c": character_id},
             )
-            return uuid.UUID(str(base_id)), image_key
+            return (
+                uuid.UUID(str(base_id)),
+                image_key,
+                uuid.UUID(str(session_id)),
+                uuid.UUID(str(checkpoint_id)),
+            )
     finally:
         await engine.dispose()
 
@@ -426,7 +435,7 @@ def seeded_character(database_url: str, seeded_user: dict[str, Any]) -> dict[str
             slug="alice-char",
         )
     )
-    base_id, base_image_key = asyncio.run(
+    base_id, base_image_key, session_id, checkpoint_id = asyncio.run(
         _insert_session_checkpoint_base(
             database_url, character_id=character_id, initiator_id=seeded_user["id"]
         )
@@ -436,6 +445,8 @@ def seeded_character(database_url: str, seeded_user: dict[str, Any]) -> dict[str
         "owner_id": seeded_user["id"],
         "base_id": base_id,
         "base_image_key": base_image_key,
+        "session_id": session_id,
+        "checkpoint_id": checkpoint_id,
     }
 
 
@@ -490,9 +501,172 @@ def bind_prompt_deps(
     monkeypatch.setattr("app.mcp.tools.prompt.get_storage", _storage)
 
 
+# ---------------------------------------------------------------------------
+# character.* tool fixtures (T-084)
+# ---------------------------------------------------------------------------
+
+
+async def _insert_in_progress_session(
+    database_url: str, *, character_id: uuid.UUID, initiator_id: uuid.UUID
+) -> uuid.UUID:
+    """Seed a bare in_progress creation session (no checkpoints / base).
+
+    Used by the `character.abandon_session` test — abandon requires an active
+    session (a completed one with a locked Base 409s).
+    """
+    engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            session_id = (
+                await conn.execute(
+                    text(
+                        "INSERT INTO creation_sessions "
+                        "(character_id, initiator_id, input_mode, status) "
+                        "VALUES (:c, :u, 'template', 'in_progress') RETURNING id"
+                    ),
+                    {"c": character_id, "u": initiator_id},
+                )
+            ).scalar_one()
+            return uuid.UUID(str(session_id))
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def in_progress_session(database_url: str, seeded_character: dict[str, Any]) -> dict[str, Any]:
+    session_id = asyncio.run(
+        _insert_in_progress_session(
+            database_url,
+            character_id=seeded_character["id"],
+            initiator_id=seeded_character["owner_id"],
+        )
+    )
+    return {"id": session_id, "character_id": seeded_character["id"]}
+
+
+class InlineCheckpointArqPool:
+    """Duck-typed arq pool that runs `run_create_checkpoint` inline on enqueue.
+
+    `character.create` enqueues a checkpoint task then polls it to completion.
+    With no real arq worker in the test process, this pool runs the worker
+    synchronously when `task_service.create_task` enqueues it (the same `ctx`
+    shape `tests/checkpoints/test_create_checkpoint_worker.py` uses), so the
+    task is already terminal by the time the tool's poll loop reads it —
+    deterministic, no sleeps. Pass a failing `ai_client` to drive the
+    checkpoint-failure path (the worker catches the AgentError and marks the
+    task `failed`).
+    """
+
+    def __init__(
+        self,
+        *,
+        factory: async_sessionmaker[AsyncSession],
+        redis: Any,
+        storage: Any,
+        ai_client: Any,
+    ) -> None:
+        self._factory = factory
+        self._redis = redis
+        self._storage = storage
+        self._ai_client = ai_client
+        self.enqueued: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    async def enqueue_job(self, function_name: str, *args: Any, **kwargs: Any) -> FakeJob:
+        self.enqueued.append((function_name, args, kwargs))
+        if function_name == "run_create_checkpoint":
+            from app.workers.jobs.create_checkpoint import run_create_checkpoint
+
+            ctx: dict[str, Any] = {
+                "db_session_factory": self._factory,
+                "redis": self._redis,
+                "storage": self._storage,
+                "ai_client": self._ai_client,
+            }
+            await run_create_checkpoint(ctx, str(kwargs["task_id"]))
+        return FakeJob(job_id=str(kwargs.get("_job_id") or uuid.uuid4()))
+
+
+@pytest.fixture
+def character_storage(tmp_path: Path) -> Any:
+    from app.storage.local import LocalFilesystemBackend
+
+    root = tmp_path / "char-storage"
+    root.mkdir(parents=True, exist_ok=True)
+    return LocalFilesystemBackend(root)
+
+
+@pytest.fixture
+async def bind_character_db(
+    migrate_once: None,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Point `app.mcp.tools.character`'s session factory at the test database.
+
+    Same rationale as `bind_tool_db` for the task / prompt tools — the handlers
+    reference `async_session_factory` as a module global, so patching the bound
+    name redirects their sessions without touching the lru-cached factory.
+    """
+    engine = create_async_engine(database_url, future=True)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    def _factory() -> async_sessionmaker[AsyncSession]:
+        return factory
+
+    monkeypatch.setattr("app.mcp.tools.character.async_session_factory", _factory)
+    try:
+        yield factory
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def bind_character_storage(monkeypatch: pytest.MonkeyPatch, character_storage: Any) -> Any:
+    """Redirect the character tools' `get_storage()` to a test filesystem backend."""
+    monkeypatch.setattr("app.mcp.tools.character.get_storage", lambda: character_storage)
+    return character_storage
+
+
+@pytest.fixture
+def make_character_create_deps(
+    monkeypatch: pytest.MonkeyPatch,
+    bind_character_db: async_sessionmaker[AsyncSession],
+    character_storage: Any,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> Any:
+    """Return `install(ai_client) -> InlineCheckpointArqPool`.
+
+    Binds the character tool's redis + storage accessors once; each test calls
+    the returned function with the AI client it wants (a `StubAIClient` for the
+    happy paths, a failing one for the checkpoint-failure case) and gets back
+    the inline pool whose `enqueue_job` runs the checkpoint worker synchronously.
+    """
+    factory = bind_character_db
+
+    async def _redis() -> Any:
+        return fake_redis
+
+    monkeypatch.setattr("app.mcp.tools.character.get_redis", _redis)
+    monkeypatch.setattr("app.mcp.tools.character.get_storage", lambda: character_storage)
+
+    def _install(ai_client: Any) -> InlineCheckpointArqPool:
+        pool = InlineCheckpointArqPool(
+            factory=factory, redis=fake_redis, storage=character_storage, ai_client=ai_client
+        )
+
+        async def _arq() -> Any:
+            return pool
+
+        monkeypatch.setattr("app.mcp.tools.character.get_arq_pool", _arq)
+        return pool
+
+    return _install
+
+
 # Re-export so test modules can `from tests.mcp.tools.conftest import ...`.
 __all__ = [
     "FakeArqPool",
+    "InlineCheckpointArqPool",
     "auth_as",
     "seed_task",
     "tool_error_code",

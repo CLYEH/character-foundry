@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session, get_current_user, get_storage
+from app.auth.scopes import SCOPE_CHARACTER_READ, SCOPE_CHARACTER_WRITE, require_scope
 from app.core.redis_client import get_redis
 from app.models.character import Character
 from app.models.user import User
@@ -316,6 +317,7 @@ async def list_characters(
     q: Annotated[str | None, Query(description="ILIKE substring match on name.")] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     cursor: Annotated[str | None, Query()] = None,
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> CharacterListResponse:
     resolved_owner_id: uuid.UUID | None
     if owner_id is None or owner_id == "":
@@ -363,6 +365,7 @@ async def create_character(
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
     redis: Annotated[Redis | None, Depends(_maybe_redis)] = None,
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> CreateCharacterResponse:
     created = await character_service.create_character(
         db,
@@ -382,6 +385,7 @@ async def get_character(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> CharacterDetailResponse:
     character = await character_service.get_character_for_read(
         db, user=user, character_id=character_id
@@ -398,6 +402,7 @@ async def patch_character(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> CharacterResponse:
     character = await character_service.update_character_name(
         db, user=user, character_id=character_id, new_name=body.name
@@ -412,6 +417,7 @@ async def delete_character(
     character_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> Response:
     await character_service.soft_delete_character(db, user=user, character_id=character_id)
     # Manually return 204 with no body so FastAPI doesn't try to
@@ -425,6 +431,7 @@ async def restore_character(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> CharacterResponse:
     character = await character_service.restore_character(db, user=user, character_id=character_id)
     return CharacterResponse(

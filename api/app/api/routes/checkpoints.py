@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session, get_current_user, get_storage
 from app.api.routes.characters import build_character_list_dto
+from app.auth.scopes import SCOPE_CHARACTER_READ, SCOPE_CHARACTER_WRITE, require_scope
 from app.models.user import User
 from app.schemas.base import ForkCheckpointRequest, ForkCheckpointResponse
 from app.schemas.checkpoint import CheckpointResponse
@@ -37,6 +38,7 @@ async def get_checkpoint(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> CheckpointResponse:
     checkpoint = await checkpoint_service.get_checkpoint_for_read(
         db, user=user, checkpoint_id=checkpoint_id
@@ -55,6 +57,7 @@ async def fork_checkpoint(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> ForkCheckpointResponse:
     """Open a new Character + CreationSession seeded from this
     checkpoint. Image bytes are copied into the new session's storage

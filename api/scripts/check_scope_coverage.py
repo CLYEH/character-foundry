@@ -59,21 +59,6 @@ KNOWN_MISSING_SCOPE: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/v1/aliases/{alias_id}"),
         ("PATCH", "/v1/aliases/{alias_id}"),
         ("DELETE", "/v1/aliases/{alias_id}"),
-        # characters.py
-        ("GET", "/v1/characters"),
-        ("POST", "/v1/characters"),
-        ("GET", "/v1/characters/{character_id}"),
-        ("PATCH", "/v1/characters/{character_id}"),
-        ("DELETE", "/v1/characters/{character_id}"),
-        ("POST", "/v1/characters/{character_id}/restore"),
-        # checkpoints.py
-        ("GET", "/v1/checkpoints/{checkpoint_id}"),
-        ("POST", "/v1/checkpoints/{checkpoint_id}/fork"),
-        # creation_sessions.py
-        ("GET", "/v1/creation-sessions/{session_id}"),
-        ("POST", "/v1/creation-sessions/{session_id}/checkpoints"),
-        ("POST", "/v1/creation-sessions/{session_id}/select-base"),
-        ("POST", "/v1/creation-sessions/{session_id}/abandon"),
         # motions.py
         ("POST", "/v1/bases/{base_id}/motions"),
         ("POST", "/v1/aliases/{alias_id}/motions"),
@@ -82,12 +67,13 @@ KNOWN_MISSING_SCOPE: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/v1/motions/{motion_id}"),
         ("PATCH", "/v1/motions/{motion_id}"),
         ("DELETE", "/v1/motions/{motion_id}"),
-        # reference_images.py
-        ("POST", "/v1/creation-sessions/{session_id}/reference-images"),
         # NOTE: tasks.py (GET /{id}, GET, POST /{id}/cancel, GET /{id}/stream)
-        # and prompt.py (POST /preview) migrated onto require_scope* in T-088 —
-        # removed from this baseline so a future regression (someone dropping
-        # the scope dep) fails the gate instead of being silently re-baselined.
+        # and prompt.py (POST /preview) migrated onto require_scope* in T-088;
+        # characters.py / checkpoints.py / creation_sessions.py / reference_images.py
+        # migrated onto require_scope in T-084 — all removed from this baseline so a
+        # future regression (someone dropping the scope dep) fails the gate instead
+        # of being silently re-baselined. Remaining entries (aliases / motions) clear
+        # with T-085 / T-086.
     }
 )
 
