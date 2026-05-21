@@ -5,8 +5,13 @@ Covers all eight acceptance criteria from the ticket:
   1. Existing JWT-bearing request still hits a protected endpoint (regression).
   2. Authentik OAuth token (delegated, email matches a seeded User) reaches
      the same endpoint and returns 200.
-  3. `require_scope("character:write")` lets sufficient-scope tokens through,
-     403s on insufficient, 401s on missing.
+  3. `require_scope("character:write")` lets authenticated `/v1/*` callers
+     through (delegated OAuth + legacy JWT are both grandfathered to the full
+     canonical scope set on the human surface — T-084), 401s on missing token.
+     The 403-on-insufficient-scope MECHANISM is unit-tested directly since no
+     real `/v1/*` token is scope-insufficient anymore; strict per-scope
+     enforcement lives on `/mcp/*` via `require_mcp_scopes` (see
+     `tests/mcp/test_skeleton.py`).
   4. OAuth token with a `client_id` not in `ALLOWED_CLIENTS` → 403 with code
      `AUTH_CLIENT_NOT_ALLOWED`.
   5. M2M token whose `scope` claim exceeds its allowlist cap → 403 with code
@@ -235,14 +240,23 @@ def test_require_scope_grants_when_scope_present_oauth(
     assert resp.json() == {"ok": True}
 
 
-def test_require_scope_403_when_scope_missing_oauth(
+def test_delegated_oauth_grandfathered_through_require_scope(
     scoped_client: TestClient,
     seeded_user: dict[str, str],
     _preload_jwks_cache: JWKSCache,
     make_oauth_token: Any,
 ) -> None:
+    """A delegated OAuth token whose `scope` claim LACKS `character:write` still
+    passes a `require_scope("character:write")` gate on `/v1/*` — delegated
+    (human) sessions are grandfathered to the full canonical set, exactly like
+    legacy JWTs (T-084 grandfather decision; see `_resolve_oauth`). This pins
+    the behaviour so it can't silently regress back to `claims.scopes`-based
+    403s, which would lock out real human OAuth callers whose Authentik token
+    doesn't carry the 5 app scopes. Strict per-scope enforcement now lives on
+    `/mcp/*` (`require_mcp_scopes`), not here.
+    """
     token = make_oauth_token(
-        scopes=["character:read"],  # write missing
+        scopes=["character:read"],  # write missing from the token claim
         client_id="claude-code",
         email=seeded_user["email"],
     )
@@ -250,8 +264,8 @@ def test_require_scope_403_when_scope_missing_oauth(
         "/_test_t054/needs-write",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 403, resp.text
-    _assert_agent_error(resp.json(), "AUTH_INSUFFICIENT_SCOPE")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True}
 
 
 def test_require_scope_401_when_token_absent(
@@ -281,14 +295,17 @@ def test_require_scope_grants_when_two_scopes_both_present(
     assert resp.status_code == 200, resp.text
 
 
-def test_require_scope_403_when_only_one_of_two_scopes_present(
+def test_delegated_oauth_grandfathered_through_two_scope_gate(
     scoped_client: TestClient,
     seeded_user: dict[str, str],
     _preload_jwks_cache: JWKSCache,
     make_oauth_token: Any,
 ) -> None:
+    """Same grandfather behaviour for a multi-scope gate: a delegated token
+    missing `task:cancel` still clears `require_scope("character:write",
+    "task:cancel")` on `/v1/*` (T-084)."""
     token = make_oauth_token(
-        scopes=["character:write"],  # task:cancel missing
+        scopes=["character:write"],  # task:cancel missing from the token claim
         client_id="claude-code",
         email=seeded_user["email"],
     )
@@ -296,8 +313,28 @@ def test_require_scope_403_when_only_one_of_two_scopes_present(
         "/_test_t054/needs-two-scopes",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 403
-    _assert_agent_error(resp.json(), "AUTH_INSUFFICIENT_SCOPE")
+    assert resp.status_code == 200, resp.text
+
+
+async def test_require_scope_mechanism_rejects_insufficient_scope() -> None:
+    """Unit-test the `require_scope` 403 logic directly.
+
+    After the T-084 grandfather decision, no real `/v1/*` token is
+    scope-insufficient (`_resolve_jwt` and `_resolve_oauth` both set
+    `token_scopes = CANONICAL_SCOPES`), so the decorator's 403 branch is no
+    longer reachable through the HTTP path. Exercise it directly against a
+    request whose `state.token_scopes` is narrow so the mechanism stays honest
+    — a future change that re-narrows `/v1/*` scopes must still 403 correctly.
+    """
+    from types import SimpleNamespace
+
+    from app.core.errors import AgentErrorException
+
+    dependency = require_scope("character:write")
+    request = SimpleNamespace(state=SimpleNamespace(token_scopes=frozenset({"character:read"})))
+    with pytest.raises(AgentErrorException) as excinfo:
+        await dependency(request, _user=None)  # type: ignore[arg-type]
+    assert excinfo.value.error.code == "AUTH_INSUFFICIENT_SCOPE"
 
 
 def test_require_scope_rejects_unknown_scope_at_construction() -> None:

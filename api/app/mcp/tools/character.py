@@ -117,7 +117,6 @@ from app.services import (
 )
 from app.storage.backend import StorageBackend
 from app.storage.errors import StorageError
-from app.utils.thumbnails import ensure_png_bytes
 
 _logger = logging.getLogger(__name__)
 
@@ -131,13 +130,21 @@ _REFERENCE_SIZE_LIMIT_BYTES = 10 * 1024 * 1024
 _MAX_REFERENCE_B64_CHARS = _REFERENCE_SIZE_LIMIT_BYTES * 4 // 3 + 4
 # Decompression-bomb guard: a ≤10MB file can still decode to billions of
 # pixels. Cap the decoded RGBA footprint (~50MP). PIL reads dimensions from the
-# header without decoding pixels, so we reject before `ensure_png_bytes` forces
-# a full `.load()`. (The shared `ensure_png_bytes` has no such guard — that's a
-# pre-existing REST exposure tracked in STATUS backlog S3.5-5.)
+# header without decoding pixels, so we reject before forcing a full `.load()`.
+# (The shared `ensure_png_bytes` has no such guard — that's a pre-existing REST
+# exposure tracked in STATUS backlog S3.5-5.)
 _MAX_REFERENCE_DECODED_BYTES = 200 * 1024 * 1024
 # Match the REST route's MIME allowlist. base64 carries no content-type, so we
-# read the format from the decoded image instead of a header.
-_ALLOWED_IMAGE_FORMATS = frozenset({"PNG", "JPEG", "WEBP"})
+# read the format from the decoded image instead of a header, and store the
+# ORIGINAL bytes under the detected format (mirroring the REST route, which
+# stores the uploaded payload as-is — NOT re-encoded — so the ≤10MB cap on the
+# input is also the cap on the stored blob; Codex PR #111 P1).
+_FORMAT_TO_MIME_EXT: dict[str, tuple[str, str]] = {
+    "PNG": ("image/png", "png"),
+    "JPEG": ("image/jpeg", "jpg"),
+    "WEBP": ("image/webp", "webp"),
+}
+_ALLOWED_IMAGE_FORMATS = frozenset(_FORMAT_TO_MIME_EXT)
 # Cap references per call — the REST route is one-image-per-request; this
 # packaged tool takes a list, so bound it to keep N×10MB memory in check.
 _MAX_REFERENCE_IMAGES = 8
@@ -426,20 +433,33 @@ def _decode_reference_image(b64: str) -> bytes:
         raise validation_reference_image_undecodable() from exc
 
 
-def _validate_reference_image_header(raw: bytes) -> None:
-    """Validate decoded reference bytes from the image header alone.
+def _validate_reference_image(raw: bytes) -> tuple[str, str]:
+    """Validate decoded reference bytes and return their `(mime, extension)`.
 
-    Two checks the base64 path can't get for free the way the REST route does:
+    Three checks the base64 path can't get for free the way the REST route does:
       • Format allowlist (PNG / JPEG / WebP) — base64 carries no content-type,
         so we read `im.format` instead of a multipart MIME header.
       • Decompression-bomb guard — `Image.open` reads dimensions from the
         header WITHOUT decoding pixels, so we reject an oversized image before
-        `ensure_png_bytes` forces a full `.load()`.
+        forcing a full decode.
+      • Decodability — `im.load()` (after the cheap header checks) forces a full
+        pixel decode so a truncated/corrupt file fails here, exactly as the REST
+        route's `ensure_png_bytes` validation does.
+
+    Returns the detected `(mime, extension)` so the caller stores the ORIGINAL
+    bytes under the right key — matching the REST route, which never re-encodes.
     """
     try:
         with Image.open(BytesIO(raw)) as im:
             fmt = (im.format or "").upper()
             width, height = im.size
+            if fmt not in _ALLOWED_IMAGE_FORMATS:
+                raise validation_reference_image_unsupported_type()
+            if width * height * 4 > _MAX_REFERENCE_DECODED_BYTES:  # RGBA footprint
+                raise validation_reference_image_too_large(
+                    size_bytes=width * height * 4, limit_bytes=_MAX_REFERENCE_DECODED_BYTES
+                )
+            im.load()  # full decode AFTER the cheap header checks — catches truncation
     except Image.DecompressionBombError as exc:
         raise validation_reference_image_too_large(
             size_bytes=_MAX_REFERENCE_DECODED_BYTES + 1,
@@ -447,13 +467,7 @@ def _validate_reference_image_header(raw: bytes) -> None:
         ) from exc
     except (OSError, ValueError, UnidentifiedImageError) as exc:
         raise validation_reference_image_undecodable() from exc
-    if fmt not in _ALLOWED_IMAGE_FORMATS:
-        raise validation_reference_image_unsupported_type()
-    decoded_bytes = width * height * 4  # RGBA
-    if decoded_bytes > _MAX_REFERENCE_DECODED_BYTES:
-        raise validation_reference_image_too_large(
-            size_bytes=decoded_bytes, limit_bytes=_MAX_REFERENCE_DECODED_BYTES
-        )
+    return _FORMAT_TO_MIME_EXT[fmt]
 
 
 async def _upload_reference_images(
@@ -466,11 +480,12 @@ async def _upload_reference_images(
 ) -> list[uuid.UUID]:
     """Decode → validate → store → persist each reference image; return its ids.
 
-    Replicates the REST reference-image route's validation (size cap, format
-    allowlist, PIL decode) + a decompression-bomb guard, adapted to base64
-    input, and the route's per-image orphan-cleanup. Bytes are normalized to
-    PNG via `ensure_png_bytes` (the worker does the same before image2image),
-    so the stored MIME and bytes always agree.
+    Replicates the REST reference-image route's contract: validate (size cap,
+    format allowlist, full PIL decode) + a decompression-bomb guard, then store
+    the ORIGINAL bytes under the detected format (NO re-encode), so the ≤10MB cap
+    on the input is also the cap on the stored blob (Codex PR #111 P1 — a
+    re-encode to PNG could balloon a compressed JPEG/WebP past the limit). The
+    worker normalizes to PNG at generation time anyway.
 
     On a mid-loop failure, already-persisted reference rows/blobs from earlier
     iterations are NOT individually rolled back here — the caller abandons the
@@ -489,15 +504,11 @@ async def _upload_reference_images(
             raise validation_reference_image_too_large(
                 size_bytes=len(raw), limit_bytes=_REFERENCE_SIZE_LIMIT_BYTES
             )
-        _validate_reference_image_header(raw)
-        try:
-            png = ensure_png_bytes(raw)
-        except ValueError as exc:
-            raise validation_reference_image_undecodable() from exc
+        mime_type, extension = _validate_reference_image(raw)
 
         reference_id = uuid.uuid4()
-        storage_key = f"checkpoints/{session_id}/references/{reference_id}.png"
-        storage.put(storage_key, png, "image/png")
+        storage_key = f"checkpoints/{session_id}/references/{reference_id}.{extension}"
+        storage.put(storage_key, raw, mime_type)
         committed = True
         try:
             signed_url = storage.get_signed_url(storage_key, expires_in_seconds=3600)
@@ -509,8 +520,8 @@ async def _upload_reference_images(
                     session_id=session_id,
                     reference_id=reference_id,
                     storage_key=storage_key,
-                    mime_type="image/png",
-                    size_bytes=len(png),
+                    mime_type=mime_type,
+                    size_bytes=len(raw),
                     signed_url=signed_url,
                 )
             committed = False  # row now references the file
