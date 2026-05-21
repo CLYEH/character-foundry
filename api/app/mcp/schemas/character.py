@@ -49,9 +49,11 @@ class CharacterCreateInput(BaseModel):
     )
     reference_images: list[str] | None = Field(
         default=None,
+        max_length=8,
         description=(
-            "Reference-mode only: base64-encoded image bytes (PNG/JPEG/WebP, ≤10MB each). "
-            "Reference mode requires at least one."
+            "Reference-mode only: base64-encoded image bytes (PNG/JPEG/WebP only, ≤10MB "
+            "each, ≤8 images). Reference mode requires at least one; other formats are "
+            "rejected (matches the REST upload allowlist)."
         ),
     )
     aspect_ratio: CheckpointAspectRatio = Field(

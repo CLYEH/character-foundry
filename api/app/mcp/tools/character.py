@@ -43,10 +43,12 @@ import json
 import logging
 import time
 import uuid
+from io import BytesIO
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
+from PIL import Image, UnidentifiedImageError
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,6 +69,7 @@ from app.core.errors import (
     validation_reference_image_required,
     validation_reference_image_too_large,
     validation_reference_image_undecodable,
+    validation_reference_image_unsupported_type,
 )
 from app.core.redis_client import get_arq_pool, get_redis
 from app.db.session import async_session_factory
@@ -121,6 +124,23 @@ _logger = logging.getLogger(__name__)
 # Reference-image upload limit — mirrors the REST route
 # (`api/app/api/routes/reference_images.py`). 10MB per image.
 _REFERENCE_SIZE_LIMIT_BYTES = 10 * 1024 * 1024
+# Reject oversized base64 BEFORE decoding. The REST route streams the multipart
+# body in 256KB chunks and aborts at the cap; the MCP path receives the whole
+# string at once, so we bound the ENCODED length to avoid materializing a huge
+# decoded blob in memory (base64 inflates ~4/3, plus padding).
+_MAX_REFERENCE_B64_CHARS = _REFERENCE_SIZE_LIMIT_BYTES * 4 // 3 + 4
+# Decompression-bomb guard: a ≤10MB file can still decode to billions of
+# pixels. Cap the decoded RGBA footprint (~50MP). PIL reads dimensions from the
+# header without decoding pixels, so we reject before `ensure_png_bytes` forces
+# a full `.load()`. (The shared `ensure_png_bytes` has no such guard — that's a
+# pre-existing REST exposure tracked in STATUS backlog S3.5-5.)
+_MAX_REFERENCE_DECODED_BYTES = 200 * 1024 * 1024
+# Match the REST route's MIME allowlist. base64 carries no content-type, so we
+# read the format from the decoded image instead of a header.
+_ALLOWED_IMAGE_FORMATS = frozenset({"PNG", "JPEG", "WEBP"})
+# Cap references per call — the REST route is one-image-per-request; this
+# packaged tool takes a list, so bound it to keep N×10MB memory in check.
+_MAX_REFERENCE_IMAGES = 8
 
 # character.create polls the checkpoint task to completion. Interval keeps the
 # loop responsive without hammering Postgres; the timeout stays under the nginx
@@ -389,12 +409,51 @@ def _phase_tool_error(phase: str, error: AgentError) -> ToolError:
 
 
 def _decode_reference_image(b64: str) -> bytes:
-    """Decode a base64 reference image, tolerating an optional data-URL prefix."""
+    """Decode a base64 reference image, tolerating an optional data-URL prefix.
+
+    Bounds the encoded length BEFORE decoding so an oversized payload is
+    rejected without first being materialized in memory (the REST route's
+    streaming read bounds the equivalent multipart body).
+    """
     payload = b64.split(",", 1)[1] if b64.startswith("data:") and "," in b64 else b64
+    if len(payload) > _MAX_REFERENCE_B64_CHARS:
+        raise validation_reference_image_too_large(
+            size_bytes=len(payload) * 3 // 4, limit_bytes=_REFERENCE_SIZE_LIMIT_BYTES
+        )
     try:
         return base64.b64decode(payload, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise validation_reference_image_undecodable() from exc
+
+
+def _validate_reference_image_header(raw: bytes) -> None:
+    """Validate decoded reference bytes from the image header alone.
+
+    Two checks the base64 path can't get for free the way the REST route does:
+      • Format allowlist (PNG / JPEG / WebP) — base64 carries no content-type,
+        so we read `im.format` instead of a multipart MIME header.
+      • Decompression-bomb guard — `Image.open` reads dimensions from the
+        header WITHOUT decoding pixels, so we reject an oversized image before
+        `ensure_png_bytes` forces a full `.load()`.
+    """
+    try:
+        with Image.open(BytesIO(raw)) as im:
+            fmt = (im.format or "").upper()
+            width, height = im.size
+    except Image.DecompressionBombError as exc:
+        raise validation_reference_image_too_large(
+            size_bytes=_MAX_REFERENCE_DECODED_BYTES + 1,
+            limit_bytes=_MAX_REFERENCE_DECODED_BYTES,
+        ) from exc
+    except (OSError, ValueError, UnidentifiedImageError) as exc:
+        raise validation_reference_image_undecodable() from exc
+    if fmt not in _ALLOWED_IMAGE_FORMATS:
+        raise validation_reference_image_unsupported_type()
+    decoded_bytes = width * height * 4  # RGBA
+    if decoded_bytes > _MAX_REFERENCE_DECODED_BYTES:
+        raise validation_reference_image_too_large(
+            size_bytes=decoded_bytes, limit_bytes=_MAX_REFERENCE_DECODED_BYTES
+        )
 
 
 async def _upload_reference_images(
@@ -407,10 +466,17 @@ async def _upload_reference_images(
 ) -> list[uuid.UUID]:
     """Decode → validate → store → persist each reference image; return its ids.
 
-    Replicates the REST reference-image route's validation (size cap, PIL
-    decode) and orphan-cleanup, adapted to base64 input. Bytes are normalized
-    to PNG via `ensure_png_bytes` (the worker does the same before
-    image2image), so the stored MIME and bytes always agree.
+    Replicates the REST reference-image route's validation (size cap, format
+    allowlist, PIL decode) + a decompression-bomb guard, adapted to base64
+    input, and the route's per-image orphan-cleanup. Bytes are normalized to
+    PNG via `ensure_png_bytes` (the worker does the same before image2image),
+    so the stored MIME and bytes always agree.
+
+    On a mid-loop failure, already-persisted reference rows/blobs from earlier
+    iterations are NOT individually rolled back here — the caller abandons the
+    session, and the session's lifecycle cleanup reclaims its reference rows +
+    blobs (same disposition as a human-abandoned session). Only the in-flight
+    image's blob is cleaned up inline (below).
     """
     if not images_b64:
         # Reference mode with no images: fail at this phase with the same
@@ -423,6 +489,7 @@ async def _upload_reference_images(
             raise validation_reference_image_too_large(
                 size_bytes=len(raw), limit_bytes=_REFERENCE_SIZE_LIMIT_BYTES
             )
+        _validate_reference_image_header(raw)
         try:
             png = ensure_png_bytes(raw)
         except ValueError as exc:
@@ -559,7 +626,7 @@ async def character_create(
     input_mode: InputMode,
     menu_selections: dict[str, Any] | None = None,
     freeform_note: str | None = None,
-    reference_images: list[str] | None = None,
+    reference_images: Annotated[list[str] | None, Field(max_length=_MAX_REFERENCE_IMAGES)] = None,
     aspect_ratio: CheckpointAspectRatio = "2:3",
     checkpoint_count: Annotated[int, Field(ge=1, le=10)] = 1,
     ctx: Context[Any, Any, Any] | None = None,

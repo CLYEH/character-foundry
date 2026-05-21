@@ -109,6 +109,12 @@ def _png_b64() -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _gif_b64() -> str:
+    buf = BytesIO()
+    Image.new("RGB", (16, 16), "green").save(buf, format="GIF")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 def _tool_error_payload(exc: ToolError) -> dict[str, Any]:
     text = str(exc.args[0])
     brace = text.find("{")
@@ -231,6 +237,30 @@ async def test_reference_upload_failure_surfaces_phase_and_abandons(
     assert payload["error"]["code"] == "VALIDATION_REFERENCE_IMAGE_UNDECODABLE"
     status = await _session_status_for_character(
         bind_character_db, owner_id=seeded_user["id"], name="Bad-Ref-Hero"
+    )
+    assert status == "abandoned"
+
+
+async def test_reference_mode_rejects_unsupported_format(
+    make_character_create_deps: Any,
+    bind_character_db: async_sessionmaker[Any],
+    seeded_user: dict[str, Any],
+) -> None:
+    """A decodable-but-disallowed format (GIF) is rejected, matching the REST
+    upload allowlist (PNG/JPEG/WebP), and the session is abandoned."""
+    make_character_create_deps(StubAIClient())
+    with auth_as(user_id=seeded_user["id"]):
+        with pytest.raises(ToolError) as excinfo:
+            await character_create(
+                name="Gif-Hero",
+                input_mode="reference",
+                reference_images=[_gif_b64()],
+            )
+    payload = _tool_error_payload(excinfo.value)
+    assert payload["phase"] == "uploading_references"
+    assert payload["error"]["code"] == "VALIDATION_REFERENCE_IMAGE_TYPE"
+    status = await _session_status_for_character(
+        bind_character_db, owner_id=seeded_user["id"], name="Gif-Hero"
     )
     assert status == "abandoned"
 
