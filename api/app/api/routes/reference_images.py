@@ -27,6 +27,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, UploadFile
 
 from app.api.deps import get_current_user_no_pin, get_storage
+from app.auth.scopes import SCOPE_CHARACTER_WRITE, require_scope_no_pin
 from app.core.errors import (
     validation_reference_image_too_large,
     validation_reference_image_undecodable,
@@ -68,6 +69,7 @@ async def upload_reference_image(
     user: Annotated[User, Depends(get_current_user_no_pin)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
     file: Annotated[UploadFile, File(...)],
+    _: None = Depends(require_scope_no_pin(SCOPE_CHARACTER_WRITE)),
 ) -> ReferenceImageUploadResponse:
     # MIME validation first — cheap and gives the caller a fast reject
     # before we even touch the DB.
