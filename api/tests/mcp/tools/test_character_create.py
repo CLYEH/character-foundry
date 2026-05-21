@@ -265,6 +265,42 @@ async def test_reference_mode_rejects_unsupported_format(
     assert status == "abandoned"
 
 
+async def test_storage_failure_surfaces_phase_and_abandons(
+    make_character_create_deps: Any,
+    bind_character_db: async_sessionmaker[Any],
+    character_storage: Any,
+    seeded_user: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-AgentError infra failure (StorageError from storage.put) inside a
+    phase must still abandon the session + return a phase-tagged structured
+    error — not leave the session stuck in_progress with an unstructured failure
+    (Codex PR #111 P1)."""
+    from app.storage.errors import StorageError
+
+    make_character_create_deps(StubAIClient())
+
+    def _raise_put(*_args: Any, **_kwargs: Any) -> None:
+        raise StorageError("simulated storage outage (test)")
+
+    monkeypatch.setattr(character_storage, "put", _raise_put)
+
+    with auth_as(user_id=seeded_user["id"]):
+        with pytest.raises(ToolError) as excinfo:
+            await character_create(
+                name="Storage-Fail-Hero",
+                input_mode="reference",
+                reference_images=[_png_b64()],
+            )
+    payload = _tool_error_payload(excinfo.value)
+    assert payload["phase"] == "uploading_references"
+    assert payload["error"]["code"] == "INTERNAL_UNEXPECTED_ERROR"
+    status = await _session_status_for_character(
+        bind_character_db, owner_id=seeded_user["id"], name="Storage-Fail-Hero"
+    )
+    assert status == "abandoned"
+
+
 async def test_reference_mode_requires_images(
     make_character_create_deps: Any,
     bind_character_db: async_sessionmaker[Any],

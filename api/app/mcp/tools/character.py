@@ -395,19 +395,6 @@ _PHASE_RUNNING = "running_checkpoint"
 _PHASE_SELECTING = "selecting_base"
 
 
-class _PhaseError(Exception):
-    """Internal: a sub-step failure carrying which phase + the AgentError.
-
-    Caught by `character_create`, which abandons the half-built session and
-    re-raises as a phase-tagged `ToolError`.
-    """
-
-    def __init__(self, phase: str, error: AgentError) -> None:
-        super().__init__(error.code)
-        self.phase = phase
-        self.error = error
-
-
 def _phase_tool_error(phase: str, error: AgentError) -> ToolError:
     """Build the packaged-tool error envelope: the standard AgentError plus a
     sibling `phase` so the agent knows which step failed (ticket §error handling).
@@ -556,6 +543,20 @@ def _agent_error_from_task(task: Any) -> AgentError:
     )
 
 
+def _agent_error_from_unexpected(exc: BaseException) -> AgentError:
+    """Wrap a non-AgentError infra failure (StorageError, DB error, …) into the
+    standard envelope so a packaged-tool phase still surfaces a structured error
+    (mirrors the worker's `_agent_error_from_exception`)."""
+    return AgentError(
+        code="INTERNAL_UNEXPECTED_ERROR",
+        message="系統發生未預期錯誤",
+        problem=f"Unhandled {type(exc).__name__} in character.create: {exc}",
+        cause="Infra/runtime failure inside a packaged-tool phase (e.g. storage or DB).",
+        fix="Retry; if persistent, inspect the api logs.",
+        retryable=True,
+    )
+
+
 async def _wait_for_checkpoint_task(
     factory: Any,
     ctx: Context[Any, Any, Any] | None,
@@ -662,7 +663,9 @@ async def character_create(
     factory = async_session_factory()
 
     # Phase 1: create character + session. No cleanup possible (nothing
-    # committed yet if this fails), so it sits outside the abandon-wrapped block.
+    # committed yet if this fails — create_character commits atomically), so it
+    # sits outside the abandon-wrapped block. Both AgentError and infra failures
+    # surface as a phase-tagged error.
     await report_progress(ctx, progress=0.05, total=1.0, message=_PHASE_CREATING)
     try:
         async with factory() as db:
@@ -673,66 +676,69 @@ async def character_create(
             session_id = created.creation_session.id
     except AgentErrorException as exc:
         raise _phase_tool_error(_PHASE_CREATING, exc.error) from exc
+    except Exception as exc:  # noqa: BLE001 — infra failure → structured tool error
+        raise _phase_tool_error(_PHASE_CREATING, _agent_error_from_unexpected(exc)) from exc
 
+    # Phases 2-4. `current_phase` tracks where we are so that ANY failure —
+    # AgentError OR an infra exception (StorageError from storage.put /
+    # get_signed_url, a DB/SQLAlchemy error, etc.) — abandons the half-built
+    # session AND surfaces a phase-tagged error. Catching only AgentError here
+    # would leave the session stuck `in_progress` on an infra failure and return
+    # an unstructured tool error (Codex PR #111 P1).
+    current_phase = _PHASE_UPLOADING
     try:
         reference_image_ids: list[uuid.UUID] = []
         if input_mode == "reference":
             await report_progress(ctx, progress=0.1, total=1.0, message=_PHASE_UPLOADING)
-            try:
-                reference_image_ids = await _upload_reference_images(
-                    storage,
-                    factory,
-                    user_id=user_id,
-                    session_id=session_id,
-                    images_b64=reference_images or [],
-                )
-            except AgentErrorException as exc:
-                raise _PhaseError(_PHASE_UPLOADING, exc.error) from exc
+            reference_image_ids = await _upload_reference_images(
+                storage,
+                factory,
+                user_id=user_id,
+                session_id=session_id,
+                images_b64=reference_images or [],
+            )
 
+        current_phase = _PHASE_RUNNING
         checkpoint_id: uuid.UUID | None = None
         for _ in range(checkpoint_count):
-            try:
-                async with factory() as db:
-                    user = await _load_user(db, user_id)
-                    enqueued = await checkpoint_service.enqueue_checkpoint(
-                        db,
-                        redis,
-                        arq_pool,
-                        user=user,
-                        session_id=session_id,
-                        mode="fresh",
-                        base_checkpoint_id=None,
-                        menu_selections=menu_selections,
-                        freeform_note=freeform_note,
-                        reference_image_ids=reference_image_ids or None,
-                        aspect_ratio=aspect_ratio,
-                    )
-                checkpoint_id = enqueued.checkpoint_id
-                await _wait_for_checkpoint_task(
-                    factory, ctx, user_id=user_id, task_id=enqueued.task_id
+            async with factory() as db:
+                user = await _load_user(db, user_id)
+                enqueued = await checkpoint_service.enqueue_checkpoint(
+                    db,
+                    redis,
+                    arq_pool,
+                    user=user,
+                    session_id=session_id,
+                    mode="fresh",
+                    base_checkpoint_id=None,
+                    menu_selections=menu_selections,
+                    freeform_note=freeform_note,
+                    reference_image_ids=reference_image_ids or None,
+                    aspect_ratio=aspect_ratio,
                 )
-            except AgentErrorException as exc:
-                raise _PhaseError(_PHASE_RUNNING, exc.error) from exc
+            checkpoint_id = enqueued.checkpoint_id
+            await _wait_for_checkpoint_task(factory, ctx, user_id=user_id, task_id=enqueued.task_id)
 
         # checkpoint_count >= 1 (schema-bounded), so the loop ran ≥ once.
         assert checkpoint_id is not None
 
+        current_phase = _PHASE_SELECTING
         await report_progress(ctx, progress=0.95, total=1.0, message=_PHASE_SELECTING)
-        try:
-            async with factory() as db:
-                user = await _load_user(db, user_id)
-                selected = await base_service.select_base(
-                    db, user=user, session_id=session_id, checkpoint_id=checkpoint_id
-                )
-                character_detail = await _character_to_detail_dto(
-                    db, selected.character, storage=storage
-                )
-                base_dto = build_base_dto(selected.base, storage)
-        except AgentErrorException as exc:
-            raise _PhaseError(_PHASE_SELECTING, exc.error) from exc
-    except _PhaseError as pe:
+        async with factory() as db:
+            user = await _load_user(db, user_id)
+            selected = await base_service.select_base(
+                db, user=user, session_id=session_id, checkpoint_id=checkpoint_id
+            )
+            character_detail = await _character_to_detail_dto(
+                db, selected.character, storage=storage
+            )
+            base_dto = build_base_dto(selected.base, storage)
+    except AgentErrorException as exc:
         await _abandon_session_quietly(factory, user_id=user_id, session_id=session_id)
-        raise _phase_tool_error(pe.phase, pe.error) from pe
+        raise _phase_tool_error(current_phase, exc.error) from exc
+    except Exception as exc:  # noqa: BLE001 — infra failure → abandon + structured error
+        await _abandon_session_quietly(factory, user_id=user_id, session_id=session_id)
+        raise _phase_tool_error(current_phase, _agent_error_from_unexpected(exc)) from exc
 
     await report_progress(ctx, progress=1.0, total=1.0, message="done")
     return CharacterCreateResult(character=character_detail, base=base_dto)
