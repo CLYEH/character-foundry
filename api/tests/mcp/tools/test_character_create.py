@@ -1,10 +1,14 @@
-"""Tests for the packaged `character.create` MCP tool (T-084).
+"""Tests for the packaged `character.create` MCP tool (T-084 / T-087).
 
 `character.create` orchestrates the full Base-creation flow as one tool call.
-These tests drive the handler directly with the MCP auth contextvar set
-(`auth_as`) and an inline arq pool that runs the checkpoint worker
-synchronously on enqueue (`make_character_create_deps`), so the tool's poll
-loop sees a terminal task without a real worker process or any sleeps.
+Unlike the non-blocking `motion.generate` / `alias.add` it stays blocking (it
+runs select-base server-side after the checkpoint task), but per T-087 it emits
+an early `recovery_handle` progress notification (character_id + session_id, then
++ the checkpoint task_id) so a dropped connection can resume via character.get /
+task.get. These tests drive the handler directly with the MCP auth contextvar set
+(`auth_as`) and an inline arq pool that runs the checkpoint worker synchronously
+on enqueue (`make_character_create_deps`), so the tool's poll loop sees a terminal
+task without a real worker process or any sleeps.
 
 Progress notifications are asserted via a recording fake `ctx` — the real
 streamable-HTTP round-trip of the shared `report_progress` helper stays
@@ -122,6 +126,25 @@ def _tool_error_payload(exc: ToolError) -> dict[str, Any]:
     return json.loads(text[brace:])  # type: ignore[no-any-return]
 
 
+def _recovery_handles(ctx: RecordingContext) -> list[dict[str, str]]:
+    """Extract the T-087 recovery handles from the recorded progress messages.
+
+    The recovery handle rides a progress notification whose `message` is JSON
+    keyed `recovery_handle`; the plain phase-label notifications are ignored.
+    """
+    out: list[dict[str, str]] = []
+    for msg in ctx.phases:
+        if not msg:
+            continue
+        try:
+            parsed = json.loads(msg)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict) and "recovery_handle" in parsed:
+            out.append(parsed["recovery_handle"])
+    return out
+
+
 async def _session_status_for_character(
     factory: async_sessionmaker[Any], *, owner_id: Any, name: str
 ) -> str | None:
@@ -193,6 +216,32 @@ async def test_reference_mode_uploads_then_creates(
     assert "uploading_references" in ctx.phases
     assert "running_checkpoint" in ctx.phases
     assert "selecting_base" in ctx.phases
+
+
+async def test_emits_early_recovery_handle(
+    make_character_create_deps: Any,
+    seeded_user: dict[str, Any],
+) -> None:
+    """T-087: character.create stays blocking but pushes a recovery handle through
+    progress early — character_id + session_id right after the session is created,
+    then the checkpoint task_id once enqueued — so a dropped connection can resume
+    via character.get / character.get_session / task.get."""
+    make_character_create_deps(StubAIClient())
+    ctx = RecordingContext()
+    with auth_as(user_id=seeded_user["id"]):
+        result = await character_create(
+            name="Recoverable-Hero",
+            input_mode="template",
+            ctx=ctx,  # type: ignore[arg-type]
+        )
+    handles = _recovery_handles(ctx)
+    assert handles, "expected at least one recovery_handle progress notification"
+    # The first handle (after session creation) carries character_id + session_id.
+    first = handles[0]
+    assert first["character_id"] == str(result.character.id)
+    assert "session_id" in first
+    # A later handle (after checkpoint enqueue) adds the task_id to poll.
+    assert any("task_id" in h for h in handles)
 
 
 # ---------------------------------------------------------------------------

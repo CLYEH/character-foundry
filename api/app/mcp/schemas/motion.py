@@ -1,10 +1,11 @@
 """Input/output schemas for the `motion.*` MCP tools (T-086).
 
-Outputs reuse the existing `app.schemas.motion` envelopes (`MotionResponse`,
-`MotionDetailResponse`, `MotionListResponse`) so the MCP wire shape can't drift
-from the REST endpoints these tools wrap — see `app/mcp/tools/motion.py`. This
-module holds the MCP-specific INPUT schemas plus the one output shape that has
-no REST envelope (the 204 delete).
+The CRUD wraps' outputs reuse the existing `app.schemas.motion` envelopes
+(`MotionResponse`, `MotionDetailResponse`, `MotionListResponse`) so the MCP wire
+shape can't drift from the REST endpoints they wrap — see
+`app/mcp/tools/motion.py`. This module holds the MCP-specific INPUT schemas plus
+the two output shapes with no REST envelope: the async-submit handle
+(`MotionGenerateResult`, T-087) and the 204 delete ack (`MotionDeleteResult`).
 
 `motion.generate` is polymorphic: one tool, two target kinds (`base` / `alias`).
 The agent's mental unit is "give a visual a motion" — the target is a parameter,
@@ -36,10 +37,10 @@ from app.schemas.prompt import MotionParentType, MotionType
 class MotionGenerateInput(BaseModel):
     """Input for the packaged, polymorphic `motion.generate` tool.
 
-    Drives the whole motion-generation flow (enqueue i2v → poll the task to
-    completion → return the finished motion) for either a Base or an Alias
-    target. `description` is required only for `custom` motions (preset
-    prompts are static platform templates and ignore any description).
+    Submits an i2v generation job for either a Base or an Alias target and
+    returns an async handle immediately (non-blocking — T-087). `description`
+    is required only for `custom` motions (preset prompts are static platform
+    templates and ignore any description).
     """
 
     target_type: MotionParentType = Field(
@@ -67,6 +68,33 @@ class MotionGenerateInput(BaseModel):
             "server-side). REQUIRED for `custom`; ignored for presets."
         ),
     )
+
+
+class MotionGenerateResult(BaseModel):
+    """`motion.generate` output — the async-submit handle (T-087).
+
+    `motion.generate` enqueues the i2v job and returns immediately; it does NOT
+    block until the video is ready. Recommended agent flow:
+
+      1. `motion.generate(...)` → this handle.
+      2. Poll `task.get(task_id)` until `status` is terminal. A Veo RAI-filter
+         miss surfaces as `status="failed"` with `error.code` =
+         `MODEL_CONTENT_FILTERED` (machine-readable; retry / rephrase), exactly
+         as the REST surface reports it.
+      3. On `completed`, `motion.get(motion_id)` for the finished motion (video
+         URL + generation info).
+
+    Disconnect-safe: the i2v work runs in the arq worker, independent of the MCP
+    connection. If the connection drops, the motion is still produced; the agent
+    re-queries with the `task_id` / `motion_id` it already holds.
+    """
+
+    task_id: uuid.UUID = Field(..., description="Async task id — poll via task.get until terminal.")
+    motion_id: uuid.UUID = Field(
+        ...,
+        description="The motion id to fetch via motion.get once the task completes.",
+    )
+    status: str = Field(default="queued", description="Always `queued` on submit.")
 
 
 # ---------------------------------------------------------------------------
