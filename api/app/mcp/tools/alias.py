@@ -114,7 +114,11 @@ _POLL_TIMEOUT_S = 170.0
 
 # Phase labels for the packaged `alias.add` tool — sent as the progress
 # `message` and the failure envelope's `phase`. `generating_alias` is always
-# emitted; `uploading_mask` only when a `mask_file` is supplied.
+# emitted; `uploading_mask` only when a `mask_file` is supplied. Note the
+# mask *content* check (VALIDATION_MASK_EMPTY — needs the base image to compare
+# dimensions / alpha) runs in the worker, so it surfaces under `generating_alias`,
+# not `uploading_mask`; the `uploading_mask` phase only covers decode + format +
+# ownership + store.
 _PHASE_UPLOADING_MASK = "uploading_mask"
 _PHASE_GENERATING = "generating_alias"
 

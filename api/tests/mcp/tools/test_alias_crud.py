@@ -115,3 +115,29 @@ async def test_get_unknown_alias_surfaces_not_found(
         with pytest.raises(ToolError) as excinfo:
             await alias_get(uuid.uuid4())
     assert tool_error_code(excinfo.value) == "NOT_FOUND_ALIAS"
+
+
+async def test_rename_non_owner_denied(
+    bind_alias_db: async_sessionmaker[Any],
+    bind_alias_storage: Any,
+    seeded_alias: dict[str, Any],
+    second_user: dict[str, Any],
+) -> None:
+    """A same-team non-owner can't rename someone else's alias (IDOR guard)."""
+    with auth_as(user_id=second_user["id"]):
+        with pytest.raises(ToolError) as excinfo:
+            await alias_rename(seeded_alias["id"], "hijacked")
+    assert tool_error_code(excinfo.value) == "AUTH_INSUFFICIENT_PERMISSION"
+
+
+async def test_delete_non_owner_denied(
+    bind_alias_db: async_sessionmaker[Any],
+    bind_alias_storage: Any,
+    seeded_alias: dict[str, Any],
+    second_user: dict[str, Any],
+) -> None:
+    """A same-team non-owner can't delete someone else's alias (IDOR guard)."""
+    with auth_as(user_id=second_user["id"]):
+        with pytest.raises(ToolError) as excinfo:
+            await alias_delete(seeded_alias["id"])
+    assert tool_error_code(excinfo.value) == "AUTH_INSUFFICIENT_PERMISSION"

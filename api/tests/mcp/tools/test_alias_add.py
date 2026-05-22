@@ -404,6 +404,29 @@ async def test_reference_id_not_in_base_session_surfaces_not_found(
     assert payload["error"]["code"] == "NOT_FOUND_REFERENCE_IMAGE"
 
 
+async def test_add_non_owner_denied_at_mask_upload(
+    make_alias_add_deps: Any,
+    bind_alias_db: async_sessionmaker[Any],
+    seeded_character: dict[str, Any],
+    second_user: dict[str, Any],
+) -> None:
+    """A same-team non-owner can't add an alias (mask upload ownership gate);
+    fails closed in the uploading_mask phase before any blob is written."""
+    make_alias_add_deps(StubAIClient())
+    with auth_as(user_id=second_user["id"]):
+        with pytest.raises(ToolError) as excinfo:
+            await alias_add(
+                character_id=seeded_character["id"],
+                name="Hijack-Alias",
+                input_mode="inpaint",
+                mask_file=_mask_b64((16, 16)),
+            )
+    payload = _tool_error_payload(excinfo.value)
+    assert payload["phase"] == "uploading_mask"
+    assert payload["error"]["code"] == "AUTH_INSUFFICIENT_PERMISSION"
+    assert await _count_aliases(bind_alias_db, character_id=seeded_character["id"]) == 0
+
+
 # ---------------------------------------------------------------------------
 # Local helpers that need to live below the test doubles
 # ---------------------------------------------------------------------------
