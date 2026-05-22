@@ -28,6 +28,11 @@ from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import db_session, get_current_user, get_storage
+from app.auth.scopes import (
+    SCOPE_CHARACTER_READ,
+    SCOPE_CHARACTER_WRITE,
+    require_scope,
+)
 from app.core.redis_client import get_arq_pool
 from app.models.user import User
 from app.schemas.motion import (
@@ -56,6 +61,7 @@ async def enqueue_base_motion(
     db: Annotated[AsyncSession, Depends(db_session)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> CreateMotionResponse:
     """Generate a motion bound to a Base.
 
@@ -88,6 +94,7 @@ async def enqueue_alias_motion(
     db: Annotated[AsyncSession, Depends(db_session)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> CreateMotionResponse:
     """Generate a motion bound to an Alias. Same shape as the Base
     endpoint with `parent_type='alias'` resolution."""
@@ -118,6 +125,7 @@ async def list_base_motions(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> MotionListResponse:
     """List active motions under a Base, preset-first then created_at ASC."""
     motions = await motion_service.list_motions_for_parent(
@@ -135,6 +143,7 @@ async def list_alias_motions(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> MotionListResponse:
     """List active motions under an Alias, preset-first then created_at ASC."""
     motions = await motion_service.list_motions_for_parent(
@@ -152,6 +161,7 @@ async def get_motion(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> MotionDetailResponse:
     """Detail surface — same fields as the list card plus a `generation`
     subset (model name, duration, completed_at). Team-wide read."""
@@ -175,6 +185,7 @@ async def patch_motion(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> MotionResponse:
     """Rename a custom motion. Preset → 422, duplicate → 409."""
     motion = await motion_service.update_motion_name(
@@ -191,6 +202,7 @@ async def delete_motion(
     motion_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> Response:
     """Soft-delete. Returns 204 with no body (mirrors alias delete)."""
     await motion_service.soft_delete_motion(db, user=user, motion_id=motion_id)

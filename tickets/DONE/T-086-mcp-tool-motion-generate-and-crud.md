@@ -1,6 +1,6 @@
 # T-086: MCP tool `motion.generate`（packaged, polymorphic）+ motion CRUD 1:1 wraps
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 3.5b
 **Est:** M
 **Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）、T-084（pattern reference；progress phase 命名 align）、**T-088**（task endpoint `require_scope` 必須先 land 才能讓 motion.generate 的 `task:read` 通過 T-081 guardrail 2 的 union check）
@@ -88,14 +88,14 @@ Wave B 第 3 張：把 motion 領域全部 MCP tool 落地。motion.generate 是
 
 ## Acceptance criteria
 
-- [ ] `motion.generate` packaged tool 註冊；bundles 與 T-083 §3 一致
-- [ ] 5 條 CRUD 1:1 tool 註冊
-- [ ] T-081 CI guardrail 2 pass
-- [ ] target=base / target=alias / motion_type=preset / motion_type=custom 四個組合各一條 e2e test 綠
-- [ ] Veo RAI filter test 綠（MCP error 含明確 reason，不是泛型）
-- [ ] preset rename 拒絕 test 綠
-- [ ] Motion 領域全部 endpoint 套 `require_scope`，T-081 scope coverage check pass
-- [ ] `pytest api/tests/mcp/tools/test_motion_*.py` 全綠
+- [x] `motion.generate` packaged tool 註冊；bundles 與 T-083 §3 一致
+- [x] 5 條 CRUD 1:1 tool 註冊
+- [x] T-081 CI guardrail 2 pass（mcp-tool-scopes OK — 27 tools）
+- [x] target=base / target=alias / motion_type=preset / motion_type=custom 四個組合各一條 e2e test 綠
+- [x] Veo RAI filter test 綠（MCP error 含明確 reason=`MODEL_CONTENT_FILTERED`，phase=`running_i2v`，不是泛型）
+- [x] preset rename 拒絕 test 綠（`VALIDATION_PRESET_RENAME_FORBIDDEN`）
+- [x] Motion 領域全部 endpoint 套 `require_scope`，T-081 scope coverage check pass（baseline 清空，38 endpoints 全 covered）
+- [x] `pytest api/tests/mcp/tools/test_motion_*.py` 全綠（17 passed）
 - [ ] PR description 對照 T-083 §3 表逐條 check
 
 ---

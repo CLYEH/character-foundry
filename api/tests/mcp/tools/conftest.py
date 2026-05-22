@@ -325,7 +325,16 @@ async def _insert_session_checkpoint_base(
         await engine.dispose()
 
 
-async def _insert_alias(database_url: str, *, character_id: uuid.UUID, name: str) -> uuid.UUID:
+async def _insert_alias(
+    database_url: str, *, character_id: uuid.UUID, name: str
+) -> tuple[uuid.UUID, str]:
+    """Seed an alias row. Returns (alias_id, image_key).
+
+    The `image_key` is returned so motion tests (T-086) can write the parent
+    image bytes to that storage key — `run_create_motion` reads the alias
+    image to feed Veo's identity-anchor.
+    """
+    image_key = f"aliases/{uuid.uuid4()}.png"
     engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
@@ -336,10 +345,10 @@ async def _insert_alias(database_url: str, *, character_id: uuid.UUID, name: str
                         "(character_id, name, prompt, input_mode, image_key) "
                         "VALUES (:c, :n, 'seed alias prompt', 'image2image', :k) RETURNING id"
                     ),
-                    {"c": character_id, "n": name, "k": f"aliases/{uuid.uuid4()}.png"},
+                    {"c": character_id, "n": name, "k": image_key},
                 )
             ).scalar_one()
-            return uuid.UUID(str(alias_id))
+            return uuid.UUID(str(alias_id)), image_key
     finally:
         await engine.dispose()
 
@@ -452,13 +461,14 @@ def seeded_character(database_url: str, seeded_user: dict[str, Any]) -> dict[str
 
 @pytest.fixture
 def seeded_alias(database_url: str, seeded_character: dict[str, Any]) -> dict[str, Any]:
-    alias_id = asyncio.run(
+    alias_id, image_key = asyncio.run(
         _insert_alias(database_url, character_id=seeded_character["id"], name="suit-alias")
     )
     return {
         "id": alias_id,
         "character_id": seeded_character["id"],
         "owner_id": seeded_character["owner_id"],
+        "image_key": image_key,
     }
 
 
@@ -875,11 +885,261 @@ def make_alias_add_deps(
     return _install
 
 
+# ---------------------------------------------------------------------------
+# motion.* tool fixtures (T-086)
+# ---------------------------------------------------------------------------
+
+
+def _png_bytes() -> bytes:
+    """A real 16x16 PNG so the motion worker's thumbnail step can decode it.
+
+    The motion worker reads the parent (Base/Alias) image from storage and
+    re-encodes it as the thumbnail; placeholder bytes would fail the PIL
+    decode. Mirrors `tests/motions/test_create_motion_worker.py::_png_parent_bytes`.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    im = Image.new("RGBA", (16, 16), (255, 0, 0, 255))
+    buf = BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+async def _insert_motion(
+    database_url: str,
+    *,
+    motion_id: uuid.UUID,
+    parent_type: str,
+    parent_id: uuid.UUID,
+    motion_type: str,
+    name: str,
+    description: str | None,
+    video_key: str,
+) -> None:
+    """Seed a motion row directly (independent of the worker/tools).
+
+    Exactly one of base_id / alias_id is set per `parent_type`
+    (`chk_motions_exactly_one_parent`). `video_key` need not point at a real
+    file — `build_motion_dto` mints a signed URL by signing the path, and the
+    thumbnail probe (`storage.exists`) just yields None when absent.
+    """
+    base_id = parent_id if parent_type == "base" else None
+    alias_id = parent_id if parent_type == "alias" else None
+    engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO motions "
+                    "(id, base_id, alias_id, motion_type, name, description, video_key) "
+                    "VALUES (:i, :b, :a, :mt, :n, :d, :vk)"
+                ),
+                {
+                    "i": motion_id,
+                    "b": base_id,
+                    "a": alias_id,
+                    "mt": motion_type,
+                    "n": name,
+                    "d": description,
+                    "vk": video_key,
+                },
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def seeded_base_preset_motion(
+    database_url: str, seeded_character: dict[str, Any]
+) -> dict[str, Any]:
+    """A preset motion under the character's Base (for CRUD read/rename/delete)."""
+    motion_id = uuid.uuid4()
+    asyncio.run(
+        _insert_motion(
+            database_url,
+            motion_id=motion_id,
+            parent_type="base",
+            parent_id=seeded_character["base_id"],
+            motion_type="preset_wave",
+            name="招手",
+            description=None,
+            video_key=f"bases/{seeded_character['base_id']}/motions/{motion_id}.mp4",
+        )
+    )
+    return {
+        "id": motion_id,
+        "base_id": seeded_character["base_id"],
+        "owner_id": seeded_character["owner_id"],
+    }
+
+
+@pytest.fixture
+def seeded_base_custom_motion(
+    database_url: str, seeded_character: dict[str, Any]
+) -> dict[str, Any]:
+    """A custom motion under the character's Base (renameable, unlike presets)."""
+    motion_id = uuid.uuid4()
+    asyncio.run(
+        _insert_motion(
+            database_url,
+            motion_id=motion_id,
+            parent_type="base",
+            parent_id=seeded_character["base_id"],
+            motion_type="custom",
+            name="轉圈",
+            description="原地轉一圈",
+            video_key=f"bases/{seeded_character['base_id']}/motions/{motion_id}.mp4",
+        )
+    )
+    return {
+        "id": motion_id,
+        "base_id": seeded_character["base_id"],
+        "owner_id": seeded_character["owner_id"],
+    }
+
+
+@pytest.fixture
+def seeded_alias_preset_motion(database_url: str, seeded_alias: dict[str, Any]) -> dict[str, Any]:
+    """A preset motion under an Alias (for `motion.list_for_alias`)."""
+    motion_id = uuid.uuid4()
+    asyncio.run(
+        _insert_motion(
+            database_url,
+            motion_id=motion_id,
+            parent_type="alias",
+            parent_id=seeded_alias["id"],
+            motion_type="preset_nod",
+            name="點頭",
+            description=None,
+            video_key=f"aliases/{seeded_alias['id']}/motions/{motion_id}.mp4",
+        )
+    )
+    return {
+        "id": motion_id,
+        "alias_id": seeded_alias["id"],
+        "owner_id": seeded_alias["owner_id"],
+    }
+
+
+class InlineMotionArqPool:
+    """Duck-typed arq pool that runs `run_create_motion` inline on enqueue.
+
+    `motion.generate` enqueues a `create_motion` task then polls it to
+    completion. With no real arq worker in the test process, this pool runs the
+    worker synchronously when `task_service.create_task` enqueues it (same `ctx`
+    shape `tests/motions/test_create_motion_worker.py` uses), so the task is
+    already terminal by the time the tool's poll loop reads it — deterministic,
+    no sleeps. Pass a failing `video_client` to drive the i2v-failure path (e.g.
+    a Veo RAI miss → the worker catches the AgentError and marks the task
+    `failed`). The reconciler for `custom` motions falls back to the AI_STUB_MODE
+    stub via the worker's `_resolve_reconciler` (no ctx override needed).
+    """
+
+    def __init__(
+        self,
+        *,
+        factory: async_sessionmaker[AsyncSession],
+        redis: Any,
+        storage: Any,
+        video_client: Any,
+    ) -> None:
+        self._factory = factory
+        self._redis = redis
+        self._storage = storage
+        self._video_client = video_client
+        self.enqueued: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    async def enqueue_job(self, function_name: str, *args: Any, **kwargs: Any) -> FakeJob:
+        self.enqueued.append((function_name, args, kwargs))
+        if function_name == "run_create_motion":
+            from app.workers.jobs.create_motion import run_create_motion
+
+            ctx: dict[str, Any] = {
+                "db_session_factory": self._factory,
+                "redis": self._redis,
+                "storage": self._storage,
+                "video_client": self._video_client,
+            }
+            await run_create_motion(ctx, str(kwargs["task_id"]))
+        return FakeJob(job_id=str(kwargs.get("_job_id") or uuid.uuid4()))
+
+
+@pytest.fixture
+async def bind_motion_db(
+    migrate_once: None,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Point `app.mcp.tools.motion`'s session factory at the test database.
+
+    Same rationale as `bind_alias_db` — the handlers reference
+    `async_session_factory` as a module global, so patching the bound name
+    redirects their sessions without touching the lru-cached factory.
+    """
+    engine = create_async_engine(database_url, future=True)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    def _factory() -> async_sessionmaker[AsyncSession]:
+        return factory
+
+    monkeypatch.setattr("app.mcp.tools.motion.async_session_factory", _factory)
+    try:
+        yield factory
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def bind_motion_storage(monkeypatch: pytest.MonkeyPatch, character_storage: Any) -> Any:
+    """Redirect the motion tools' `get_storage()` to a test filesystem backend."""
+    monkeypatch.setattr("app.mcp.tools.motion.get_storage", lambda: character_storage)
+    return character_storage
+
+
+@pytest.fixture
+def make_motion_generate_deps(
+    monkeypatch: pytest.MonkeyPatch,
+    bind_motion_db: async_sessionmaker[AsyncSession],
+    character_storage: Any,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> Any:
+    """Return `install(video_client) -> InlineMotionArqPool`.
+
+    Binds the motion tool's storage accessor once; each test calls the returned
+    function with the video client it wants (`VeoStub` for happy paths, a
+    failing one for the RAI / i2v-failure case) and gets back the inline pool
+    whose `enqueue_job` runs the motion worker synchronously. `motion.generate`
+    reads redis only inside the worker (via the pool's ctx), so no `get_redis`
+    patch is needed on the tool module.
+    """
+    factory = bind_motion_db
+    monkeypatch.setattr("app.mcp.tools.motion.get_storage", lambda: character_storage)
+
+    def _install(video_client: Any) -> InlineMotionArqPool:
+        pool = InlineMotionArqPool(
+            factory=factory,
+            redis=fake_redis,
+            storage=character_storage,
+            video_client=video_client,
+        )
+
+        async def _arq() -> Any:
+            return pool
+
+        monkeypatch.setattr("app.mcp.tools.motion.get_arq_pool", _arq)
+        return pool
+
+    return _install
+
+
 # Re-export so test modules can `from tests.mcp.tools.conftest import ...`.
 __all__ = [
     "FakeArqPool",
     "InlineAliasArqPool",
     "InlineCheckpointArqPool",
+    "InlineMotionArqPool",
     "auth_as",
     "seed_task",
     "tool_error_code",
