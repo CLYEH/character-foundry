@@ -391,3 +391,57 @@ async def test_reference_mode_requires_images(
         bind_character_db, owner_id=seeded_user["id"], name="No-Ref-Hero"
     )
     assert status == "abandoned"
+
+
+async def test_recovery_handle_send_failure_abandons_session(
+    make_character_create_deps: Any,
+    bind_character_db: async_sessionmaker[Any],
+    seeded_user: dict[str, Any],
+) -> None:
+    """T-087 / Codex PR #115 P1: if the early `recovery_handle` progress send
+    itself raises (client disconnect mid-stream — the exact scenario T-087
+    targets), the failure must abandon the half-built (already-committed) session
+    and surface a phase-tagged structured error, NOT escape uncaught and orphan an
+    `in_progress` session. Locks in moving the emission inside the abandon-wrapped
+    block."""
+    make_character_create_deps(StubAIClient())
+
+    class _FailOnRecoveryHandleSession:
+        def __init__(self) -> None:
+            self.notifications: list[str | None] = []
+
+        async def send_progress_notification(
+            self,
+            *,
+            progress_token: Any,
+            progress: float,
+            total: float | None,
+            message: str | None,
+            related_request_id: Any,
+        ) -> None:
+            if message and "recovery_handle" in message:
+                raise RuntimeError("simulated client disconnect during progress send (test)")
+            self.notifications.append(message)
+
+    class _DisconnectCtx:
+        def __init__(self) -> None:
+            self._session = _FailOnRecoveryHandleSession()
+            self.request_context = _RecordingRequestContext(self._session)
+            self.request_id = "test-request-id"
+
+    ctx = _DisconnectCtx()
+    with auth_as(user_id=seeded_user["id"]):
+        with pytest.raises(ToolError) as excinfo:
+            await character_create(
+                name="Disconnect-Hero",
+                input_mode="template",
+                ctx=ctx,  # type: ignore[arg-type]
+            )
+    payload = _tool_error_payload(excinfo.value)
+    assert payload["phase"] == "creating_session"
+    assert payload["error"]["code"] == "INTERNAL_UNEXPECTED_ERROR"
+    # The committed-but-half-built session was abandoned, not orphaned in_progress.
+    status = await _session_status_for_character(
+        bind_character_db, owner_id=seeded_user["id"], name="Disconnect-Hero"
+    )
+    assert status == "abandoned"

@@ -720,22 +720,26 @@ async def character_create(
     except Exception as exc:  # noqa: BLE001 — infra failure → structured tool error
         raise _phase_tool_error(_PHASE_CREATING, _agent_error_from_unexpected(exc)) from exc
 
-    # Hand the agent a recovery handle as early as possible (T-087): with
-    # character_id + session_id it can re-query state if the connection drops
-    # before this blocking call returns. Re-emitted with the checkpoint task_id
-    # once enqueued (below).
-    await _report_recovery_handle(
-        ctx, progress=0.05, character_id=character_id, session_id=session_id
-    )
-
     # Phases 2-4. `current_phase` tracks where we are so that ANY failure —
     # AgentError OR an infra exception (StorageError from storage.put /
     # get_signed_url, a DB/SQLAlchemy error, etc.) — abandons the half-built
     # session AND surfaces a phase-tagged error. Catching only AgentError here
     # would leave the session stuck `in_progress` on an infra failure and return
     # an unstructured tool error (Codex PR #111 P1).
-    current_phase = _PHASE_UPLOADING
+    current_phase = _PHASE_CREATING
     try:
+        # Hand the agent a recovery handle as early as possible (T-087): with
+        # character_id + session_id it can re-query state if the connection drops
+        # before this blocking call returns. Re-emitted with the checkpoint task_id
+        # once enqueued (below). This MUST sit INSIDE the abandon-wrapped block:
+        # the session is already committed, so if the progress send itself raises
+        # (e.g. client disconnect mid-stream — exactly T-087's scenario) the failure
+        # must abandon the half-built session, not escape uncaught (Codex PR #115 P1).
+        await _report_recovery_handle(
+            ctx, progress=0.05, character_id=character_id, session_id=session_id
+        )
+
+        current_phase = _PHASE_UPLOADING
         reference_image_ids: list[uuid.UUID] = []
         if input_mode == "reference":
             await report_progress(ctx, progress=0.1, total=1.0, message=_PHASE_UPLOADING)
