@@ -33,6 +33,12 @@ from app.api.deps import (
     get_current_user_no_pin,
     get_storage,
 )
+from app.auth.scopes import (
+    SCOPE_CHARACTER_READ,
+    SCOPE_CHARACTER_WRITE,
+    require_scope,
+    require_scope_no_pin,
+)
 from app.core.errors import (
     not_found_character,
     validation_reference_image_too_large,
@@ -83,6 +89,11 @@ async def upload_alias_mask(
     user: Annotated[User, Depends(get_current_user_no_pin)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
     file: Annotated[UploadFile, File(...)],
+    # `require_scope_no_pin` (not `require_scope`) to preserve this route's
+    # no-DB-pin upload path: it auths via `get_current_user_no_pin` so a DB
+    # connection isn't held across the multipart read (mirrors T-084's
+    # reference-image upload).
+    _: None = Depends(require_scope_no_pin(SCOPE_CHARACTER_WRITE)),
 ) -> MaskUploadResponse:
     """Upload an inpaint mask PNG, return `{ mask_id, url }`.
 
@@ -189,6 +200,7 @@ async def create_alias(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     arq_pool: Annotated[ArqRedis, Depends(get_arq_pool)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> CreateAliasResponse:
     """Enqueue alias generation. Returns 202 with the reserved task +
     alias ids; the worker writes the alias row + storage on success."""
@@ -216,6 +228,7 @@ async def list_aliases(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> AliasListResponse:
     """List active aliases for a character (sorted `created_at ASC`).
 
@@ -244,6 +257,7 @@ async def get_alias(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_READ)),
 ) -> AliasResponse:
     """Team-wide detail read (parity with `GET /v1/characters/{id}`).
 
@@ -267,6 +281,7 @@ async def patch_alias(
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
     storage: Annotated[StorageBackend, Depends(get_storage)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> AliasResponse:
     """Rename. Same-character duplicate → 409, invalid chars → 400."""
     alias = await alias_service.update_alias_name(
@@ -287,6 +302,7 @@ async def delete_alias(
     alias_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(db_session)],
     user: Annotated[User, Depends(get_current_user)],
+    _: None = Depends(require_scope(SCOPE_CHARACTER_WRITE)),
 ) -> Response:
     """Soft-delete + cascade-soft-delete motions (per F-12).
 

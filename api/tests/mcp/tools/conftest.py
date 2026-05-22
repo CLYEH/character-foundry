@@ -455,7 +455,11 @@ def seeded_alias(database_url: str, seeded_character: dict[str, Any]) -> dict[st
     alias_id = asyncio.run(
         _insert_alias(database_url, character_id=seeded_character["id"], name="suit-alias")
     )
-    return {"id": alias_id, "character_id": seeded_character["id"]}
+    return {
+        "id": alias_id,
+        "character_id": seeded_character["id"],
+        "owner_id": seeded_character["owner_id"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -663,9 +667,218 @@ def make_character_create_deps(
     return _install
 
 
+# ---------------------------------------------------------------------------
+# alias.* tool fixtures (T-085)
+# ---------------------------------------------------------------------------
+
+
+async def _insert_reference_image(
+    database_url: str,
+    *,
+    reference_id: uuid.UUID,
+    session_id: uuid.UUID,
+    uploaded_by_user_id: uuid.UUID,
+    storage_key: str,
+) -> None:
+    """Seed a reference_images row tied to a creation session.
+
+    `alias.add` image/mixed modes resolve `reference_image_ids` against the
+    Base's source creation session (`alias_service._resolve_reference_keys`), so
+    the row must live under `seeded_character`'s session_id. The bytes are
+    written separately by the test into the bound storage backend at this key.
+    """
+    engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO reference_images "
+                    "(id, creation_session_id, uploaded_by_user_id, storage_key, "
+                    " mime_type, size_bytes) "
+                    "VALUES (:i, :s, :u, :k, 'image/png', 1024)"
+                ),
+                {"i": reference_id, "s": session_id, "u": uploaded_by_user_id, "k": storage_key},
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def seeded_reference_image(database_url: str, seeded_character: dict[str, Any]) -> dict[str, Any]:
+    """A reference image belonging to the character's Base source session.
+
+    Returns `{id, storage_key}`. The test writes the actual PNG to the bound
+    storage backend at `storage_key` so the alias worker can read it.
+    """
+    reference_id = uuid.uuid4()
+    storage_key = f"checkpoints/{seeded_character['session_id']}/references/{reference_id}.png"
+    asyncio.run(
+        _insert_reference_image(
+            database_url,
+            reference_id=reference_id,
+            session_id=seeded_character["session_id"],
+            uploaded_by_user_id=seeded_character["owner_id"],
+            storage_key=storage_key,
+        )
+    )
+    return {"id": reference_id, "storage_key": storage_key}
+
+
+async def _insert_mask(
+    database_url: str,
+    *,
+    mask_id: uuid.UUID,
+    character_id: uuid.UUID,
+    uploaded_by_user_id: uuid.UUID,
+    storage_key: str,
+) -> None:
+    """Seed a masks row tied to a character (for the mask_id-reuse path)."""
+    engine = create_async_engine(database_url, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO masks "
+                    "(id, character_id, uploaded_by_user_id, storage_key, mime_type, size_bytes) "
+                    "VALUES (:i, :c, :u, :k, 'image/png', 1024)"
+                ),
+                {"i": mask_id, "c": character_id, "u": uploaded_by_user_id, "k": storage_key},
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def seeded_mask(database_url: str, seeded_character: dict[str, Any]) -> dict[str, Any]:
+    """A mask belonging to the character (for `alias.add(mask_id=...)` reuse).
+
+    Returns `{id, storage_key}`. The test writes the actual PNG to the bound
+    storage backend at `storage_key` so the alias worker can read it.
+    """
+    mask_id = uuid.uuid4()
+    storage_key = f"creation-sessions/{seeded_character['id']}/masks/{mask_id}.png"
+    asyncio.run(
+        _insert_mask(
+            database_url,
+            mask_id=mask_id,
+            character_id=seeded_character["id"],
+            uploaded_by_user_id=seeded_character["owner_id"],
+            storage_key=storage_key,
+        )
+    )
+    return {"id": mask_id, "storage_key": storage_key}
+
+
+class InlineAliasArqPool:
+    """Duck-typed arq pool that runs `run_create_alias` inline on enqueue.
+
+    `alias.add` enqueues a `create_alias` task then polls it to completion. With
+    no real arq worker in the test process, this pool runs the worker
+    synchronously when `task_service.create_task` enqueues it (same `ctx` shape
+    `tests/aliases/test_create_alias_worker.py` uses), so the task is already
+    terminal by the time the tool's poll loop reads it — deterministic, no
+    sleeps. Pass a failing `ai_client` to drive the generation-failure path (the
+    worker catches the AgentError and marks the task `failed`).
+    """
+
+    def __init__(
+        self,
+        *,
+        factory: async_sessionmaker[AsyncSession],
+        redis: Any,
+        storage: Any,
+        ai_client: Any,
+    ) -> None:
+        self._factory = factory
+        self._redis = redis
+        self._storage = storage
+        self._ai_client = ai_client
+        self.enqueued: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    async def enqueue_job(self, function_name: str, *args: Any, **kwargs: Any) -> FakeJob:
+        self.enqueued.append((function_name, args, kwargs))
+        if function_name == "run_create_alias":
+            from app.workers.jobs.create_alias import run_create_alias
+
+            ctx: dict[str, Any] = {
+                "db_session_factory": self._factory,
+                "redis": self._redis,
+                "storage": self._storage,
+                "ai_client": self._ai_client,
+            }
+            await run_create_alias(ctx, str(kwargs["task_id"]))
+        return FakeJob(job_id=str(kwargs.get("_job_id") or uuid.uuid4()))
+
+
+@pytest.fixture
+async def bind_alias_db(
+    migrate_once: None,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Point `app.mcp.tools.alias`'s session factory at the test database.
+
+    Same rationale as `bind_character_db` — the handlers reference
+    `async_session_factory` as a module global, so patching the bound name
+    redirects their sessions without touching the lru-cached factory.
+    """
+    engine = create_async_engine(database_url, future=True)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    def _factory() -> async_sessionmaker[AsyncSession]:
+        return factory
+
+    monkeypatch.setattr("app.mcp.tools.alias.async_session_factory", _factory)
+    try:
+        yield factory
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def bind_alias_storage(monkeypatch: pytest.MonkeyPatch, character_storage: Any) -> Any:
+    """Redirect the alias tools' `get_storage()` to a test filesystem backend."""
+    monkeypatch.setattr("app.mcp.tools.alias.get_storage", lambda: character_storage)
+    return character_storage
+
+
+@pytest.fixture
+def make_alias_add_deps(
+    monkeypatch: pytest.MonkeyPatch,
+    bind_alias_db: async_sessionmaker[AsyncSession],
+    character_storage: Any,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> Any:
+    """Return `install(ai_client) -> InlineAliasArqPool`.
+
+    Binds the alias tool's storage accessor once; each test calls the returned
+    function with the AI client it wants (a `StubAIClient` for happy paths, a
+    failing one for the generation-failure case) and gets back the inline pool
+    whose `enqueue_job` runs the alias worker synchronously. `alias.add` reads
+    redis only inside the worker (via the pool's ctx), so no `get_redis` patch is
+    needed on the tool module.
+    """
+    factory = bind_alias_db
+    monkeypatch.setattr("app.mcp.tools.alias.get_storage", lambda: character_storage)
+
+    def _install(ai_client: Any) -> InlineAliasArqPool:
+        pool = InlineAliasArqPool(
+            factory=factory, redis=fake_redis, storage=character_storage, ai_client=ai_client
+        )
+
+        async def _arq() -> Any:
+            return pool
+
+        monkeypatch.setattr("app.mcp.tools.alias.get_arq_pool", _arq)
+        return pool
+
+    return _install
+
+
 # Re-export so test modules can `from tests.mcp.tools.conftest import ...`.
 __all__ = [
     "FakeArqPool",
+    "InlineAliasArqPool",
     "InlineCheckpointArqPool",
     "auth_as",
     "seed_task",
