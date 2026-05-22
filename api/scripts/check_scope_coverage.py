@@ -50,25 +50,15 @@ PUBLIC_PATH_PREFIXES: tuple[str, ...] = ("/v1/auth/", "/storage/")
 # Existing endpoints awaiting the require_scope rollout (see module docstring).
 # Format: (METHOD, logical-path). Remove an entry the moment its endpoint
 # starts declaring require_scope.
-KNOWN_MISSING_SCOPE: frozenset[tuple[str, str]] = frozenset(
-    {
-        # motions.py
-        ("POST", "/v1/bases/{base_id}/motions"),
-        ("POST", "/v1/aliases/{alias_id}/motions"),
-        ("GET", "/v1/bases/{base_id}/motions"),
-        ("GET", "/v1/aliases/{alias_id}/motions"),
-        ("GET", "/v1/motions/{motion_id}"),
-        ("PATCH", "/v1/motions/{motion_id}"),
-        ("DELETE", "/v1/motions/{motion_id}"),
-        # NOTE: tasks.py (GET /{id}, GET, POST /{id}/cancel, GET /{id}/stream)
-        # and prompt.py (POST /preview) migrated onto require_scope* in T-088;
-        # characters.py / checkpoints.py / creation_sessions.py / reference_images.py
-        # migrated onto require_scope in T-084; aliases.py (×6) migrated in T-085 —
-        # all removed from this baseline so a future regression (someone dropping the
-        # scope dep) fails the gate instead of being silently re-baselined. Remaining
-        # entries (motions ×7) clear with T-086.
-    }
-)
+# EMPTY as of T-086: the require_scope rollout (S3.5-1) is complete. Every
+# endpoint in app/api/routes/ now declares require_scope / require_scope_no_pin
+# (or is on the PUBLIC_PATHS whitelist). History: tasks.py + prompt.py migrated
+# in T-088; characters.py / checkpoints.py / creation_sessions.py /
+# reference_images.py in T-084; aliases.py (×6) in T-085; motions.py (×7) in
+# T-086. With the baseline empty, ANY new endpoint without a scope dep fails the
+# gate — the `if not eps` floor in `main()` is the remaining net against a
+# zero-endpoint scan.
+KNOWN_MISSING_SCOPE: frozenset[tuple[str, str]] = frozenset()
 
 
 def _is_public(
