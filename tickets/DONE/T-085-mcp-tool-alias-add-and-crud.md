@@ -1,6 +1,6 @@
 # T-085: MCP tool `alias.add`（packaged）+ alias CRUD 1:1 wraps
 
-**Status:** TODO
+**Status:** DONE
 **Sprint:** 3.5b
 **Est:** M
 **Depends on:** T-080（MCP skeleton）、T-081（registry + CI guardrail）、T-083（endpoint mapping）、T-084（character.create pattern 是本單抄的對象）、**T-088**（task endpoint `require_scope` 必須先 land 才能讓 alias.add 的 `task:read` 通過 T-081 guardrail 2 的 union check）
@@ -85,16 +85,16 @@ Wave B 第 2 張：把 alias 領域全部 MCP tool 落地。涵蓋 text / image 
 
 ## Acceptance criteria
 
-- [ ] `alias.add` packaged tool 註冊；bundles 與 T-083 §3 一致（**mask upload + alias create + `GET /v1/tasks/{task_id}` polling 三條 endpoint**；reference-images upload **不在 bundle** per T-083 §6 Q-D7。task GET 進 bundle 才能讓 `task:read` scope 通過 T-081 CI guardrail 2 的 union check）
-- [ ] 4 條 CRUD 1:1 tool 註冊
-- [ ] T-081 CI guardrail 2 對所有 tool pass（scope ⊆ union of bundle scopes）
-- [ ] 4 種 input mode 各一條 e2e test 綠（含 progress notification + inpaint 走 mask_file vs mask_id 兩條 path；image / mixed mode 用既有 `reference_image_ids`，不嘗試 brand-new upload）
-- [ ] Q-D7 constraint 守住：image / mixed mode 傳 `reference_images: list[bytes]` 被 tool 拒絕、引導 agent 改用 `reference_image_ids`
-- [ ] 失敗 path test 綠（mask upload 失敗 / generation 失敗 / mask_file+mask_id 同時傳 / reference_image_id 不屬於 Base source session）
-- [ ] Inpaint mode 經由 tool 上傳 mask file 後，assert backend 收到的 alias create body 是 `{ mask: { mask_id: <UUID> } }` 不是 raw bytes（合約一致性 lock-in）
-- [ ] Alias 領域全部 endpoint 套 `require_scope`（含 `/aliases/masks`），T-081 scope coverage check pass
-- [ ] `pytest api/tests/mcp/tools/test_alias_*.py` 全綠
-- [ ] PR description 對照 T-083 **§2 + §3** 表逐條 check（§2: 每個 endpoint 的 ✅/❌、scope、owner；§3: `alias.add` 的完整 bundle list 與 union-derived scopes；兩處 trace 對齊才算完整）
+- [x] `alias.add` packaged tool 註冊；bundles 與 T-083 §3 一致（**mask upload + alias create + `GET /v1/tasks/{task_id}` polling 三條 endpoint**；reference-images upload **不在 bundle** per T-083 §6 Q-D7。task GET 進 bundle 才能讓 `task:read` scope 通過 T-081 CI guardrail 2 的 union check）
+- [x] 4 條 CRUD 1:1 tool 註冊
+- [x] T-081 CI guardrail 2 對所有 tool pass（scope ⊆ union of bundle scopes）— `mcp-tool-scopes OK - 21 tool(s)`
+- [x] 4 種 input mode 各一條 e2e test 綠（含 progress notification + inpaint 走 mask_file vs mask_id 兩條 path；image / mixed mode 用既有 `reference_image_ids`，不嘗試 brand-new upload）
+- [x] Q-D7 constraint 守住：image / mixed mode 傳 `reference_images: list[bytes]` 被 tool 拒絕、引導 agent 改用 `reference_image_ids`（`VALIDATION_ALIAS_REFERENCE_UPLOAD_UNSUPPORTED`）
+- [x] 失敗 path test 綠（mask upload 失敗 → phase `uploading_mask` / generation 失敗 → phase `generating_alias` / mask_file+mask_id 同時傳 / reference_image_id 不屬於 Base source session → `NOT_FOUND_REFERENCE_IMAGE`）
+- [x] Inpaint mode 經由 tool 上傳 mask file 後，assert backend 收到的 alias create body 是 `{ mask: { mask_id: <UUID> } }` 不是 raw bytes（合約一致性 lock-in）
+- [x] Alias 領域全部 endpoint 套 `require_scope`（含 `/aliases/masks` 走 `require_scope_no_pin`），T-081 scope coverage check pass — `scope-coverage OK - 38 endpoints`
+- [x] `pytest api/tests/mcp/tools/test_alias_*.py` 全綠（19 passed）
+- [x] PR description 對照 T-083 **§2 + §3** 表逐條 check（§2: 每個 endpoint 的 ✅/❌、scope、owner；§3: `alias.add` 的完整 bundle list 與 union-derived scopes；兩處 trace 對齊才算完整）
 
 ---
 

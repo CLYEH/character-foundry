@@ -52,13 +52,6 @@ PUBLIC_PATH_PREFIXES: tuple[str, ...] = ("/v1/auth/", "/storage/")
 # starts declaring require_scope.
 KNOWN_MISSING_SCOPE: frozenset[tuple[str, str]] = frozenset(
     {
-        # aliases.py
-        ("POST", "/v1/characters/{character_id}/aliases/masks"),
-        ("POST", "/v1/characters/{character_id}/aliases"),
-        ("GET", "/v1/characters/{character_id}/aliases"),
-        ("GET", "/v1/aliases/{alias_id}"),
-        ("PATCH", "/v1/aliases/{alias_id}"),
-        ("DELETE", "/v1/aliases/{alias_id}"),
         # motions.py
         ("POST", "/v1/bases/{base_id}/motions"),
         ("POST", "/v1/aliases/{alias_id}/motions"),
@@ -70,10 +63,10 @@ KNOWN_MISSING_SCOPE: frozenset[tuple[str, str]] = frozenset(
         # NOTE: tasks.py (GET /{id}, GET, POST /{id}/cancel, GET /{id}/stream)
         # and prompt.py (POST /preview) migrated onto require_scope* in T-088;
         # characters.py / checkpoints.py / creation_sessions.py / reference_images.py
-        # migrated onto require_scope in T-084 — all removed from this baseline so a
-        # future regression (someone dropping the scope dep) fails the gate instead
-        # of being silently re-baselined. Remaining entries (aliases / motions) clear
-        # with T-085 / T-086.
+        # migrated onto require_scope in T-084; aliases.py (×6) migrated in T-085 —
+        # all removed from this baseline so a future regression (someone dropping the
+        # scope dep) fails the gate instead of being silently re-baselined. Remaining
+        # entries (motions ×7) clear with T-086.
     }
 )
 
