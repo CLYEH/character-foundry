@@ -38,11 +38,11 @@
 
 ## Acceptance criteria
 
-- [ ] `docker-compose.yml` 所有 secret 類 env 都用 `${VAR:?must be set}`
-- [ ] 故意拿掉一條 secret 跑 `docker compose config` 立即在 stderr 看到該 var 的 error message，exit 非零
-- [ ] 每個 service 加 `read_only: true` + `cap_drop: [ALL]`（後續可 cap_add minimum set）
-- [ ] CI e2e 全綠（含 T-049 e2e gate）
-- [ ] `.env.example` 對應 secret 都有 placeholder（已是現狀；sanity check）
+- [x] `docker-compose.yml` 所有 secret 類 env 都用 `${VAR:?must be set}` — 四個 compose 層插值的 secret（POSTGRES/REDIS/AUTHENTIK_POSTGRES password + AUTHENTIK_SECRET_KEY）全套；JWT_SECRET / STORAGE_SIGNED_URL_SECRET 走 env_file 不經插值，已文件化
+- [x] 故意拿掉一條 secret 跑 `docker compose config` 立即在 stderr 看到該 var 的 error message，exit 非零 — 四條逐一驗：`required variable X is missing a value: must be set` exit 1
+- [x] 每個 service 加 `read_only: true` + `cap_drop: [ALL]`（後續可 cap_add minimum set）— 十個 service 全套，`docker inspect` 確認套上；cap_add 用 `docker diff` empirical 稽核取最小集
+- [ ] CI e2e 全綠（含 T-049 e2e gate）— 由 PR CI 收尾。本機已驗等效：mount-less web 在 read_only 下 vite boot 成功、CI 在 read_only api 內 exec 的 alembic upgrade / seed-e2e 不寫 sealed rootfs、全 stack healthy + nginx smoke 全 200
+- [x] `.env.example` 對應 secret 都有 placeholder（已是現狀；sanity check）— confirmed；另加 guard rationale 註解
 
 ---
 
