@@ -37,11 +37,11 @@ This ticket composes a **failure signature** (test name, which is 1:1 with provi
 
 ## Acceptance criteria
 
-- [ ] `actions/github-script` step parses failing test names out of `log_snippet.txt`
-- [ ] Issue title carries provider tag derived from the failing test (`[provider-drift][gpt-image-2]`, etc.); fallback to `[unknown]` if parsing fails
-- [ ] Dedup looks up open `provider-drift` issues whose title contains the same provider tag (within 24h) — match → comment, no match → create
-- [ ] Manual `workflow_dispatch` run that intentionally fails two providers in one call (e.g., expired keys on two providers simultaneously) confirms two separate issues are filed
-- [ ] Workflow yaml passes the same `python -c "import yaml; yaml.safe_load(...)"` sanity check used in T-058
+- [x] `actions/github-script` step parses failing test names out of `log_snippet.txt`（`-rA` summary `FAILED/ERROR …::test_*` + FAILURES-section `____ test_* ____` header，後者當 60 KB 截斷把 summary 切掉時的 fallback）
+- [x] Issue title carries provider tag derived from the failing test (`[provider-drift][gpt-image-2]`, etc.); fallback to `[unknown]` if parsing fails
+- [x] Dedup looks up open `provider-drift` issues whose title contains the same provider tag — match → comment, no match → create。**窗用 72h（非 AC 寫的 24h）**：依 Scope §22「compose with the existing 72h `updated_at` lookback」，沿用 T-058 既有 72h 常數只疊上 signature 維度，不動窗大小（surgical）。
+- [ ] Manual `workflow_dispatch` run that intentionally fails two providers in one call (e.g., expired keys on two providers simultaneously) confirms two separate issues are filed — **Manual**：需 live GitHub Actions run 才能驗；解析/分流邏輯已用 node harness 本地驗（單一/雙 provider/截斷 fallback/PR 過濾/per-tag 窗）全綠
+- [x] Workflow yaml passes the same `python -c "import yaml; yaml.safe_load(...)"` sanity check used in T-058
 
 ---
 

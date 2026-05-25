@@ -156,70 +156,104 @@ jobs:
               '```',
             ].join('\n');
 
-            // Dedupe: if an open `provider-drift` issue has been touched
-            // (created or commented on) within the lookback window,
-            // comment on it instead of opening a fresh issue. Three
-            // consecutive nightly failures for the same persistent
-            // drift should be one issue + N comments, not N issues —
-            // that's the alert-fatigue goal.
+            // Failure signature (T-064): compose a per-provider signature
+            // on top of the time+state window below, so two distinct
+            // provider failures that overlap in time (e.g. OpenAI schema
+            // drift one day + a Veo outage two days later) stay as two
+            // separate issues instead of collapsing into one thread. The
+            // signature is the set of failing test names — each is 1:1 with
+            // a provider — scraped from the captured pytest output.
+            const TAG_BY_TEST = {
+              test_gpt_image_2_real_response_shape: 'gpt-image-2',
+              test_gpt_5_mini_real_response_shape: 'gpt-5-mini',
+              test_veo_3_1_real_response_shape: 'veo-3.1',
+            };
+            // Two failure-only patterns, unioned: the `-rA` short summary
+            // (`FAILED <path>::<test>` / `ERROR <path>::<test>`, printed at
+            // the very end) and the FAILURES-section header
+            // (`____ <test> ____`, printed before that test's traceback).
+            // Neither matches a PASSED test, so a passing provider never
+            // gets tagged. The header pattern is the fallback when a large
+            // drift payload repr pushes the trailing summary past the 60 KB
+            // `log_snippet` cap — the header sits ahead of the payload dump.
+            const sigPatterns = [
+              /^(?:FAILED|ERROR)\b.*?::(test_\w+)/gm,
+              /^_+ (test_\w+) _+$/gm,
+            ];
+            const tags = new Set();
+            for (const re of sigPatterns) {
+              let m;
+              while ((m = re.exec(log)) !== null) {
+                tags.add(TAG_BY_TEST[m[1]] || 'unknown');
+              }
+            }
+            // No recognisable test name — e.g. an earlier step failed
+            // before pytest produced output, or the summary was truncated
+            // out. Fall back to a single `[unknown]` signature so the
+            // failure still surfaces (degrades to the old time-based dedup).
+            if (tags.size === 0) tags.add('unknown');
+
+            // Dedupe within each signature: if an open `provider-drift`
+            // issue carrying the SAME provider tag has been touched
+            // (created or commented on) within the lookback window, comment
+            // on it instead of opening a fresh issue. N consecutive
+            // failures for the same persistent drift => one issue + N
+            // comments; N providers drifting in overlapping windows => N
+            // issues. That's the alert-fatigue goal without cross-provider
+            // collapse.
             //
             // Why `updated_at` not `created_at`, and why 72h not 24h
-            // (Codex PR #76 review round-5): GH Actions cron is best-
-            // effort with up to multi-minute jitter under platform
-            // load. With `created_at` + a hard 24h window, the second
-            // nightly fire at `T0 + 24h + jitter` falls *outside* the
-            // window and a brand-new issue gets filed — defeating the
-            // dedup intent on the very next night, especially when
-            // jitter compounds across days. `updated_at` self-extends
-            // (each comment refreshes the bucket), and a 72h fallback
-            // window covers up to 3 nightly fires with cumulative
-            // jitter slack.
-            //
-            // KNOWN LIMITATION (T-064 follow-up): dedup is still time-
-            // and-state-based only, not signature-based — two distinct
-            // failures within the window (e.g., OpenAI schema drift +
-            // Veo outage on the same week) currently collapse into one
-            // thread. Rare in practice; T-064 will compose signature
-            // dedup on top of this window so distinct provider
-            // failures stay separate. Deferred from T-058 PR #76 Codex
-            // round-3; tracked in tickets/T-064-*.md.
+            // (Codex PR #76 review round-5): GH Actions cron (when restored
+            // from manual-only) is best-effort with up to multi-minute
+            // jitter under platform load. With `created_at` + a hard 24h
+            // window, the second fire at `T0 + 24h + jitter` falls *outside*
+            // the window and a brand-new issue gets filed — defeating the
+            // dedup intent. `updated_at` self-extends (each comment refreshes
+            // the bucket), and a 72h fallback window covers up to 3 fires
+            // with cumulative jitter slack.
             const open = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               labels: 'provider-drift',
               state: 'open',
-              per_page: 10,
+              per_page: 30,
               sort: 'updated',
               direction: 'desc',
             });
             const lookbackMs = 72 * 60 * 60 * 1000;
             const cutoff = Date.now() - lookbackMs;
-            // `issues.listForRepo` returns both issues AND PRs (GitHub's
-            // data model treats PRs as a subtype of issue). Pull requests
-            // have a non-null `pull_request` field; real issues don't.
-            // Without this filter, if anyone ever applied the
-            // `provider-drift` label to a PR, the dedup would attach
-            // drift activity to that PR and skip opening the real issue
-            // — silent alerting failure (Codex review round-9 PR #76).
-            const recent = open.data.find(i =>
-              !i.pull_request && new Date(i.updated_at).getTime() >= cutoff
-            );
 
-            if (recent) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: recent.number,
-                body: [`Provider contract replay failed again on ${date}.`, ``, trailerBlock].join('\n'),
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: `[provider-drift] Provider contract replay failed (${date})`,
-                labels: ['provider-drift'],
-                body: [`Provider contract replay (T-058) failed on ${date}.`, ``, trailerBlock].join('\n'),
-              });
+            for (const tag of tags) {
+              const marker = `[provider-drift][${tag}]`;
+              // `issues.listForRepo` returns both issues AND PRs (GitHub's
+              // data model treats PRs as a subtype of issue). Pull requests
+              // have a non-null `pull_request` field; real issues don't.
+              // Without this filter, if anyone ever applied the
+              // `provider-drift` label to a PR, the dedup would attach
+              // drift activity to that PR and skip opening the real issue
+              // — silent alerting failure (Codex review round-9 PR #76).
+              const recent = open.data.find(i =>
+                !i.pull_request &&
+                i.title.includes(marker) &&
+                new Date(i.updated_at).getTime() >= cutoff
+              );
+
+              if (recent) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: recent.number,
+                  body: [`Provider contract replay failed again on ${date}.`, ``, trailerBlock].join('\n'),
+                });
+              } else {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: `${marker} Provider contract replay failed (${date})`,
+                  labels: ['provider-drift'],
+                  body: [`Provider contract replay (T-058) failed on ${date}.`, ``, trailerBlock].join('\n'),
+                });
+              }
             }
 
       - name: Upload pytest log artifact
