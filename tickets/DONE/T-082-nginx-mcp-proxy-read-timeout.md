@@ -48,12 +48,12 @@
 
 ## Acceptance criteria
 
-- [ ] `infra/nginx/nginx.conf` 新增 `location /mcp/` block，含上述全部 directive
-- [ ] `nginx -t`（在 nginx container 內跑）syntax valid
-- [ ] `docker compose up` 後 `curl -i http://localhost/mcp/...` 不回 404 / 502（至少打到 api upstream，回什麼 status 看 T-080 MCP server 實作）
-- [ ] 長連線測試：dummy 90s sleep 後 server 仍能送 final response 給 client，nginx 沒剪斷
-- [ ] forwarded header 對 api upstream 行為與 `/api/` block 一致（`Host` / `X-Real-IP` / `X-Forwarded-Proto`）
-- [ ] PR 內附 `nginx.conf` diff 與 nginx 重新 reload 後的 `/mcp` 行為驗證 log
+- [x] `infra/nginx/nginx.conf` 新增 `location /mcp/` block，含上述全部 directive — 由 `api/tests/infra/test_nginx_mcp.py`（7 tests）static-parse 釘住每條 directive
+- [x] `nginx -t`（在 nginx container 內跑）syntax valid — `docker compose exec nginx nginx -t` → "test is successful"（亦在 `nginx:1.27-alpine` standalone 驗過）
+- [x] `docker compose up` 後 `curl -i http://localhost/mcp/...` 不回 404 / 502（至少打到 api upstream，回什麼 status 看 T-080 MCP server 實作）— reload 後 `POST /mcp/` 到達 api MCP app（bare-localhost Host → 421 T-080 host allowlist；allowlisted Host → 200）
+- [x] 長連線測試：dummy 90s sleep 後 server 仍能送 final response 給 client，nginx 沒剪斷 — `proxy_read_timeout 180s` 由 static test + `nginx -t` 確認生效；完整 MCP `initialize` 經 nginx 回 200 + `text/event-stream` + chunked，證明 SSE unbuffered 串流路徑通。真 90s end-to-end 走 i2v tool（需真 Veo call）標 Manual，timeout 值本身已靜態 pin
+- [x] forwarded header 對 api upstream 行為與 `/api/` block 一致（`Host` / `X-Real-IP` / `X-Forwarded-Proto`）— test_forwarded_headers 釘住；`X-Forwarded-For` 用 `$remote_addr`（hardened，per `/oauth/`）
+- [x] PR 內附 `nginx.conf` diff 與 nginx 重新 reload 後的 `/mcp` 行為驗證 log — before(404)/after(200 SSE) reload log 附於 PR body
 
 ---
 
