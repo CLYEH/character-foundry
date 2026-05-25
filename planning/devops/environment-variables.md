@@ -13,6 +13,7 @@
 - **Backend / Worker 需要**：無前綴
 - **檔案位置：** `/srv/character-foundry/.env`（chmod 600, owner = app user）
 - **Git：** `.env` 絕不進 git；repo 只有 `.env.example`（sanitized version）
+- **Compose secret guard（T-067）：** `docker-compose.yml` 對 secret 類 env 一律用必填插值 `${VAR:?must be set}`。值未設或為空字串時，`docker compose config` / `up` 立刻以具名錯誤（`required variable VAR is missing a value: must be set`）非零退出，避免靜默注入空 secret（例如無密碼 Postgres）。新增任何在 compose 層插值的 secret 都走這個 pattern。⚠ 只有真的在 compose 檔裡 `${...}` 插值的變數能被 guard；經 `env_file: .env` 注入的 secret（如 `JWT_SECRET`、`STORAGE_SIGNED_URL_SECRET`）不經插值，compose 層擋不到，由 app 啟動時自驗。
 
 ---
 
