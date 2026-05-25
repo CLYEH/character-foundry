@@ -141,6 +141,8 @@
 >
 > **這層是 defense-in-depth，不是主要 guarantee。** 真正的存取控制是 OAuth client allowlist + dual-stack token verifier（agent-interface Round 2 Q7 sub-7b）；host 驗證只防 DNS rebinding。加 bare loopback 預設不削弱對外部 host 的防護——外部 host 既不 exact-match loopback literal、也不命中 loopback `:*` wildcard，仍被擋。
 >
+> ⚠ **「未設」要真的 unset，不能是 `MCP_ALLOWED_HOSTS=` 空字串。** backend `_parse_csv_env` 用 `os.environ.get(name, default)`：key 存在但值為空 → 回空字串（**不是** default）→ allowlist 變 `[]` → 每個 request 都 421（含 localhost）。`api` service 走 `env_file: .env`，所以 `.env` 裡留一行 `MCP_ALLOWED_HOSTS=` 就會 inject 空字串、踩這個坑。`.env.example` 因此把這兩條**註解掉**（而非留 `=` 空值）——要 loopback 預設就保持註解，要設 prod host 才取消註解。
+>
 > **cloud LB note（M3.5 ship-prep）。** 若 prod 走 GCP/AWS ALB，其 default read timeout（常見 60s）短於 i2v 工具的長任務窗口，要同步調高（對齊 nginx T-082 的 180s）。屬部署 ticket，不在 T-090 範圍。
 
 ### 2.10 Frontend（VITE_ 前綴，**會 inline 到 bundle**）
