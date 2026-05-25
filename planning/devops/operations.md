@@ -454,7 +454,11 @@ T-042（gpt-image 多圖 multipart）/ T-045（gpt-5-mini reasoning model contra
 
 ### 7.4 失敗 issue 觸發後的 triage
 
-Manual run 失敗 → `actions/github-script` 自動開 issue（label `provider-drift`），body 包含 truncated 60 KB pytest output + run URL。流程：
+Manual run 失敗 → `actions/github-script` 自動開 issue（label `provider-drift`），body 包含 truncated 60 KB pytest output + run URL。
+
+**Issue 標題帶 provider tag（T-064）：** 標題格式是 `[provider-drift][<provider>] Provider contract replay failed (<date>)`，`<provider>` 由失敗的 test name 推導（`gpt-image-2` / `gpt-5-mini` / `veo-3.1`；無法解析時 fallback `unknown`）。Dedup 以「**同 provider tag + 72h `updated_at` 窗**」為準：同一 provider 持續 drift → 一張 issue + N 則 comment；**多個 provider 在重疊時間窗各自 drift → 各開一張 issue**，不再折成同一條。triage 時看 tag 就知道是哪個 provider。
+
+流程：
 
 1. **看 issue body 內的 raw payload。** Test code 用 `ContractDriftError("<message>\n\nraw payload:\n<payload>")`——payload 全文直接黏在錯誤訊息裡。
 2. **三選一判讀：**
