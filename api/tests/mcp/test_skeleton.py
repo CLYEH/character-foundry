@@ -399,6 +399,64 @@ async def test_malformed_authorization_header_surfaces_invalid_token() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost",  # bare, default-port client (T-090 — was 421 before)
+        "127.0.0.1",
+        "[::1]",
+        "localhost:5173",  # :port form must still match
+        "127.0.0.1:8000",
+        "[::1]:9000",
+    ],
+)
+def test_default_allowlist_accepts_loopback_bare_and_port(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+) -> None:
+    """The default host allowlist admits loopback in BOTH bare and `:port` forms.
+
+    T-090: a standard MCP client hitting a default port (80) sends `Host:
+    localhost` with no port. The old default `localhost:*` only matched via
+    FastMCP's `:*` wildcard arm, which requires a port — so the bare header
+    fell through to a 421. Listing the bare literals lets the exact-match arm
+    accept them. We assert against the real SDK
+    `TransportSecurityMiddleware._validate_host` (not a reimplementation) so
+    the test tracks the actual matching logic the server runs.
+    """
+    from mcp.server.transport_security import TransportSecurityMiddleware
+
+    from app.mcp.app import _build_transport_security
+
+    # Exercise the DEFAULT, not whatever an ambient env var might inject.
+    monkeypatch.delenv("MCP_ALLOWED_HOSTS", raising=False)
+    middleware = TransportSecurityMiddleware(_build_transport_security())
+
+    assert middleware._validate_host(host) is True
+
+
+@pytest.mark.parametrize("host", ["evil.com", "evil.com:80", "attacker.localhost.evil.com"])
+def test_default_allowlist_still_rejects_external_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+) -> None:
+    """Adding bare loopback entries must not open a DNS-rebinding backdoor.
+
+    T-090 acceptance: an external host matches neither a loopback literal
+    (exact-match arm) nor a loopback `:*` wildcard, so it's still rejected.
+    `attacker.localhost.evil.com` guards the specific footgun of a substring
+    match — it contains `localhost` but is a different host and must NOT pass.
+    """
+    from mcp.server.transport_security import TransportSecurityMiddleware
+
+    from app.mcp.app import _build_transport_security
+
+    monkeypatch.delenv("MCP_ALLOWED_HOSTS", raising=False)
+    middleware = TransportSecurityMiddleware(_build_transport_security())
+
+    assert middleware._validate_host(host) is False
+
+
 def test_require_mcp_scopes_rejects_unknown_scope() -> None:
     """`require_mcp_scopes("character:write_typo")` should fail loud.
 

@@ -128,6 +128,23 @@
 >
 > backend `api` / `worker` **不直接**消費它們（backend 走 Authentik OIDC discovery + JWT verify，不接 Google API）。
 
+### 2.9a MCP transport security (T-080 / T-090)
+
+| 變數 | 必填 | 範例 | 說明 | 敏感 |
+|---|---|---|---|---|
+| `MCP_ALLOWED_HOSTS` | (✓ in prod) | `foundry.example.com,foundry.example.com:*` | Comma-separated `Host` header allowlist for the streamable-HTTP MCP server (`/mcp`)，FastMCP DNS-rebinding 保護用。未設 → 走 loopback 預設（`127.0.0.1` / `localhost` / `[::1]` 的 bare + `:*` 兩形式）。**Prod 必設 public host**，否則回 `421 Invalid Host header` | |
+| `MCP_ALLOWED_ORIGINS` |  | `https://foundry.example.com` | 同形式的 `Origin` header allowlist（scheme-qualified）。瀏覽器型 MCP client 才需要；未設 → loopback 預設 | |
+
+> **為什麼 prod 一定要設 `MCP_ALLOWED_HOSTS`。** nginx `location /mcp/`（T-082）forward 的 `Host` 是 client 真實 host（`proxy_set_header Host $host`），不是 `api` 容器內部名。FastMCP 的 host 驗證只認 allowlist 內的值，預設只含 loopback，所以任何外部 host（ngrok / 自訂 domain）都得顯式加進來。
+>
+> **bare host vs `:port` 都要列（T-090）。** FastMCP `_validate_host` 先做 exact-match，再做 `:*` wildcard——而 `:*` **要求**有 port。standard MCP client 打 default port（80/443）送的 `Host` **不帶 port**（例 `Host: foundry.example.com`），只會被 bare entry 命中；只寫 `foundry.example.com:*` 會 421。所以 public host 請**同時**列 bare 與 `:*` 兩條（見 `.env.example` 範例）。non-default port 的 client 則靠 `:*` 命中。
+>
+> **這層是 defense-in-depth，不是主要 guarantee。** 真正的存取控制是 OAuth client allowlist + dual-stack token verifier（agent-interface Round 2 Q7 sub-7b）；host 驗證只防 DNS rebinding。加 bare loopback 預設不削弱對外部 host 的防護——外部 host 既不 exact-match loopback literal、也不命中 loopback `:*` wildcard，仍被擋。
+>
+> ⚠ **「未設」要真的 unset，不能是 `MCP_ALLOWED_HOSTS=` 空字串。** backend `_parse_csv_env` 用 `os.environ.get(name, default)`：key 存在但值為空 → 回空字串（**不是** default）→ allowlist 變 `[]` → 每個 request 都 421（含 localhost）。`api` service 走 `env_file: .env`，所以 `.env` 裡留一行 `MCP_ALLOWED_HOSTS=` 就會 inject 空字串、踩這個坑。`.env.example` 因此把這兩條**註解掉**（而非留 `=` 空值）——要 loopback 預設就保持註解，要設 prod host 才取消註解。
+>
+> **cloud LB note（M3.5 ship-prep）。** 若 prod 走 GCP/AWS ALB，其 default read timeout（常見 60s）短於 i2v 工具的長任務窗口，要同步調高（對齊 nginx T-082 的 180s）。屬部署 ticket，不在 T-090 範圍。
+
 ### 2.10 Frontend（VITE_ 前綴，**會 inline 到 bundle**）
 
 | 變數 | 必填 | 範例 | 說明 |
