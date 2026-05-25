@@ -1,14 +1,18 @@
-"""Tests for the packaged `alias.add` MCP tool (T-085).
+"""Tests for the packaged `alias.add` MCP tool (T-085 / T-087).
 
-`alias.add` orchestrates the full alias-creation flow as one tool call across
-the four input modes. These tests drive the handler directly with the MCP auth
-contextvar set (`auth_as`) and an inline arq pool that runs the alias worker
-synchronously on enqueue (`make_alias_add_deps`), so the tool's poll loop sees a
-terminal task without a real worker process or any sleeps.
+`alias.add` is non-blocking (T-087): it does the synchronous parts (optional mask
+upload + alias enqueue) and returns a `{task_id, alias_id, status}` handle
+immediately, leaving the agent to poll `task.get` and then `alias.get`. These
+tests drive the handler directly with the MCP auth contextvar set (`auth_as`) and
+an inline arq pool that runs the alias worker synchronously on enqueue
+(`make_alias_add_deps`) — so by the time `alias.add` returns its handle the task
+is already terminal and the outcome is observable (via `alias.get` for the happy
+path, via the task row for the failure path) without a real worker or sleeps.
 
-Progress notifications are asserted via a recording fake `ctx` — the real
-streamable-HTTP round-trip of the shared `report_progress` helper stays covered
-by `tests/mcp/test_skeleton.py::test_progress_notification_reaches_client`.
+Synchronous failures (mask upload, enqueue validation) still raise a phase-tagged
+ToolError before the handle is produced; a worker-side generation failure does
+NOT (submission succeeded) — it surfaces on the task, exactly what a polling agent
+reads from `task.get(task_id).error`.
 """
 
 from __future__ import annotations
@@ -29,9 +33,9 @@ from app.ai.base import AIGenerationResult
 from app.ai.stub import StubAIClient
 from app.auth.scopes import SCOPE_CHARACTER_READ
 from app.core.errors import AgentError, AgentErrorException
-from app.mcp.tools.alias import alias_add
+from app.mcp.tools.alias import alias_add, alias_get
 from app.services import alias_service
-from tests.mcp.tools.conftest import auth_as
+from tests.mcp.tools.conftest import auth_as, tool_error_code
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,50 +45,12 @@ pytestmark = pytest.mark.asyncio
 # ---------------------------------------------------------------------------
 
 
-class _RecordingSession:
-    def __init__(self) -> None:
-        self.notifications: list[dict[str, Any]] = []
-
-    async def send_progress_notification(
-        self,
-        *,
-        progress_token: Any,
-        progress: float,
-        total: float | None,
-        message: str | None,
-        related_request_id: Any,
-    ) -> None:
-        self.notifications.append({"progress": progress, "total": total, "message": message})
-
-
-class _RecordingMeta:
-    progressToken = "test-progress-token"
-
-
-class _RecordingRequestContext:
-    def __init__(self, session: _RecordingSession) -> None:
-        self.session = session
-        self.meta = _RecordingMeta()
-
-
-class RecordingContext:
-    """Minimal `Context`-shaped fake that records progress notifications."""
-
-    def __init__(self) -> None:
-        self._session = _RecordingSession()
-        self.request_context = _RecordingRequestContext(self._session)
-        self.request_id = "test-request-id"
-
-    @property
-    def phases(self) -> list[str | None]:
-        return [n["message"] for n in self._session.notifications]
-
-
 class _FailingAliasAIClient(StubAIClient):
     """Stub whose edit_image2image raises — drives the generation-failure path.
 
-    The worker catches the AgentError and marks the task `failed`; the tool's
-    poll loop then surfaces it as a `generating_alias` phase error.
+    The worker catches the AgentError and marks the task `failed`. `alias.add`
+    no longer polls, so it still returns its handle; the agent observes the
+    failure via `task.get(task_id).error` (asserted here by reading the task row).
     """
 
     async def edit_image2image(
@@ -140,13 +106,20 @@ async def _count_aliases(factory: async_sessionmaker[Any], *, character_id: uuid
         ).scalar_one()
 
 
+async def _get_task(factory: async_sessionmaker[Any], task_id: uuid.UUID) -> Any:
+    from app.models.task import Task
+
+    async with factory() as db:
+        return await db.get(Task, task_id)
+
+
 def _write_base(storage: Any, seeded_character: dict[str, Any], size: tuple[int, int]) -> None:
     """Write the character's Base image to storage so the worker can read it."""
     storage.put(seeded_character["base_image_key"], _png_bytes(size), "image/png")
 
 
 # ---------------------------------------------------------------------------
-# Happy paths — one per input mode
+# Happy paths — one per input mode (submit → handle → fetch)
 # ---------------------------------------------------------------------------
 
 
@@ -157,20 +130,19 @@ async def test_text_mode_creates_alias(
 ) -> None:
     make_alias_add_deps(StubAIClient())
     _write_base(character_storage, seeded_character, (16, 16))
-    ctx = RecordingContext()
     with auth_as(user_id=seeded_character["owner_id"]):
-        resp = await alias_add(
+        handle = await alias_add(
             character_id=seeded_character["id"],
             name="Text-Alias",
             input_mode="text",
             freeform_note="加上紅色斗篷",
-            ctx=ctx,  # type: ignore[arg-type]
         )
+        assert handle.status == "queued"
+        assert handle.task_id is not None
+        # The inline worker ran on enqueue → fetch the finished alias by handle id.
+        resp = await alias_get(alias_id=handle.alias_id)
     assert resp.alias.name == "Text-Alias"
     assert resp.alias.character_id == seeded_character["id"]
-    # No mask → no uploading_mask phase; generating_alias is always emitted.
-    assert "uploading_mask" not in ctx.phases
-    assert "generating_alias" in ctx.phases
 
 
 async def test_image_mode_uses_existing_reference_ids(
@@ -182,18 +154,15 @@ async def test_image_mode_uses_existing_reference_ids(
     make_alias_add_deps(StubAIClient())
     _write_base(character_storage, seeded_character, (16, 16))
     character_storage.put(seeded_reference_image["storage_key"], _png_bytes(), "image/png")
-    ctx = RecordingContext()
     with auth_as(user_id=seeded_character["owner_id"]):
-        resp = await alias_add(
+        handle = await alias_add(
             character_id=seeded_character["id"],
             name="Image-Alias",
             input_mode="image",
             reference_image_ids=[seeded_reference_image["id"]],
-            ctx=ctx,  # type: ignore[arg-type]
         )
+        resp = await alias_get(alias_id=handle.alias_id)
     assert resp.alias.name == "Image-Alias"
-    assert "uploading_mask" not in ctx.phases
-    assert "generating_alias" in ctx.phases
 
 
 async def test_inpaint_mode_mask_file_uploads_then_binds_mask_id(
@@ -216,20 +185,15 @@ async def test_inpaint_mode_mask_file_uploads_then_binds_mask_id(
 
     monkeypatch.setattr("app.services.alias_service.enqueue_alias", _spy)
 
-    ctx = RecordingContext()
     with auth_as(user_id=seeded_character["owner_id"]):
-        resp = await alias_add(
+        handle = await alias_add(
             character_id=seeded_character["id"],
             name="Inpaint-Alias",
             input_mode="inpaint",
             mask_file=_mask_b64((16, 16)),
-            ctx=ctx,  # type: ignore[arg-type]
         )
+        resp = await alias_get(alias_id=handle.alias_id)
     assert resp.alias.name == "Inpaint-Alias"
-    # Both phases fired, in order.
-    assert "uploading_mask" in ctx.phases
-    assert "generating_alias" in ctx.phases
-    assert ctx.phases.index("uploading_mask") < ctx.phases.index("generating_alias")
     # Contract lock-in: the create body carried a MaskInput { mask_id: UUID },
     # not raw bytes (the schema makes raw bytes impossible, asserted explicitly).
     body = captured["body"]
@@ -243,23 +207,20 @@ async def test_inpaint_mode_mask_id_reuse_skips_upload(
     seeded_character: dict[str, Any],
     seeded_mask: dict[str, Any],
 ) -> None:
-    """mask_id path: agent reuses a prior mask → no uploading_mask phase."""
+    """mask_id path: agent reuses a prior mask → no inline upload, alias created."""
     make_alias_add_deps(StubAIClient())
     _write_base(character_storage, seeded_character, (16, 16))
     # The worker reads the reused mask's bytes from storage at its key.
     character_storage.put(seeded_mask["storage_key"], _mask_bytes_for_reuse((16, 16)), "image/png")
-    ctx = RecordingContext()
     with auth_as(user_id=seeded_character["owner_id"]):
-        resp = await alias_add(
+        handle = await alias_add(
             character_id=seeded_character["id"],
             name="Reuse-Mask-Alias",
             input_mode="inpaint",
             mask_id=seeded_mask["id"],
-            ctx=ctx,  # type: ignore[arg-type]
         )
+        resp = await alias_get(alias_id=handle.alias_id)
     assert resp.alias.name == "Reuse-Mask-Alias"
-    assert "uploading_mask" not in ctx.phases
-    assert "generating_alias" in ctx.phases
 
 
 async def test_mixed_mode_refs_note_and_mask(
@@ -271,20 +232,17 @@ async def test_mixed_mode_refs_note_and_mask(
     make_alias_add_deps(StubAIClient())
     _write_base(character_storage, seeded_character, (16, 16))
     character_storage.put(seeded_reference_image["storage_key"], _png_bytes(), "image/png")
-    ctx = RecordingContext()
     with auth_as(user_id=seeded_character["owner_id"]):
-        resp = await alias_add(
+        handle = await alias_add(
             character_id=seeded_character["id"],
             name="Mixed-Alias",
             input_mode="mixed",
             freeform_note="混合模式",
             reference_image_ids=[seeded_reference_image["id"]],
             mask_file=_mask_b64((16, 16)),
-            ctx=ctx,  # type: ignore[arg-type]
         )
+        resp = await alias_get(alias_id=handle.alias_id)
     assert resp.alias.name == "Mixed-Alias"
-    assert "uploading_mask" in ctx.phases
-    assert "generating_alias" in ctx.phases
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +292,7 @@ async def test_read_only_scope_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Failure paths — phase-tagged, no alias row left behind
+# Synchronous failures — phase-tagged, raised before the handle, no alias row
 # ---------------------------------------------------------------------------
 
 
@@ -359,36 +317,14 @@ async def test_mask_upload_failure_surfaces_uploading_phase(
     assert await _count_aliases(bind_alias_db, character_id=seeded_character["id"]) == 0
 
 
-async def test_generation_failure_surfaces_generating_phase(
-    make_alias_add_deps: Any,
-    bind_alias_db: async_sessionmaker[Any],
-    character_storage: Any,
-    seeded_character: dict[str, Any],
-) -> None:
-    make_alias_add_deps(_FailingAliasAIClient())
-    _write_base(character_storage, seeded_character, (16, 16))
-    with auth_as(user_id=seeded_character["owner_id"]):
-        with pytest.raises(ToolError) as excinfo:
-            await alias_add(
-                character_id=seeded_character["id"],
-                name="Doomed-Alias",
-                input_mode="text",
-                freeform_note="x",
-            )
-    payload = _tool_error_payload(excinfo.value)
-    assert payload["phase"] == "generating_alias"
-    assert payload["error"]["code"] == "MODEL_INVALID_REQUEST"
-    # The worker marked the task failed and wrote no alias row.
-    assert await _count_aliases(bind_alias_db, character_id=seeded_character["id"]) == 0
-
-
 async def test_reference_id_not_in_base_session_surfaces_not_found(
     make_alias_add_deps: Any,
     character_storage: Any,
     seeded_character: dict[str, Any],
 ) -> None:
     """image mode with a reference id NOT from the Base source session →
-    NOT_FOUND_REFERENCE_IMAGE raised at enqueue (generating_alias phase)."""
+    NOT_FOUND_REFERENCE_IMAGE raised synchronously at enqueue (generating_alias
+    phase), before any handle is produced."""
     make_alias_add_deps(StubAIClient())
     _write_base(character_storage, seeded_character, (16, 16))
     with auth_as(user_id=seeded_character["owner_id"]):
@@ -425,6 +361,46 @@ async def test_add_non_owner_denied_at_mask_upload(
     assert payload["phase"] == "uploading_mask"
     assert payload["error"]["code"] == "AUTH_INSUFFICIENT_PERMISSION"
     assert await _count_aliases(bind_alias_db, character_id=seeded_character["id"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Worker-side generation failure — observed via the task, not the submission
+# ---------------------------------------------------------------------------
+
+
+async def test_generation_failure_surfaces_on_task_not_submission(
+    make_alias_add_deps: Any,
+    bind_alias_db: async_sessionmaker[Any],
+    character_storage: Any,
+    seeded_character: dict[str, Any],
+) -> None:
+    """A worker-side generation failure does NOT fail the submission (the handle
+    still comes back); it surfaces on the task as the structured error a polling
+    agent reads from task.get, and leaves no alias row → alias.get is
+    NOT_FOUND_ALIAS."""
+    make_alias_add_deps(_FailingAliasAIClient())
+    _write_base(character_storage, seeded_character, (16, 16))
+    with auth_as(user_id=seeded_character["owner_id"]):
+        handle = await alias_add(
+            character_id=seeded_character["id"],
+            name="Doomed-Alias",
+            input_mode="text",
+            freeform_note="x",
+        )
+    # Submission succeeded — the agent has a handle to poll.
+    assert handle.status == "queued"
+
+    # The failure lives on the task (this is what task.get returns to the agent).
+    task = await _get_task(bind_alias_db, handle.task_id)
+    assert task.status == "failed"
+    assert task.error["code"] == "MODEL_INVALID_REQUEST"
+
+    # No alias row → the entity fetch is a clean not-found.
+    assert await _count_aliases(bind_alias_db, character_id=seeded_character["id"]) == 0
+    with auth_as(user_id=seeded_character["owner_id"]):
+        with pytest.raises(ToolError) as excinfo:
+            await alias_get(alias_id=handle.alias_id)
+    assert tool_error_code(excinfo.value) == "NOT_FOUND_ALIAS"
 
 
 # ---------------------------------------------------------------------------

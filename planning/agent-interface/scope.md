@@ -25,7 +25,7 @@
 ### 2.2 MCP server
 - 走 **streamable HTTP** transport（remote MCP 標配，stdio 不適合多客戶）
 - Tool schema 從 OpenAPI 推導但**不是 1:1 wrap**——某些 endpoint 合併（例如 base 建立流程：開 session + 跑 checkpoint + 選 base 三個 endpoint，packaged 成單 tool `create_character`）
-- Async task 走 MCP `progress` notification + 完成回 result（不要逼 agent polling REST）
+- Async task：**長任務（i2v / 生成）走 async-submit + poll-by-task-id**（T-087）——packaged 工具回傳 `{task_id, entity_id, status}` handle，agent 用 `task.get` 輪詢、再用對應 getter 拿成品。原本「blocking + progress notification + 完成回 result，不要逼 agent polling」的設計撐不過 MCP 連線中斷（長 i2v 30–120s 期間斷線會丟掉整次生成），故對長任務放寬成 polling：work 跑在 arq worker、狀態存 DB tasks row，斷線不取消、agent 用 handle 回來查。連線中的 client 仍可收 progress 當 optimization（`character.create` 因為要 server 端 select-base 收尾而維持 blocking，並提早發 `recovery_handle` progress 讓斷線可 resume）。落地見 T-087 與 `endpoint-mcp-mapping.md` §3。
 - Error 結構化到 MCP error response，`fix` 欄位是 agent 可機器讀的 recovery action
 
 ### 2.3 Signed URL 與 storage

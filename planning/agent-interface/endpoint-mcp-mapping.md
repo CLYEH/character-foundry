@@ -142,6 +142,8 @@ Reverse lookup: for each packaged tool, the list of REST endpoints it consumes. 
 >
 > The underlying REST endpoints themselves stay at canonical Q3 scope — `POST /v1/.../checkpoints`, `POST /v1/characters/{id}/aliases`, `POST /v1/bases|aliases/{id}/motions` are all `character:write` only. Don't propagate the tool union back onto the REST `require_scope` table; a REST client holding `character:write` without `task:read` must still be able to enqueue (they'll poll the task on their own).
 
+> **2026-05-22 (T-087): async-submit for the long-running generation tools.** `motion.generate` and `alias.add` are now **non-blocking** — they do the synchronous parts (enqueue; alias's mask upload) and return a task handle (`{task_id, motion_id|alias_id, status}`) immediately, then the **agent** polls `task.get(task_id)` and fetches the entity (`motion.get` / `alias.get`). They no longer internally poll, so `GET /v1/tasks/{task_id}` stays in their `bundles` as the endpoint the agent calls next (and to keep the `task:read` scope-union honest: a token that can submit must be able to track the task it created). `character.create` stays **blocking** (it runs select-base server-side after the checkpoint task) but emits an early `recovery_handle` progress notification (`character_id` / `session_id` / checkpoint `task_id`) so a dropped connection can resume. Rationale: the generation work runs in the arq worker independent of the MCP connection, so a disconnect must never lose it; surfacing a durable `task_id` is the disconnect-safe contract (supersedes the SSE `Last-Event-ID` approach — see `open-questions.md` Round 1 Q3). The original "don't force agents to poll" intent (`scope.md` §2.2) is relaxed for long tasks accordingly.
+
 ### `character.create`（T-084）
 
 ```python
@@ -163,7 +165,7 @@ Rationale: api-shape §9 "建立 Character (模式 A / B)" flow is exactly these
 bundles = [
     "POST /v1/characters/{character_id}/aliases/masks",  # step 1 (inpaint required / mixed optional): upload mask FIRST, get mask_id
     "POST /v1/characters/{character_id}/aliases",        # step 2: create alias; body carries { mask: { mask_id } } when applicable
-    "GET  /v1/tasks/{task_id}",                          # internal: poll the alias-generation task until done
+    "GET  /v1/tasks/{task_id}",                          # T-087: the agent polls this after submit (tool is non-blocking)
 ]
 scopes = ["character:write", "task:read"]   # union of bundle endpoint scopes per oauth-mcp-integration.md §3.4
 ```
@@ -180,12 +182,12 @@ Rationale: alias creation has 4 input modes (`text` / `image` / `inpaint` / `mix
 bundles = [
     "POST /v1/bases/{base_id}/motions",       # parent_type='base'
     "POST /v1/aliases/{alias_id}/motions",    # parent_type='alias'
-    "GET  /v1/tasks/{task_id}",               # internal: poll the i2v task until done (30–120s)
+    "GET  /v1/tasks/{task_id}",               # T-087: the agent polls this after submit (tool is non-blocking)
 ]
 scopes = ["character:write", "task:read"]   # union of bundle endpoint scopes per oauth-mcp-integration.md §3.4
 ```
 
-Rationale: polymorphic on `parent_type`. Single tool dispatches to the right endpoint, then waits on task SSE → MCP progress → returns `Motion`. Two endpoints into one tool because to the agent it's "generate motion for this character part" — `base` vs `alias` is implementation detail.
+Rationale: polymorphic on `parent_type`. Single tool dispatches to the right endpoint and returns a task handle (`{task_id, motion_id, status}`) immediately (T-087 non-blocking — i2v is 30–120s, so the agent polls `task.get` then `motion.get` rather than holding the connection open). Two endpoints into one tool because to the agent it's "generate motion for this character part" — `base` vs `alias` is implementation detail.
 
 ### `character.export`（M4-future）
 

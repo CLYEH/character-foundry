@@ -36,17 +36,14 @@ upload endpoint, so `image` / `mixed` modes consume existing
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 import json
 import logging
-import time
 import uuid
 from io import BytesIO
 from typing import Any
 
-from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.exceptions import ToolError
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,7 +55,6 @@ from app.core.errors import (
     AgentErrorException,
     auth_invalid_token,
     not_found_character,
-    not_found_task,
     validation_reference_image_too_large,
     validation_reference_image_undecodable,
     validation_reference_image_unsupported_type,
@@ -67,10 +63,10 @@ from app.core.permissions import assert_can_modify_character
 from app.core.redis_client import get_arq_pool
 from app.db.session import async_session_factory
 from app.mcp.auth import require_mcp_scopes, require_user_context, translate_agent_errors
-from app.mcp.progress import report_progress
 from app.mcp.registry import MCPTool, register
 from app.mcp.schemas.alias import (
     AliasAddInput,
+    AliasAddResult,
     AliasDeleteInput,
     AliasDeleteResult,
     AliasGetInput,
@@ -78,7 +74,7 @@ from app.mcp.schemas.alias import (
     AliasRenameInput,
 )
 from app.models.user import User
-from app.repositories import character_repo, mask_repo, motion_repo, task_repo
+from app.repositories import character_repo, mask_repo, motion_repo
 from app.schemas.alias import (
     AliasListResponse,
     AliasResponse,
@@ -105,20 +101,14 @@ _MAX_MASK_B64_CHARS = _MASK_SIZE_LIMIT_BYTES * 4 // 3 + 4
 # without decoding pixels, so we reject before forcing a full `.load()`.
 _MAX_MASK_DECODED_BYTES = 200 * 1024 * 1024
 
-# alias.add polls the generation task to completion. Interval keeps the loop
-# responsive without hammering Postgres; the timeout stays under the nginx
-# `/mcp` `proxy_read_timeout` (T-082, ≥180s) so the tool gives up cleanly
-# rather than having the connection cut from under it.
-_POLL_INTERVAL_S = 1.0
-_POLL_TIMEOUT_S = 170.0
-
-# Phase labels for the packaged `alias.add` tool — sent as the progress
-# `message` and the failure envelope's `phase`. `generating_alias` is always
-# emitted; `uploading_mask` only when a `mask_file` is supplied. Note the
-# mask *content* check (VALIDATION_MASK_EMPTY — needs the base image to compare
-# dimensions / alpha) runs in the worker, so it surfaces under `generating_alias`,
-# not `uploading_mask`; the `uploading_mask` phase only covers decode + format +
-# ownership + store.
+# Phase labels for `alias.add`'s synchronous steps — the failure envelope's
+# `phase`. `uploading_mask` covers mask decode + format + ownership + store (only
+# when a `mask_file` is supplied); `generating_alias` covers the alias enqueue +
+# its synchronous validation (`enqueue_alias` raises not-found / 403 / duplicate-
+# name there). Now that the tool returns a handle instead of polling (T-087),
+# the actual generation + any worker-side failure (incl. the VALIDATION_MASK_EMPTY
+# content check that needs the base image) are observed by the agent via
+# `task.get`, not surfaced here.
 _PHASE_UPLOADING_MASK = "uploading_mask"
 _PHASE_GENERATING = "generating_alias"
 
@@ -150,24 +140,6 @@ def _phase_tool_error(phase: str, error: AgentError) -> ToolError:
     """Packaged-tool error envelope: the standard AgentError plus a sibling
     `phase` so the agent knows which step failed (ticket §error handling)."""
     return ToolError(json.dumps({"error": error.model_dump(mode="json"), "phase": phase}))
-
-
-def _agent_error_from_task(task: Any) -> AgentError:
-    """Reconstruct the AgentError a failed generation task stored in `task.error`."""
-    err = task.error
-    if isinstance(err, dict):
-        try:
-            return AgentError(**err)
-        except (TypeError, ValueError):
-            pass
-    return AgentError(
-        code="INTERNAL_UNEXPECTED_ERROR",
-        message="系統發生未預期錯誤",
-        problem=f"Alias-generation task {task.id} failed without a structured error payload.",
-        cause="Worker recorded a non-AgentError failure.",
-        fix="Retry; if persistent, inspect the worker log.",
-        retryable=True,
-    )
 
 
 def _agent_error_from_unexpected(exc: BaseException) -> AgentError:
@@ -364,62 +336,6 @@ async def _upload_mask(
     return mask_id
 
 
-async def _wait_for_alias_task(
-    factory: Any,
-    ctx: Context[Any, Any, Any] | None,
-    *,
-    user_id: uuid.UUID,
-    task_id: uuid.UUID,
-) -> None:
-    """Poll the alias-generation task to a terminal state, emitting progress.
-
-    Returns on `completed`. Raises `AgentErrorException` on `failed` (with the
-    worker's recorded error), on `cancelled`, on a missing task row, or on
-    timeout. Each poll opens a short-lived session so it observes the worker's
-    committed writes (the worker runs in a separate process / event loop).
-    """
-    deadline = time.monotonic() + _POLL_TIMEOUT_S
-    while True:
-        async with factory() as db:
-            task = await task_repo.get_owned(db, task_id=task_id, user_id=user_id)
-        if task is None:
-            raise not_found_task()
-        prog = float(task.progress) if isinstance(task.progress, int | float) else 0.0
-        await report_progress(
-            ctx, progress=max(0.3, min(1.0, prog)), total=1.0, message=_PHASE_GENERATING
-        )
-        if task.status == "completed":
-            return
-        if task.status == "failed":
-            raise AgentErrorException(_agent_error_from_task(task))
-        if task.status == "cancelled":
-            raise AgentErrorException(
-                AgentError(
-                    code="TASK_CANCELLED",
-                    message="任務已取消",
-                    problem=f"Alias-generation task {task_id} was cancelled before completion.",
-                    cause="A concurrent task.cancel ran during alias.add.",
-                    fix="Retry alias.add.",
-                    retryable=True,
-                )
-            )
-        if time.monotonic() >= deadline:
-            raise AgentErrorException(
-                AgentError(
-                    code="MCP_TOOL_TIMEOUT",
-                    message="生成逾時",
-                    problem=(
-                        f"alias.add polled task {task_id} for "
-                        f"{int(_POLL_TIMEOUT_S)}s without completion."
-                    ),
-                    cause="The generation task is taking longer than the tool's wait budget.",
-                    fix=f"The task may still finish — poll task.get with task_id={task_id}, or retry.",
-                    retryable=True,
-                )
-            )
-        await asyncio.sleep(_POLL_INTERVAL_S)
-
-
 async def alias_add(
     character_id: uuid.UUID,
     name: NameStr,
@@ -429,21 +345,25 @@ async def alias_add(
     mask_file: str | None = None,
     mask_id: uuid.UUID | None = None,
     reference_images: list[str] | None = None,
-    ctx: Context[Any, Any, Any] | None = None,
-) -> AliasResponse:
-    """Add an alias end-to-end and return the finished alias.
+) -> AliasAddResult:
+    """Submit an alias-generation job and return a handle (non-blocking, T-087).
 
-    Bundles the optional mask upload + alias create + internal task polling into
-    one call across all four input modes (`text` / `image` / `inpaint` /
-    `mixed`). Emits a `notifications/progress` per phase (`uploading_mask` only
-    when a `mask_file` is supplied; `generating_alias` always). On any failure a
-    phase-tagged AgentError is raised; no alias row is written until the worker
-    succeeds, so there is no half-built state to clean up.
+    Does the synchronous parts inline — optional mask upload + alias enqueue
+    across all four input modes (`text` / `image` / `inpaint` / `mixed`) — then
+    returns `{task_id, alias_id, status}` immediately. The agent polls
+    `task.get(task_id)` until terminal (a generation failure, incl. the
+    worker-side VALIDATION_MASK_EMPTY content check, surfaces there as
+    `status="failed"` with a structured `error`) and fetches the finished alias
+    via `alias.get(alias_id)` on `completed`. The generation work runs in the arq
+    worker, independent of this MCP connection, so a dropped connection never
+    loses it; the agent re-queries with the ids it already holds.
 
     `image` / `mixed` modes consume existing `reference_image_ids` from the
     character's Base source creation session — Phase 1 has no character-scoped
     reference upload endpoint (Q-D7), so inline `reference_images` bytes are
-    rejected with guidance.
+    rejected with guidance. `mask_file` (upload new) and `mask_id` (reuse) are
+    mutually exclusive. Mask-upload failures are phase-tagged `uploading_mask`;
+    synchronous enqueue-validation failures `generating_alias`.
     """
     auth = require_mcp_scopes(SCOPE_CHARACTER_WRITE, SCOPE_TASK_READ)
     user_id = require_user_context(auth)
@@ -478,16 +398,14 @@ async def alias_add(
             )
         )
 
-    storage = get_storage()
     factory = async_session_factory()
 
     # ----- Phase 1 (optional): upload the mask, resolve to a mask_id.
     resolved_mask_id: uuid.UUID | None = mask_id
     if mask_file is not None:
-        await report_progress(ctx, progress=0.1, total=1.0, message=_PHASE_UPLOADING_MASK)
         try:
             resolved_mask_id = await _upload_mask(
-                storage,
+                get_storage(),
                 factory,
                 user_id=user_id,
                 character_id=character_id,
@@ -500,11 +418,11 @@ async def alias_add(
                 _PHASE_UPLOADING_MASK, _agent_error_from_unexpected(exc)
             ) from exc
 
-    # ----- Phase 2: create the alias + poll the generation task to completion.
-    # `enqueue_alias` raises synchronous AgentErrors (validation / not-found /
-    # duplicate-name) that also belong to this phase; any AgentError OR infra
-    # exception here is phase-tagged `generating_alias`.
-    await report_progress(ctx, progress=0.3, total=1.0, message=_PHASE_GENERATING)
+    # ----- Phase 2: enqueue the alias-generation task. `enqueue_alias` raises
+    # synchronous AgentErrors (validation / not-found / duplicate-name) that
+    # belong to this phase; any AgentError OR infra exception here is
+    # phase-tagged `generating_alias`. The generation itself runs in the worker
+    # and is observed by the agent via task.get.
     try:
         body = CreateAliasRequest(
             name=name,
@@ -519,18 +437,12 @@ async def alias_add(
             enqueued = await alias_service.enqueue_alias(
                 db, arq_pool, user=user, character_id=character_id, body=body
             )
-        await _wait_for_alias_task(factory, ctx, user_id=user_id, task_id=enqueued.task_id)
-        async with factory() as db:
-            user = await _load_user(db, user_id)
-            detail = await alias_service.get_alias_detail(db, user=user, alias_id=enqueued.alias_id)
-            alias_dto = build_alias_dto(detail.alias, storage, motion_count=detail.motion_count)
     except AgentErrorException as exc:
         raise _phase_tool_error(_PHASE_GENERATING, exc.error) from exc
     except Exception as exc:  # noqa: BLE001 — infra failure → structured tool error
         raise _phase_tool_error(_PHASE_GENERATING, _agent_error_from_unexpected(exc)) from exc
 
-    await report_progress(ctx, progress=1.0, total=1.0, message="done")
-    return AliasResponse(alias=alias_dto)
+    return AliasAddResult(task_id=enqueued.task_id, alias_id=enqueued.alias_id)
 
 
 # ---------------------------------------------------------------------------
@@ -541,12 +453,17 @@ ALIAS_ADD = register(
     MCPTool(
         name="alias.add",
         description=(
-            "Add an alias to a character end-to-end across all input modes "
-            "(text / image / inpaint / mixed): optionally upload an inpaint mask, "
-            "create the alias, run generation, and return the finished alias. Blocks "
-            "until done, emitting progress per phase. image/mixed modes use existing "
-            "reference_image_ids from the Base's creation session (no inline upload)."
+            "Submit an alias-generation job for a character across all input modes "
+            "(text / image / inpaint / mixed) and return a handle immediately "
+            "(non-blocking): optionally upload an inpaint mask, then enqueue. Returns "
+            "{task_id, alias_id}: poll task.get(task_id) until completed (a generation "
+            "failure surfaces there as failed + structured error), then alias.get(alias_id). "
+            "image/mixed modes use existing reference_image_ids from the Base's creation "
+            "session (no inline upload). The job survives connection drops — re-query with task_id."
         ),
+        # task:read stays required (and GET /v1/tasks stays bundled): the tool's
+        # workflow is submit-then-poll, so a token that can submit must also be
+        # able to track the task it created — fail fast at submit otherwise.
         scopes=[SCOPE_CHARACTER_WRITE, SCOPE_TASK_READ],
         bundles=[
             "POST /v1/characters/{character_id}/aliases/masks",
@@ -554,7 +471,7 @@ ALIAS_ADD = register(
             "GET /v1/tasks/{task_id}",
         ],
         input_schema=AliasAddInput,
-        output_schema=AliasResponse,
+        output_schema=AliasAddResult,
         handler=alias_add,
     )
 )

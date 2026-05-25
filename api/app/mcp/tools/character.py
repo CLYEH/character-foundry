@@ -633,6 +633,43 @@ async def _abandon_session_quietly(
         )
 
 
+async def _report_recovery_handle(
+    ctx: Context[Any, Any, Any] | None,
+    *,
+    progress: float,
+    character_id: uuid.UUID,
+    session_id: uuid.UUID,
+    task_id: uuid.UUID | None = None,
+) -> None:
+    """Emit the character.create recovery handle as a progress notification (T-087).
+
+    Unlike the non-blocking `motion.generate` / `alias.add` (which return a task
+    handle up front), `character.create` must stay blocking — it runs select-base
+    server-side after the checkpoint task completes, so it can't return early.
+    Instead it pushes the ids needed to recover from a dropped connection through
+    the progress channel: an agent subscribed to progress holds `character_id` (+
+    `session_id`, + the checkpoint `task_id` once enqueued) and can re-query via
+    `character.get` / `character.get_session` / `task.get` if the connection drops
+    mid-generation (the checkpoint work runs in the arq worker, independent of
+    this connection). The handle rides the progress `message` as JSON keyed
+    `recovery_handle` so it's machine-parseable without a separate notification
+    channel; the regular phase-label progress notifications are emitted alongside,
+    unchanged.
+    """
+    handle: dict[str, str] = {
+        "character_id": str(character_id),
+        "session_id": str(session_id),
+    }
+    if task_id is not None:
+        handle["task_id"] = str(task_id)
+    await report_progress(
+        ctx,
+        progress=progress,
+        total=1.0,
+        message=json.dumps({"recovery_handle": handle}),
+    )
+
+
 async def character_create(
     name: NameStr,
     input_mode: InputMode,
@@ -676,6 +713,7 @@ async def character_create(
             created = await character_service.create_character(
                 db, redis, user=user, name=name, input_mode=input_mode
             )
+            character_id = created.character.id
             session_id = created.creation_session.id
     except AgentErrorException as exc:
         raise _phase_tool_error(_PHASE_CREATING, exc.error) from exc
@@ -688,8 +726,20 @@ async def character_create(
     # session AND surfaces a phase-tagged error. Catching only AgentError here
     # would leave the session stuck `in_progress` on an infra failure and return
     # an unstructured tool error (Codex PR #111 P1).
-    current_phase = _PHASE_UPLOADING
+    current_phase = _PHASE_CREATING
     try:
+        # Hand the agent a recovery handle as early as possible (T-087): with
+        # character_id + session_id it can re-query state if the connection drops
+        # before this blocking call returns. Re-emitted with the checkpoint task_id
+        # once enqueued (below). This MUST sit INSIDE the abandon-wrapped block:
+        # the session is already committed, so if the progress send itself raises
+        # (e.g. client disconnect mid-stream — exactly T-087's scenario) the failure
+        # must abandon the half-built session, not escape uncaught (Codex PR #115 P1).
+        await _report_recovery_handle(
+            ctx, progress=0.05, character_id=character_id, session_id=session_id
+        )
+
+        current_phase = _PHASE_UPLOADING
         reference_image_ids: list[uuid.UUID] = []
         if input_mode == "reference":
             await report_progress(ctx, progress=0.1, total=1.0, message=_PHASE_UPLOADING)
@@ -720,6 +770,16 @@ async def character_create(
                     aspect_ratio=aspect_ratio,
                 )
             checkpoint_id = enqueued.checkpoint_id
+            # Re-emit the recovery handle now that the checkpoint task exists, so
+            # a disconnect during the (longest) generation phase leaves the agent
+            # with the task_id to poll via task.get.
+            await _report_recovery_handle(
+                ctx,
+                progress=0.15,
+                character_id=character_id,
+                session_id=session_id,
+                task_id=enqueued.task_id,
+            )
             await _wait_for_checkpoint_task(factory, ctx, user_id=user_id, task_id=enqueued.task_id)
 
         # checkpoint_count >= 1 (schema-bounded), so the loop ran ≥ once.
@@ -757,8 +817,12 @@ CHARACTER_CREATE = register(
         description=(
             "Create a character end-to-end: bootstrap the creation session, "
             "optionally upload reference images, run checkpoint generation, and "
-            "lock the result as the immutable Base. Blocks until done, emitting "
-            "progress per phase. Returns the character detail + its Base."
+            "lock the result as the immutable Base. Blocks until done (it runs "
+            "select-base server-side), emitting progress per phase. Returns the "
+            "character detail + its Base. If you subscribe to progress, an early "
+            "notification carries a recovery_handle {character_id, session_id, "
+            "task_id} so a dropped connection can resume via character.get / "
+            "character.get_session / task.get without losing the generation."
         ),
         scopes=[SCOPE_CHARACTER_WRITE, SCOPE_TASK_READ],
         bundles=[

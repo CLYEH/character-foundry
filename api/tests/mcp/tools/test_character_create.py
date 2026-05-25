@@ -1,10 +1,14 @@
-"""Tests for the packaged `character.create` MCP tool (T-084).
+"""Tests for the packaged `character.create` MCP tool (T-084 / T-087).
 
 `character.create` orchestrates the full Base-creation flow as one tool call.
-These tests drive the handler directly with the MCP auth contextvar set
-(`auth_as`) and an inline arq pool that runs the checkpoint worker
-synchronously on enqueue (`make_character_create_deps`), so the tool's poll
-loop sees a terminal task without a real worker process or any sleeps.
+Unlike the non-blocking `motion.generate` / `alias.add` it stays blocking (it
+runs select-base server-side after the checkpoint task), but per T-087 it emits
+an early `recovery_handle` progress notification (character_id + session_id, then
++ the checkpoint task_id) so a dropped connection can resume via character.get /
+task.get. These tests drive the handler directly with the MCP auth contextvar set
+(`auth_as`) and an inline arq pool that runs the checkpoint worker synchronously
+on enqueue (`make_character_create_deps`), so the tool's poll loop sees a terminal
+task without a real worker process or any sleeps.
 
 Progress notifications are asserted via a recording fake `ctx` — the real
 streamable-HTTP round-trip of the shared `report_progress` helper stays
@@ -122,6 +126,25 @@ def _tool_error_payload(exc: ToolError) -> dict[str, Any]:
     return json.loads(text[brace:])  # type: ignore[no-any-return]
 
 
+def _recovery_handles(ctx: RecordingContext) -> list[dict[str, str]]:
+    """Extract the T-087 recovery handles from the recorded progress messages.
+
+    The recovery handle rides a progress notification whose `message` is JSON
+    keyed `recovery_handle`; the plain phase-label notifications are ignored.
+    """
+    out: list[dict[str, str]] = []
+    for msg in ctx.phases:
+        if not msg:
+            continue
+        try:
+            parsed = json.loads(msg)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict) and "recovery_handle" in parsed:
+            out.append(parsed["recovery_handle"])
+    return out
+
+
 async def _session_status_for_character(
     factory: async_sessionmaker[Any], *, owner_id: Any, name: str
 ) -> str | None:
@@ -193,6 +216,32 @@ async def test_reference_mode_uploads_then_creates(
     assert "uploading_references" in ctx.phases
     assert "running_checkpoint" in ctx.phases
     assert "selecting_base" in ctx.phases
+
+
+async def test_emits_early_recovery_handle(
+    make_character_create_deps: Any,
+    seeded_user: dict[str, Any],
+) -> None:
+    """T-087: character.create stays blocking but pushes a recovery handle through
+    progress early — character_id + session_id right after the session is created,
+    then the checkpoint task_id once enqueued — so a dropped connection can resume
+    via character.get / character.get_session / task.get."""
+    make_character_create_deps(StubAIClient())
+    ctx = RecordingContext()
+    with auth_as(user_id=seeded_user["id"]):
+        result = await character_create(
+            name="Recoverable-Hero",
+            input_mode="template",
+            ctx=ctx,  # type: ignore[arg-type]
+        )
+    handles = _recovery_handles(ctx)
+    assert handles, "expected at least one recovery_handle progress notification"
+    # The first handle (after session creation) carries character_id + session_id.
+    first = handles[0]
+    assert first["character_id"] == str(result.character.id)
+    assert "session_id" in first
+    # A later handle (after checkpoint enqueue) adds the task_id to poll.
+    assert any("task_id" in h for h in handles)
 
 
 # ---------------------------------------------------------------------------
@@ -340,5 +389,59 @@ async def test_reference_mode_requires_images(
     assert payload["error"]["code"] == "VALIDATION_REFERENCE_IMAGE_REQUIRED"
     status = await _session_status_for_character(
         bind_character_db, owner_id=seeded_user["id"], name="No-Ref-Hero"
+    )
+    assert status == "abandoned"
+
+
+async def test_recovery_handle_send_failure_abandons_session(
+    make_character_create_deps: Any,
+    bind_character_db: async_sessionmaker[Any],
+    seeded_user: dict[str, Any],
+) -> None:
+    """T-087 / Codex PR #115 P1: if the early `recovery_handle` progress send
+    itself raises (client disconnect mid-stream — the exact scenario T-087
+    targets), the failure must abandon the half-built (already-committed) session
+    and surface a phase-tagged structured error, NOT escape uncaught and orphan an
+    `in_progress` session. Locks in moving the emission inside the abandon-wrapped
+    block."""
+    make_character_create_deps(StubAIClient())
+
+    class _FailOnRecoveryHandleSession:
+        def __init__(self) -> None:
+            self.notifications: list[str | None] = []
+
+        async def send_progress_notification(
+            self,
+            *,
+            progress_token: Any,
+            progress: float,
+            total: float | None,
+            message: str | None,
+            related_request_id: Any,
+        ) -> None:
+            if message and "recovery_handle" in message:
+                raise RuntimeError("simulated client disconnect during progress send (test)")
+            self.notifications.append(message)
+
+    class _DisconnectCtx:
+        def __init__(self) -> None:
+            self._session = _FailOnRecoveryHandleSession()
+            self.request_context = _RecordingRequestContext(self._session)
+            self.request_id = "test-request-id"
+
+    ctx = _DisconnectCtx()
+    with auth_as(user_id=seeded_user["id"]):
+        with pytest.raises(ToolError) as excinfo:
+            await character_create(
+                name="Disconnect-Hero",
+                input_mode="template",
+                ctx=ctx,  # type: ignore[arg-type]
+            )
+    payload = _tool_error_payload(excinfo.value)
+    assert payload["phase"] == "creating_session"
+    assert payload["error"]["code"] == "INTERNAL_UNEXPECTED_ERROR"
+    # The committed-but-half-built session was abandoned, not orphaned in_progress.
+    status = await _session_status_for_character(
+        bind_character_db, owner_id=seeded_user["id"], name="Disconnect-Hero"
     )
     assert status == "abandoned"

@@ -117,14 +117,14 @@ agent 怎麼知道 i2v / image gen 進度？
 |---|---|---|
 | **Q1** | **Streamable HTTP** | OAuth Bearer header 直接接，SSE 內建。耦合 auth Q8 |
 | **Q2** | **混合：核心流程 packaging + CRUD 1:1** | packaged tool: `character.create` / `character.add_alias` / `motion.generate` / `character.export`；CRUD（list / get / rename / delete）保 1:1 |
-| **Q3** | **Option A — tool 阻塞 + MCP `notifications/progress`** | 走 MCP first-class primitive，agent 不必感知 task system。實作 gotcha 見下方 |
+| **Q3** | **Option A — tool 阻塞 + MCP `notifications/progress`**（⚠ 長任務於 T-087 改為 async-submit + poll，見下方 gotcha #3）| 走 MCP first-class primitive，agent 不必感知 task system。實作 gotcha 見下方 |
 | **Q4** | **Dotted namespace**（例：`character.create`） | 可組成階層；避免 snake_case 平展長期擠名 |
 
 ### Q3 實作 gotcha（Sprint 3.5b 開單時必處理）
 
 1. **Python SDK 版本 pin**：`mcp` 套件須 ≥ 包含 PR #2038 的 release（2026-02-18 merge，修 `ctx.report_progress()` 在 streamable HTTP 下 `related_request_id` 漏帶導致 notification 走錯 stream）。Smoke test 必須**真的**斷言 notification 跨 streamable HTTP 有送達，不只靠 SDK 自家 unit test。
 2. **nginx `proxy_read_timeout` ≥ 180s** for `/mcp` 路徑。i2v 跑 30–120s，nginx 預設 60s 會在 SSE stream 中段剪斷。step 4 devops 必須處理（比照既有 `/v1/tasks/{id}/stream` 配置）。
-3. **`Last-Event-ID` resumability** 是必要不是 nice-to-have。i2v 任務貴，spec 又明確說斷線**不能**當 cancel；server 對每個 SSE event 賦 monotonic id，client 重連帶 `Last-Event-ID` header 拿斷點之後的訊息。獨立開一張 Sprint 3.5b ticket。
+3. **~~`Last-Event-ID` resumability~~ → 改為 async-submit + poll-by-task-id（T-087，2026-05-22 重新定義）。** 原結論：server 對每個 SSE event 賦 monotonic id、client 重連帶 `Last-Event-ID` 補播。**捨棄原因**：MCP Python SDK 的 `Last-Event-ID` resumability 只在 stateful 模式可用（`event_store` 在 stateless 被寫死成 None），而本專案 MCP server 是 T-080 刻意選的 stateless；切 stateful 會改 client 合約且超出 scope。**新做法**：`motion.generate` / `alias.add` 改 **非阻塞**——回傳 `{task_id, entity_id, status}` handle，agent 用 `task.get` 輪詢、再用 getter 拿成品；`character.create` 維持 blocking 但提早發 `recovery_handle` progress。斷線不當 cancel 的 invariant 仍成立（work 跑在 arq worker、狀態存 DB tasks row，與連線解耦），且更穩——tool 根本不長 hold 連線。落地見 T-087；Q3 決策列的「tool 阻塞」對長任務不再適用（只 `character.create` 還阻塞）。
 
 ### Round 2（2026-05-07，agent-interface agent 視角，user confirmed）
 

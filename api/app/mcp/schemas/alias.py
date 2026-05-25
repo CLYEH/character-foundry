@@ -1,12 +1,14 @@
 """Input/output schemas for the `alias.*` MCP tools (T-085).
 
-Outputs reuse the existing `app.schemas.alias` envelopes (`AliasResponse`,
-`AliasListResponse`) so the MCP wire shape can't drift from the REST endpoints
-these tools wrap — see `app/mcp/tools/alias.py`. This module holds the
-MCP-specific INPUT schemas plus the one output shape that has no REST envelope
-(the 204 delete).
+The CRUD wraps' outputs reuse the existing `app.schemas.alias` envelopes
+(`AliasResponse`, `AliasListResponse`) so the MCP wire shape can't drift from the
+REST endpoints they wrap — see `app/mcp/tools/alias.py`. This module holds the
+MCP-specific INPUT schemas plus the two output shapes with no REST envelope: the
+async-submit handle (`AliasAddResult`, T-087) and the 204 delete ack
+(`AliasDeleteResult`).
 
-`alias.add` packages the optional mask upload + alias create + task polling.
+`alias.add` packages the optional mask upload + alias enqueue, then returns an
+async handle (non-blocking — T-087).
 Per `endpoint-mcp-mapping.md` §6 Q-D7, Phase 1 has NO character-scoped
 reference-image upload endpoint, so `image` / `mixed` modes consume existing
 `reference_image_ids` from the Base's source creation session — the tool
@@ -29,8 +31,8 @@ from app.schemas.prompt import AliasInputMode
 class AliasAddInput(BaseModel):
     """Input for the packaged `alias.add` tool.
 
-    Drives the whole alias-creation flow (optional mask upload → create alias
-    → poll generation task) as one call across all four input modes.
+    Does the (synchronous) mask handling + alias enqueue across all four input
+    modes, then returns an async handle immediately (non-blocking — T-087).
     """
 
     character_id: uuid.UUID = Field(..., description="The character to add the alias to.")
@@ -77,6 +79,30 @@ class AliasAddInput(BaseModel):
             "(Field kept so the rejection is explicit rather than silently ignored.)"
         ),
     )
+
+
+class AliasAddResult(BaseModel):
+    """`alias.add` output — the async-submit handle (T-087).
+
+    `alias.add` performs the synchronous mask upload (if any) + alias enqueue and
+    returns immediately; it does NOT block until generation finishes.
+    Recommended agent flow:
+
+      1. `alias.add(...)` → this handle.
+      2. Poll `task.get(task_id)` until `status` is terminal (a generation
+         failure surfaces as `status="failed"` with the structured `error`).
+      3. On `completed`, `alias.get(alias_id)` for the finished alias.
+
+    Disconnect-safe: the generation work runs in the arq worker, independent of
+    the MCP connection. If the connection drops, the alias is still produced; the
+    agent re-queries with the `task_id` / `alias_id` it already holds.
+    """
+
+    task_id: uuid.UUID = Field(..., description="Async task id — poll via task.get until terminal.")
+    alias_id: uuid.UUID = Field(
+        ..., description="The alias id to fetch via alias.get once the task completes."
+    )
+    status: str = Field(default="queued", description="Always `queued` on submit.")
 
 
 # ---------------------------------------------------------------------------
