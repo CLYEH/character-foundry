@@ -51,7 +51,14 @@ from app.services import degraded_services
 
 _logger = logging.getLogger(__name__)
 
-_DEFAULT_ALLOWED_HOSTS: Final[str] = "127.0.0.1:*,localhost:*,[::1]:*"
+# Both bare and `:port` loopback forms are listed (T-090). FastMCP's
+# `_validate_host` matches a Host header by exact string first, then by the
+# `:*` wildcard which REQUIRES a port — so `localhost:*` alone does NOT match
+# the bare `Host: localhost` a standard client sends to a default port (80),
+# yielding a 421. The bare entries close that gap via the exact-match arm
+# without weakening DNS-rebinding protection: an external host still matches
+# neither a loopback literal nor a loopback `:*` wildcard.
+_DEFAULT_ALLOWED_HOSTS: Final[str] = "127.0.0.1,127.0.0.1:*,localhost,localhost:*,[::1],[::1]:*"
 _DEFAULT_ALLOWED_ORIGINS: Final[str] = "http://127.0.0.1:*,http://localhost:*,http://[::1]:*"
 
 
