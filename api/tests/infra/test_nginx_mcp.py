@@ -90,3 +90,28 @@ def test_forwarded_headers(mcp_block: str) -> None:
     # Hardened: replace (not append) so a client can't spoof X-Forwarded-For.
     assert re.search(r"proxy_set_header\s+X-Forwarded-For\s+\$remote_addr;", mcp_block)
     assert "$proxy_add_x_forwarded_for" not in mcp_block
+
+
+@pytest.fixture(scope="module")
+def bare_mcp_block() -> str:
+    return _extract_location_block(NGINX_CONF.read_text(encoding="utf-8"), "= /mcp")
+
+
+def test_bare_mcp_exact_match_avoids_redirect(bare_mcp_block: str) -> None:
+    # An exact `location = /mcp` must exist so the prefix `/mcp/` block's
+    # built-in nginx 301 (`/mcp` → `/mcp/`) doesn't fire. MCP/JSON-RPC
+    # clients don't reliably follow POST redirects; the bare path must
+    # reach the app so MCPPathNormalizationMiddleware normalizes it
+    # in-process (Codex PR #116 P1).
+    assert bare_mcp_block.strip()
+    assert "proxy_pass http://api_upstream;" in bare_mcp_block
+    assert "proxy_pass http://api_upstream/;" not in bare_mcp_block
+
+
+def test_bare_mcp_mirrors_streaming_directives(bare_mcp_block: str) -> None:
+    # The bare-path proxy carries the same long-poll / streaming posture as
+    # `/mcp/` — a client that POSTs to `/mcp` gets the same i2v-safe timeout.
+    m = re.search(r"proxy_read_timeout\s+(\S+);", bare_mcp_block)
+    assert m and _duration_to_seconds(m.group(1)) >= 180
+    assert re.search(r"proxy_buffering\s+off;", bare_mcp_block)
+    assert "proxy_http_version 1.1;" in bare_mcp_block
