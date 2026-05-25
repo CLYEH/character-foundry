@@ -163,6 +163,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | T-077 | operator group provisioning 缺口（wall 5）— `Character Foundry SPA` application policy-bind `cf-agent-default` group，但 `authentik-stack.md` §5.7 的 operator-provisioning runbook 沒把 operator 加進去 → 新 operator 過了 Authentik 登入卻被 authorize endpoint "Permission denied"。dev 已手動補；runbook / CLI 缺口待修。T-076 CDP 驗證 reveal | DONE |
 | T-078 | logout 後無法 re-login（wall 6）— SPA logout 只 revoke OAuth token、不結束 Authentik session → re-login 時 `default-source-authentication` 的 `require_unauthenticated` 判 "Flow does not apply" → 拒。T-073 早預告、T-076 後使用者實測確認。真功能 bug（連已 provision 的 operator 都中），優先級高於 T-077。| DONE |
 | T-079 | Authentik built-in flow next 同 open-redirect — 把 T-074 落地的 `cf-google-init-next-validation` policy 延伸 binding 到 `default-authentication-flow` / `default-source-authentication` / `default-source-enrollment`，closing T-074「Not in scope」段註明的同一個 open-redirect class 在內建 flow 上的曝面。T-074 security review defer。 | TODO |
+| T-090 | MCP host allowlist accepts bare hosts + 文件化 `MCP_ALLOWED_HOSTS` 部署設定 — bare `Host: localhost`（default port client 不送 port）打 `/mcp/` 被 `_DEFAULT_ALLOWED_HOSTS` 的 port-required pattern（`localhost:*`）擋回 421。Codex #116 P1 原建議 nginx 改 `$http_host` 經驗證無效（client 對 default port 本就不送 port，`$http_host`==`$host`）；真修點在 app allowlist default（T-080 範疇，T-082 scope 外）。不影響使用者現行 ngrok 部署（`.env` 已加 bare host）。T-082 Codex review reveal | TODO |
 
 #### Sprint 3.5b — MCP server + 核心 packaged tool（已開單 2026-05-18，未動工）
 
