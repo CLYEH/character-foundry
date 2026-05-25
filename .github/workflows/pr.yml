@@ -137,6 +137,13 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # T-065: the baseline-resync guard diffs HEAD against the PR base
+          # branch via `git merge-base origin/<base> HEAD`. The default
+          # depth-1 checkout doesn't fetch the base ref, so that resolution
+          # would `fatal: bad revision` and red every PR. Full history makes
+          # origin/<base> resolvable.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -147,6 +154,14 @@ jobs:
       - name: Install api (dev extras)
         working-directory: api
         run: pip install -e ".[dev]"
+
+      # T-065: a `[tool.mutmut]` config change (or a `mutmut` pin bump) must
+      # come with a re-baselined `.harness/mutation-baseline.json`, else the
+      # next nightly opens a false `mutation-drift` issue. Runs from the repo
+      # root (NOT `working-directory: api`) because it diffs the whole tree
+      # against the base ref; the script resolves paths from its own location.
+      - name: Mutation baseline re-sync guard
+        run: python api/scripts/check_baseline_resync.py --base-ref origin/${{ github.event.pull_request.base.ref }}
 
       - name: Ruff lint
         working-directory: api
