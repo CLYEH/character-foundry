@@ -84,18 +84,38 @@
 #   (`default-source-enrollment-if-username`) so we deliberately skip it to
 #   avoid the same engine-mode question on the stage binding.
 #
-# Why we reuse the existing `cf-google-init-next-validation` policy object
-# (defined in cf-google-init.yaml) rather than redefining it:
-#   The policy expression is non-trivial (urlparse + protocol-relative
-#   reject + session sanitize + ak_message). Maintaining two copies invites
-#   drift. The blueprint importer looks the policy up by name (`!Find`); as
-#   long as cf-google-init.yaml is mounted in the same Authentik instance
-#   (which is the case in dev/e2e via the same mount configurations as this
-#   file — see deployment notes below), this `!Find` resolves cleanly. The
-#   policy NAME is now somewhat stale (it now applies to 4 flows besides
-#   cf-google-init), but renaming would require updating cf-google-init.yaml
-#   too — increases blast radius. Documented in planning/devops/authentik-stack.md
-#   §5.2.1b instead.
+# Why this file DEFINES `cf-google-init-next-validation` (instead of
+# `!Find`-ing it from cf-google-init.yaml — Codex P1 PR #121):
+#   Authentik's blueprint discovery (`authentik/blueprints/v1/tasks.py
+#   ::blueprints_find`) uses `Path.rglob("**/*.yaml")` which returns files
+#   in filesystem-dependent order — NOT guaranteed alphabetical. On a
+#   cold-boot apply (both blueprints brand-new in DB), if this file is
+#   discovered + applied before cf-google-init.yaml, a `!Find` for
+#   `cf-google-init-next-validation` would fail (policy doesn't exist yet)
+#   → blueprint status=error → policy bindings NOT created → built-in
+#   flows un-hardened until the next discovery cycle retries (worker's
+#   periodic re-scan, usually 1-5 minutes). That's a real but bounded
+#   security gap right at startup — exactly when this change is supposed
+#   to BE protecting the flows. Codex flagged this as P1 on PR #121.
+#
+#   Fix: each blueprint defines the policy independently using the SAME
+#   `identifiers: name` ("cf-google-init-next-validation"), which is an
+#   idempotent upsert in Authentik's importer — whichever file applies
+#   first creates the policy row, the other applies and just updates with
+#   identical attrs. Both files use `!KeyOf` (within-file ref) for their
+#   PolicyBindings, so they're independently applicable regardless of
+#   discovery order. Empirical verification 2026-05-26: applies cleanly
+#   in both orderings (verified by dropping BlueprintInstance + policy
+#   rows and re-running).
+#
+#   ⚠ Drift risk: this expression MUST stay byte-identical to
+#   cf-google-init.yaml's policy expression. The serializer uses
+#   last-write-wins on each apply cycle, so divergent expressions would
+#   thrash on every worker tick. If you change one, you MUST update the
+#   other in the same PR. (A future cleanup could extract this to a
+#   `cf-shared-policies.yaml` file that sorts before both — but that
+#   would just re-introduce the alpha-order assumption; the
+#   define-in-both approach is structurally safer.)
 #
 # Deployment / environment coverage:
 #   • dev: docker-compose.override.yml single-file mount (same pattern as
@@ -145,6 +165,73 @@ metadata:
     blueprints.goauthentik.io/instantiate: "true"
 
 entries:
+  # ── Policy object (mirrors cf-google-init.yaml — see header comment) ──
+  # Identifier-by-`name` upsert: this is the SAME logical policy as
+  # cf-google-init.yaml's `next-validation-policy` entry — Authentik's
+  # importer treats `identifiers: name: cf-google-init-next-validation`
+  # as the upsert key, so whichever blueprint applies first creates the
+  # row, the other apply just refreshes attrs. Within THIS file all
+  # PolicyBindings below reference the policy via `!KeyOf
+  # next-validation-policy` — no `!Find` against the other blueprint.
+  #
+  # ⚠ EXPRESSION MUST STAY BYTE-IDENTICAL TO cf-google-init.yaml's
+  # policy expression. The two define the same DB row by `name`; if the
+  # text diverges, each worker apply cycle will overwrite the other and
+  # thrash on every blueprint tick. See cf-google-init.yaml lines 138-254
+  # for the full design rationale (`_deny()` session scrub, race
+  # protection via ReevaluateMarker, `_flow_done` fallback safety, host
+  # trust invariants — all the same reasons apply here).
+  - model: authentik_policies_expression.expressionpolicy
+    id: next-validation-policy
+    identifiers:
+      name: cf-google-init-next-validation
+    attrs:
+      execution_logging: false
+      expression: |
+        from urllib.parse import urlparse
+
+        def _deny(msg):
+            # Reject + scrub SESSION_KEY_GET so `_flow_done()`'s
+            # fallback redirect can't replay the bad `next`. See the
+            # "_flow_done fallback" comment block above the policy.
+            ak_message(msg)
+            http_request.session["authentik/flows/get"] = {}
+            http_request.session.modified = True
+            return False
+
+        session_get = http_request.session.get("authentik/flows/get") or {}
+        if not isinstance(session_get, dict):
+            return _deny("Refusing: unexpected SESSION_KEY_GET type")
+        next_url = session_get.get("next", "")
+        if not next_url:
+            return True
+
+        # Protocol-relative + backslash variants — explicit-reject before parse.
+        if next_url[:2] in ("//", "/\\", "\\\\", "\\/"):
+            return _deny("Refusing protocol-relative next URL: " + next_url[:80])
+
+        # urlparse() doesn't raise on string input — it returns an empty
+        # parsed result for malformed strings. If `next_url` were ever a
+        # non-string (defensive only; the `if not next_url` guard above
+        # already requires truthy str), urlparse would TypeError and the
+        # binding's `failure_result: false` would fail-closed. No bare
+        # except wrapper here — it'd swallow debug signal for the
+        # one path that should never reach this line.
+        parsed = urlparse(next_url)
+
+        # Relative path (no scheme, no netloc) is safe.
+        if not parsed.scheme and not parsed.netloc:
+            return True
+
+        # Absolute URL — netloc must match the host Authentik is
+        # currently being requested under. Host comparison is
+        # case-insensitive (RFC 3986 §3.2.2) — a future client that
+        # uppercases would otherwise mysteriously break.
+        if parsed.netloc.lower() == http_request.get_host().lower():
+            return True
+
+        return _deny("Refusing next URL outside same origin: " + next_url[:80])
+
   # ── policy_engine_mode flips ──────────────────────────────────────
   # `identifiers: slug` is an idempotent upsert: it updates the flow's
   # policy_engine_mode in place without touching other fields. The blueprint
@@ -179,7 +266,7 @@ entries:
   - model: authentik_policies.policybinding
     identifiers:
       target: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
-      policy: !Find [authentik_policies_expression.expressionpolicy, [name, cf-google-init-next-validation]]
+      policy: !KeyOf next-validation-policy
       order: 0
     attrs:
       enabled: true
@@ -194,7 +281,7 @@ entries:
           [target__slug, default-authentication-flow],
           [stage__name, default-authentication-identification],
         ]
-      policy: !Find [authentik_policies_expression.expressionpolicy, [name, cf-google-init-next-validation]]
+      policy: !KeyOf next-validation-policy
       order: 0
     attrs:
       enabled: true
@@ -207,7 +294,7 @@ entries:
   - model: authentik_policies.policybinding
     identifiers:
       target: !Find [authentik_flows.flow, [slug, default-source-authentication]]
-      policy: !Find [authentik_policies_expression.expressionpolicy, [name, cf-google-init-next-validation]]
+      policy: !KeyOf next-validation-policy
       order: 1
     attrs:
       enabled: true
@@ -224,7 +311,7 @@ entries:
           [target__slug, default-source-authentication],
           [stage__name, default-source-authentication-login],
         ]
-      policy: !Find [authentik_policies_expression.expressionpolicy, [name, cf-google-init-next-validation]]
+      policy: !KeyOf next-validation-policy
       order: 0
     attrs:
       enabled: true
@@ -238,7 +325,7 @@ entries:
   - model: authentik_policies.policybinding
     identifiers:
       target: !Find [authentik_flows.flow, [slug, default-source-enrollment]]
-      policy: !Find [authentik_policies_expression.expressionpolicy, [name, cf-google-init-next-validation]]
+      policy: !KeyOf next-validation-policy
       order: 1
     attrs:
       enabled: true
@@ -258,7 +345,7 @@ entries:
           [target__slug, default-source-enrollment],
           [stage__name, default-source-enrollment-login],
         ]
-      policy: !Find [authentik_policies_expression.expressionpolicy, [name, cf-google-init-next-validation]]
+      policy: !KeyOf next-validation-policy
       order: 0
     attrs:
       enabled: true
@@ -281,7 +368,7 @@ entries:
   - model: authentik_policies.policybinding
     identifiers:
       target: !Find [authentik_flows.flow, [slug, default-source-pre-authentication]]
-      policy: !Find [authentik_policies_expression.expressionpolicy, [name, cf-google-init-next-validation]]
+      policy: !KeyOf next-validation-policy
       order: 0
     attrs:
       enabled: true
