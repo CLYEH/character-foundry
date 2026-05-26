@@ -1,0 +1,376 @@
+# Authentik blueprint: extends T-074's `cf-google-init-next-validation`
+# policy onto the 4 Authentik built-in flows the SPA attack chain (or any
+# phishing pivot) can reach via `/oauth/if/flow/<slug>/?next=…`.
+#
+# T-074 closed the open-redirect on `cf-google-init` only. The same Authentik
+# core behaviour (`authentik/flows/views/executor.py:380-393` honours
+# `PLAN_CONTEXT_REDIRECT` without host validation, AND `_flow_done()`'s
+# fallback `redirect_with_qs(SESSION_KEY_GET[next])` honours any URL whose
+# urlparse netloc is empty — which includes the backslash variant `/\evil.com`
+# that the browser then re-interprets as `//evil.com`) is exploitable on every
+# flow-executor URL. T-074 ship deferred the built-in flows out because
+# extending same-origin policy onto them has wider blast radius and needed
+# its own validation pass. T-079 is that pass.
+#
+# Empirical baseline measured 2026-05-26 (BEFORE this blueprint applies):
+#   /oauth/if/flow/default-authentication-flow/?next=<anything>     → identification stage shown (no validation)
+#   /oauth/if/flow/default-source-authentication/?next=<anything>   → "Flow does not apply" (if-sso blocks DIRECT hit)
+#   /oauth/if/flow/default-source-enrollment/?next=<anything>       → "Flow does not apply" (if-sso blocks DIRECT hit)
+#   /oauth/if/flow/default-source-pre-authentication/?next=...      → built-in guard rejects absolute URLs + protocol-relative, BUT
+#                                                                      `/\evil.com` (urlparse netloc empty) slips through as
+#                                                                      `xak-flow-redirect to /%5Cevil.com` → browser → //evil.com
+#
+# What this blueprint adds:
+#   • default-authentication-flow      : flow + first-stage (identification) bindings
+#   • default-source-authentication    : flow + only-stage (login) bindings  + flow.policy_engine_mode flipped to `all`
+#   • default-source-enrollment        : flow + last-stage (enrollment-login) bindings + flow.policy_engine_mode flipped to `all`
+#   • default-source-pre-authentication: flow-level binding only (it has no stages — empty plan means there's no race window
+#                                       to protect, and the only attacker-reachable surface is _flow_done's fallback)
+#
+# Why `policy_engine_mode: all` on default-source-* flows (NOT on
+# default-authentication-flow / default-source-pre-authentication):
+#   default-source-authentication and default-source-enrollment each ship
+#   with an existing flow-level policy (`default-source-authentication-if-sso`
+#   / `default-source-enrollment-if-sso`). Authentik's default engine mode
+#   is `any`, meaning ANY bound policy returning True passes the gate. Under
+#   `any`, the legitimate race-attack scenario — victim already holds SSO
+#   context in session, attacker overwrites SESSION_KEY_GET[next] mid-flow —
+#   has the if-sso policy returning True (SSO context exists), and even if
+#   THIS policy returns False (evil next), the flow plan still applies and
+#   the attacker reaches `_flow_done`. Flipping to `all` makes both policies
+#   required: legit users still pass (if-sso True AND our policy True for
+#   same-host `next`); attack still fails (if-sso True AND our policy False
+#   = False overall). Single-policy semantics are mode-independent, so
+#   flipping is a no-op when only one policy exists (the case before T-079).
+#
+#   default-authentication-flow has NO existing flow-level policies, and
+#   default-source-pre-authentication has none either — single-policy = `any`
+#   ≡ `all`, leave the default. Adding a mode flip we don't need would only
+#   add blast radius for future policies someone bolts on without realising.
+#
+# Why we bind a stage-level PolicyBinding in addition to the flow-level one
+# (the T-074 dual-binding pattern):
+#   The flow-level PolicyBinding only fires at FlowPlanner.plan() time —
+#   i.e. when `_initiate_plan()` runs. Authentik's executor.dispatch() writes
+#   `SESSION_KEY_GET = get_params` UNCONDITIONALLY (executor.py:179), THEN
+#   checks `if not self.plan` (executor.py:181) — so once a plan is cached
+#   in the session (from a legit first hit), subsequent hits OVERWRITE the
+#   query params but DO NOT rebuild the plan, and the flow-level policy
+#   never re-fires. Race exploit: hit 1 `?next=/legit` plans cleanly, hit 2
+#   `?next=evil` in same session overwrites the dict, victim then advances
+#   the cached plan, `_flow_done` reads the new evil `next`. The
+#   ReevaluateMarker attached to each FlowStageBinding with
+#   re_evaluate_policies=True (which all the built-in stage bindings already
+#   have, per Authentik default ship) re-runs THIS policy before that
+#   stage's execution, picking up the overwritten SESSION_KEY_GET → deny
+#   → policy._deny() scrubs the bad next → executor falls through to
+#   `_flow_done`'s no-next default `authentik_core:root-redirect`.
+#
+#   default-source-pre-authentication has zero stage bindings — there's no
+#   plan stage to cache between hits, so the race scenario doesn't apply.
+#   Flow-level binding alone is sufficient for it.
+#
+# Which stage to bind on each multi-stage flow:
+#   Per T-074 dual-binding semantics, binding to ANY stage in the flow gives
+#   race protection (ReevaluateMarker fires before that stage's HTTP-request
+#   transition). We pick a stage WITHOUT existing PolicyBindings to keep the
+#   stage-binding policy_engine_mode at its default `any` — single-policy
+#   semantics are mode-independent, no flip needed. Selections (from the
+#   ak shell query 2026-05-26):
+#     default-authentication-flow         → identification stage (order=10) — no existing policy bindings
+#     default-source-authentication       → login stage           (order=0)  — only stage, no existing
+#     default-source-enrollment           → enrollment-login      (order=2)  — last stage, no existing
+#   default-source-enrollment-prompt (order=0) already has a policy binding
+#   (`default-source-enrollment-if-username`) so we deliberately skip it to
+#   avoid the same engine-mode question on the stage binding.
+#
+# Why this file DEFINES `cf-google-init-next-validation` (instead of
+# `!Find`-ing it from cf-google-init.yaml — Codex P1 PR #121):
+#   Authentik's blueprint discovery (`authentik/blueprints/v1/tasks.py
+#   ::blueprints_find`) uses `Path.rglob("**/*.yaml")` which returns files
+#   in filesystem-dependent order — NOT guaranteed alphabetical. On a
+#   cold-boot apply (both blueprints brand-new in DB), if this file is
+#   discovered + applied before cf-google-init.yaml, a `!Find` for
+#   `cf-google-init-next-validation` would fail (policy doesn't exist yet)
+#   → blueprint status=error → policy bindings NOT created → built-in
+#   flows un-hardened until the next discovery cycle retries (worker's
+#   periodic re-scan, usually 1-5 minutes). That's a real but bounded
+#   security gap right at startup — exactly when this change is supposed
+#   to BE protecting the flows. Codex flagged this as P1 on PR #121.
+#
+#   Fix: each blueprint defines the policy independently using the SAME
+#   `identifiers: name` ("cf-google-init-next-validation"), which is an
+#   idempotent upsert in Authentik's importer — whichever file applies
+#   first creates the policy row, the other applies and just updates with
+#   identical attrs. Both files use `!KeyOf` (within-file ref) for their
+#   PolicyBindings, so they're independently applicable regardless of
+#   discovery order. Empirical verification 2026-05-26: applies cleanly
+#   in both orderings (verified by dropping BlueprintInstance + policy
+#   rows and re-running).
+#
+#   ⚠ Drift risk: this expression MUST stay byte-identical to
+#   cf-google-init.yaml's policy expression. The serializer uses
+#   last-write-wins on each apply cycle, so divergent expressions would
+#   thrash on every worker tick. If you change one, you MUST update the
+#   other in the same PR. (A future cleanup could extract this to a
+#   `cf-shared-policies.yaml` file that sorts before both — but that
+#   would just re-introduce the alpha-order assumption; the
+#   define-in-both approach is structurally safer.)
+#
+# Deployment / environment coverage:
+#   • dev: docker-compose.override.yml single-file mount (same pattern as
+#         cf-google-init.yaml — must be added; not auto-picked-up)
+#   • e2e: docker-compose.test.yml dir-mounts the whole infra/authentik/blueprints/
+#         → this file is auto-included on next compose up
+#   • prod: NOT mounted by docker-compose.yml. Production follows the §5.9
+#         admin-UI runbook, with this file added as a checklist item there
+#         until M3.5 ship-prep codifies all blueprints into prod compose.
+#         Mirrors cf-google-init.yaml's prod gap (same trade-off).
+#
+# Verification (run after blueprint apply):
+#   See planning/devops/authentik-stack.md §5.2.1b verification block —
+#   T-079 extends the same 8 curl scenarios across all 4 hardened flows.
+#
+# Race semantics on multi-stage built-in flows differ from cf-google-init
+# (T-074 ship), but the security invariant holds — empirically verified
+# 2026-05-26:
+#   cf-google-init had ONE stage (RedirectStage). When the ReevaluateMarker
+#   fires on the race hit and the policy denies, removing that stage leaves
+#   an EMPTY plan, so the executor falls through to `_flow_done`'s fallback
+#   path with sanitized SESSION_KEY_GET — clean "to: /oauth/" redirect.
+#
+#   default-authentication-flow has FOUR stages (identification, password,
+#   mfa-validation, login). When the ReevaluateMarker fires on the
+#   identification binding and removes that stage, the plan still has
+#   [password, mfa, login] in it. The executor advances to the password
+#   stage with no `pending_user` set (identification was the stage that
+#   would have set it). The attacker sees a password form they can't make
+#   progress on — submission errors out — and the next GET resets the flow
+#   to identification. CRUCIALLY: at no point does `evil.com` appear in any
+#   response (verified by grepping the full 4-hit chain output). The
+#   `_deny()` SESSION_KEY_GET scrub ran on the marker hit, so even if the
+#   attacker somehow drove the flow to `_flow_done`, it would read empty
+#   `next` and fall back to the safe root-redirect.
+#
+#   Bottom line: cf-google-init pattern = clean fallback page. Multi-stage
+#   pattern = broken-form-state dead-end. Both block the open-redirect
+#   exploit (`next` redirection to evil host); they just present different
+#   end-of-attack UX to the attacker. Operators / SPA happy paths are
+#   unaffected by either — legit same-host `next` never triggers `_deny()`.
+
+version: 1
+metadata:
+  name: cf-builtin-flow-hardening
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  # ── Policy object (mirrors cf-google-init.yaml — see header comment) ──
+  # Identifier-by-`name` upsert: this is the SAME logical policy as
+  # cf-google-init.yaml's `next-validation-policy` entry — Authentik's
+  # importer treats `identifiers: name: cf-google-init-next-validation`
+  # as the upsert key, so whichever blueprint applies first creates the
+  # row, the other apply just refreshes attrs. Within THIS file all
+  # PolicyBindings below reference the policy via `!KeyOf
+  # next-validation-policy` — no `!Find` against the other blueprint.
+  #
+  # ⚠ EXPRESSION MUST STAY BYTE-IDENTICAL TO cf-google-init.yaml's
+  # policy expression. The two define the same DB row by `name`; if the
+  # text diverges, each worker apply cycle will overwrite the other and
+  # thrash on every blueprint tick. See cf-google-init.yaml lines 138-254
+  # for the full design rationale (`_deny()` session scrub, race
+  # protection via ReevaluateMarker, `_flow_done` fallback safety, host
+  # trust invariants — all the same reasons apply here).
+  - model: authentik_policies_expression.expressionpolicy
+    id: next-validation-policy
+    identifiers:
+      name: cf-google-init-next-validation
+    attrs:
+      execution_logging: false
+      expression: |
+        from urllib.parse import urlparse
+
+        def _deny(msg):
+            # Reject + scrub SESSION_KEY_GET so `_flow_done()`'s
+            # fallback redirect can't replay the bad `next`. See the
+            # "_flow_done fallback" comment block above the policy.
+            ak_message(msg)
+            http_request.session["authentik/flows/get"] = {}
+            http_request.session.modified = True
+            return False
+
+        session_get = http_request.session.get("authentik/flows/get") or {}
+        if not isinstance(session_get, dict):
+            return _deny("Refusing: unexpected SESSION_KEY_GET type")
+        next_url = session_get.get("next", "")
+        if not next_url:
+            return True
+
+        # Protocol-relative + backslash variants — explicit-reject before parse.
+        if next_url[:2] in ("//", "/\\", "\\\\", "\\/"):
+            return _deny("Refusing protocol-relative next URL: " + next_url[:80])
+
+        # urlparse() doesn't raise on string input — it returns an empty
+        # parsed result for malformed strings. If `next_url` were ever a
+        # non-string (defensive only; the `if not next_url` guard above
+        # already requires truthy str), urlparse would TypeError and the
+        # binding's `failure_result: false` would fail-closed. No bare
+        # except wrapper here — it'd swallow debug signal for the
+        # one path that should never reach this line.
+        parsed = urlparse(next_url)
+
+        # Relative path (no scheme, no netloc) is safe.
+        if not parsed.scheme and not parsed.netloc:
+            return True
+
+        # Absolute URL — netloc must match the host Authentik is
+        # currently being requested under. Host comparison is
+        # case-insensitive (RFC 3986 §3.2.2) — a future client that
+        # uppercases would otherwise mysteriously break.
+        if parsed.netloc.lower() == http_request.get_host().lower():
+            return True
+
+        return _deny("Refusing next URL outside same origin: " + next_url[:80])
+
+  # ── policy_engine_mode flips ──────────────────────────────────────
+  # `identifiers: slug` is an idempotent upsert: it updates the flow's
+  # policy_engine_mode in place without touching other fields. The blueprint
+  # importer treats unspecified attrs as "leave alone".
+  #
+  # Pre-flip state (queried 2026-05-26): both flows have
+  # policy_engine_mode='any' and exactly one existing flow-level policy
+  # (their respective if-sso checks). Flipping to `all` doesn't change
+  # behaviour for the single-policy case; it only matters once we add THIS
+  # policy as a second binding below — at which point `all` means BOTH must
+  # pass (legit case: if-sso True + our policy True for same-host next →
+  # pass; attack case: if-sso True + our policy False → fail-closed).
+  - model: authentik_flows.flow
+    identifiers:
+      slug: default-source-authentication
+    attrs:
+      policy_engine_mode: all
+
+  - model: authentik_flows.flow
+    identifiers:
+      slug: default-source-enrollment
+    attrs:
+      policy_engine_mode: all
+
+  # ── default-authentication-flow ───────────────────────────────────
+  # Flow-level: no existing policies (queried 2026-05-26). Adding ours.
+  # The flow has 4 stage bindings; we bind ours to the first one
+  # (identification) so the ReevaluateMarker re-fires our policy on every
+  # stage transition (it's enough that we're attached to any one stage
+  # binding with re_evaluate_policies=True; all 4 ship with that flag set
+  # by Authentik default).
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      policy: !KeyOf next-validation-policy
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      failure_result: false
+
+  - model: authentik_policies.policybinding
+    identifiers:
+      target:
+        !Find [
+          authentik_flows.flowstagebinding,
+          [target__slug, default-authentication-flow],
+          [stage__name, default-authentication-identification],
+        ]
+      policy: !KeyOf next-validation-policy
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      failure_result: false
+
+  # ── default-source-authentication ─────────────────────────────────
+  # Flow-level: shares the engine with `default-source-authentication-if-sso`
+  # (existing). Mode flipped to `all` above so both must pass.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_flows.flow, [slug, default-source-authentication]]
+      policy: !KeyOf next-validation-policy
+      order: 1
+    attrs:
+      enabled: true
+      negate: false
+      failure_result: false
+
+  # Stage-level: bind to the (only) login stage. No existing policies on
+  # this stage binding → mode stays `any` (single-policy = mode-independent).
+  - model: authentik_policies.policybinding
+    identifiers:
+      target:
+        !Find [
+          authentik_flows.flowstagebinding,
+          [target__slug, default-source-authentication],
+          [stage__name, default-source-authentication-login],
+        ]
+      policy: !KeyOf next-validation-policy
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      failure_result: false
+
+  # ── default-source-enrollment ─────────────────────────────────────
+  # Flow-level: shares the engine with `default-source-enrollment-if-sso`
+  # (existing). Mode flipped to `all` above. Order=1 to sit AFTER if-sso
+  # (which is at order=0); both run, both must pass under all-mode.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_flows.flow, [slug, default-source-enrollment]]
+      policy: !KeyOf next-validation-policy
+      order: 1
+    attrs:
+      enabled: true
+      negate: false
+      failure_result: false
+
+  # Stage-level: bind to enrollment-login (order=2, last stage). No existing
+  # policies on this binding. We deliberately skip enrollment-prompt
+  # (order=0) — it already has `default-source-enrollment-if-username` bound,
+  # which would force a `policy_engine_mode: all` flip on that stage binding
+  # too. Binding to a clean stage keeps semantics localized.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target:
+        !Find [
+          authentik_flows.flowstagebinding,
+          [target__slug, default-source-enrollment],
+          [stage__name, default-source-enrollment-login],
+        ]
+      policy: !KeyOf next-validation-policy
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      failure_result: false
+
+  # ── default-source-pre-authentication ─────────────────────────────
+  # Authentik ships a partial guard on this flow ("Invalid next URL" rejects
+  # absolute URLs `https://evil.com` and protocol-relative `//evil.com`) BUT
+  # the backslash variant `/\evil.com` slips through to xak-flow-redirect
+  # `to=/%5Cevil.com` — empirically reproduced 2026-05-26 (see comment block
+  # at top of file). The flow has zero stage bindings, so there's no race
+  # window to protect and no ReevaluateMarker to attach: a flow-level
+  # PolicyBinding alone is sufficient (plan time → policy fires → deny on
+  # backslash → FlowNonApplicableException → ak-stage-access-denied).
+  #
+  # No engine-mode flip: the flow has no other flow-level policies, so the
+  # default `any` is single-policy and mode-independent. (Verified
+  # 2026-05-26.)
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_flows.flow, [slug, default-source-pre-authentication]]
+      policy: !KeyOf next-validation-policy
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      failure_result: false
