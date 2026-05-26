@@ -264,7 +264,35 @@ flow / stage / binding 全部 codify 在 `infra/authentik/blueprints/cf-google-i
 
 `FlowPlanner.plan()` 評 flow-level policy 在 RedirectStage 之前；policy 拒就整個 plan 中止，operator 看 `ak-stage-access-denied` 含 `ak_message` 文字。SPA 正常路徑（`next` 是同 host 的 authorize URL，T-076 後絕對形式也是 `http://localhost/oauth/application/o/authorize/...`）不受影響。
 
-**為什麼只綁 `cf-google-init`、不綁 Authentik 內建 flow：** `cf-google-init` 是本專案 codify 的 launcher，binding 行為跟著它跑、blast radius 局限在 SPA 走的這條路徑。把 same-origin policy 推到 `default-source-authentication` / `default-source-enrollment` / `default-authentication-flow` 會改變 Authentik 內建 flow 對所有 future use case（多 IdP、admin 後台、其他 SPA）的行為，需要獨立 validation pass —— 留給 **T-079**（已開單，post-3.5a backlog）。攻擊者改打 `/oauth/if/flow/default-authentication-flow/?next=evil.com` 仍可命中漏洞，但 phishing 入口比這條 launcher 不顯眼，且不在 SPA 「使用 Google 登入」攻擊鏈上。
+**Binding 範圍（含 T-079 擴張）：** 一條 policy 物件、五個 flow target。原始 T-074 binding 在 `cf-google-init`；T-079 把同一條 `cf-google-init-next-validation` 也綁到 **四條 Authentik 內建 flow**：
+
+| Flow slug | 漏洞前 baseline（2026-05-26 curl 驗證） | T-079 binding | engine mode 動到 |
+|---|---|---|---|
+| `default-authentication-flow` | **完全無 `next` 驗證** —— 所有 evil 變體都進到 identification stage，victim 登入完 `_flow_done` 直接 redirect 走 | 兩條 binding：target=flow（plan-time）+ target=identification-stage-binding（race protection；既有 `re_evaluate_policies=True`）| 不動 —— flow 本來沒有任何 flow-level policy，單 policy 下 `any` ≡ `all` |
+| `default-source-authentication` | 既有 `default-source-authentication-if-sso` 擋直接打（沒 SSO context 看 "Flow does not apply"），但**race 情境**（victim 已有 SSO context、attacker mid-flow overwrite SESSION_KEY_GET）仍可達 `_flow_done` | 兩條 binding：target=flow + target=login-stage-binding | **flip 到 `all`** —— 否則 if-sso True + 我們 False 在 `any` 下仍過 |
+| `default-source-enrollment` | 同上 | 兩條 binding：target=flow + target=enrollment-login-stage-binding（最後 stage、無既有 policy） | **flip 到 `all`** —— 同上理由 |
+| `default-source-pre-authentication` | Authentik 自帶 "Invalid next URL" 擋絕對 / protocol-relative，但**backslash 變體 `/\evil.com` slip 過** —— `is_url_absolute` 只看 `bool(urlparse.netloc)`，`\` 在 netloc empty → "relative" → `_flow_done` fallback `redirect_with_qs(/\evil.com)` → browser 解成 `//evil.com` | 一條 binding：target=flow（無 stages = 無 race window，flow-level 足夠）| 不動 |
+
+`cf-google-init` 本身仍只有 target=flow + target=binding-redirect 兩條（T-074）。
+
+**為什麼選哪條 stage 綁、為什麼不全部綁所有 stage：** T-074 dual-binding 的目的是 race protection，靠 `re_evaluate_policies=True` 的 ReevaluateMarker 在 stage transition 前再跑 policy。**只需要綁 flow 裡任意一個 stage binding** —— Marker 跑哪條取決於 stage 自身的 transition，attacker 走過任何一條 marker 都能擋住 race。我們刻意挑「無既有 PolicyBinding」的 stage（identification / login / enrollment-login），讓那條 stage binding 的 `policy_engine_mode` 保持 `any` 且只有單一 policy（mode-independent）—— 不必為了一條 race protection 多 flip 一個 stage 的 mode、累積未來新加 policy 的 blast radius。`default-source-enrollment-prompt` 是 enrollment flow 的 order=0，已有 `if-username` policy 在那；故意跳過、改綁 enrollment-login。
+
+**為什麼 default-source-* 要 flip engine mode 到 `all`：** 兩條 flow 各有一條既有 flow-level `if-sso` policy。Authentik 預設 mode 是 `any`（任一 policy True → 整個 binding True）。race 情境 victim 已有 SSO context → if-sso True；attacker 把 `next` 覆寫成 evil → 我們 policy False。`any` 下整體 True、繞過。`all` 下 if-sso True + 我們 False = False、擋。Legit 情境（同 host next）兩條 policy 都 True、不變。`default-authentication-flow` / `default-source-pre-authentication` 沒有既有 flow-level policy，加我們是單一 policy，mode-independent，不必 flip（也不要 flip —— 不必要的 mode 動會增加 blast radius，下一個來加 policy 的人讀到 `all` 會以為是設計上要求兩條都過）。
+
+**為什麼 stage 選擇是 last-stage（enrollment-login）而不是 first-stage（enrollment-prompt）：** 純為了避開既有 PolicyBinding，跟「越晚 race protection」無關 —— ReevaluateMarker fire 邏輯是 stage transition、不是「最後一道 stage」，所以哪條乾淨 stage 都同效。
+
+**為什麼 policy 物件名仍叫 `cf-google-init-next-validation`：** 名字已 stale（綁到 5 條 flow 了），但 rename 要動 cf-google-init.yaml + 多個 `!Find` 引用、blast radius 比這條 readability 收益大。T-079 ship 後 doc 把 stale 名字事實註明（就在這節），rename 留給將來如果這條 policy 真的長到 third generation 再決定。
+
+**為什麼不綁 `default-invalidation-flow` / `default-provider-authorization-*` 等其他 Authentik 內建 flow：** 攻擊面評估只列出可達 flow-executor URL + 會經由 `SESSION_KEY_GET` / `PLAN_CONTEXT_REDIRECT` 路徑做 redirect 的 flow。Invalidation flow 由 `UserLogoutStage` 控制 logout-then-redirect、不讀 `next`（T-078 ship 時驗過）；authorization flow 是 OAuth provider 自己的 `redirect_uri` provider-config-time 鎖死、不吃 attacker-controlled URL。如果未來加 multi-IdP 或新型 flow 是 attacker-reachable 且讀 `next`，再 retrofit。
+
+**T-079 落地檔位：** `infra/authentik/blueprints/cf-builtin-flow-hardening.yaml`（policy 物件不重複定義，靠 `!Find` 引用 `cf-google-init.yaml` 已有的）。Dev / e2e mount 同 cf-google-init.yaml 模式：dev 走 `docker-compose.override.yml` 單檔 mount，e2e 走 `docker-compose.test.yml` 整個 dir mount。Prod 仍跟 cf-google-init.yaml 一樣是 admin-UI 缺口（見 §5.9 checklist）—— 兩份 blueprint 同個 production codify 動作會在 M3.5 ship-prep 一次處理。
+
+**Multi-stage race semantics（T-079 verification reveal）：** T-074 在單一 stage 的 cf-google-init 上，race deny 會把唯一一條 stage 移掉、整個 plan 變空、`_flow_done` fallback 回 `/oauth/` —— 看到的是乾淨的 "to: /oauth/" 回應。Multi-stage 的內建 flow 不一樣：race deny 把 marker 綁的那一條 stage 從 plan 拿掉之後 plan 還有其他 stage，executor 直接前進到下一條（例如 `default-authentication-flow` 把 identification 移掉後 victim 看到 password stage）。但是：
+- `_deny()` 已經把 SESSION_KEY_GET 清空，所以即便 attacker 莫名其妙把 flow 推到結尾，`_flow_done` 也只能讀到空字串、走 hardcoded `authentik_core:root-redirect`、redirect 到 `/oauth/`。
+- Attacker 看到的 password stage 沒有 `pending_user`（那是 identification 該設的），submit 任何密碼會回 "Unknown error"、flow 自動重啟回 identification。
+- **整條 race 回應序列 grep 不到 `evil.com`**（2026-05-26 empirically verified）—— open-redirect invariant 保住。
+
+兩種 race 結果（cf-google-init 乾淨 fallback、multi-stage broken-form dead-end）攻擊面結論相同：attacker 無法 redirect 到 evil。差別只在 dead-end 的 UX 樣態。Legit user 完全不踩 `_deny()` path、不受影響。
 
 **Verification：**
 
@@ -599,6 +627,7 @@ M3.5 ship 前 backup 流程進 `operations.md`，包含：
 - [ ] §5.2 Google OAuth Source 設好（含 Authentication flow + Enrollment flow）；登出 admin 後 login 頁有 Google 按鈕；用 Workspace 帳號登入成功
 - [ ] §5.2 T-078 fix：`default-source-authentication.authentication = none` 已套用。**Apply path 依環境而異**——dev：`ak shell` 改一次；CI / e2e：自動套用（`cf-e2e-bootstrap.yaml` 由 `docker-compose.test.yml` 掛起來的 blueprint upsert）；**prod：不在 e2e blueprint 範圍**，setup 時必 admin-UI 改 `default-source-authentication.authentication`（或在 prod 自己的 blueprint dir codify 一條 same shape 的 `authentik_flows.flow` upsert）。驗收：logout 後同瀏覽器再 Google 登入可達 Dashboard、不撞 "Flow does not apply"
 - [ ] §5.2.1 `cf-google-init` blueprint 有 apply（`BlueprintInstance.status == successful`）；flow executor 回 `xak-flow-redirect` → `/oauth/source/oauth/login/google/`；真人 operator 首登 redirect 回 SPA（不落在 `/if/user/`）
+- [ ] §5.2.1b `cf-builtin-flow-hardening` blueprint 有 apply（`BlueprintInstance.status == successful`，T-079）。**Apply path 依環境而異**——dev：`docker-compose.override.yml` 已 codify 單檔 mount，`docker compose up -d authentik-server authentik-worker` 即套；CI / e2e：自動套用（`docker-compose.test.yml` 整個 dir mount）；**prod：不在 prod compose mount 範圍**，setup 時必把 `infra/authentik/blueprints/cf-builtin-flow-hardening.yaml` 同 cf-google-init.yaml 一起 codify 進 prod blueprint dir（或在 prod admin UI 手動建：4 條 flow × 加 PolicyBinding，2 條 source flow 加 `policy_engine_mode: all`，詳見 §5.2.1b 的綁定表）。驗收：對 4 條內建 flow 跑 §5.2.1b verification 同樣的 8 條 curl，evil 變體（含 `/\evil.com` 給 `default-source-pre-authentication`）全回 `ak-stage-access-denied` 或同效
 - [ ] §5.3 5 條 scope（`character:read` / `character:write` / `task:read` / `task:cancel` / `usage:read`）都建好，name 逐字對齊
 - [ ] §5.4 5 個 application（1 SPA + 4 agent）+ 對應 provider 都建好；client_id 逐字對齊 `app/auth/mcp_clients.py`
 - [ ] §5.5 group + policy binding：delegated 4 個綁 `cf-agent-default`、`cf-test-agent` 綁 `cf-test-agent-full`
