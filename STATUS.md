@@ -210,8 +210,8 @@ ZIP 匯出、Copy Character、Usage dashboard。
 
 | # | Ticket | Status |
 |---|--------|--------|
-| T-092 | MCP M2M service-account identity —— sanctioned M2M token 解析到 provisioned service-account User，agent 擁有它建的 resource（security-sensitive auth 改動）| IN_PROGRESS |
-| T-091 | Agent E2E smoke —— 真 Authentik client_credentials token 經 nginx 打 `/mcp/` 跑完 character→base→alias→motion + cf-test-agent provider blueprint + CI step（M3.5 ship gate）| TODO（blocked on T-092）|
+| T-092 | MCP M2M service-account identity —— sanctioned M2M token 解析到 provisioned service-account User，agent 擁有它建的 resource（security-sensitive auth 改動）| DONE（PR #123）|
+| T-091 | Agent E2E smoke —— 真 Authentik client_credentials token 經 nginx 打 `/mcp/` 跑完 character→base→alias→motion + cf-test-agent provider blueprint + CI step（M3.5 ship gate）| IN_PROGRESS |
 
 **⚠ 開工 reveal（2026-06-08）—— 為什麼多了 T-092：** plan 假設「3.5c 走 headless M2M」，但 shipped code 的 M2M token `user_id=None`（`app/mcp/auth.py:266`）、create-flow 每個 tool 都呼 `require_user_context()` 對 `None` 回 `AUTH_USER_CONTEXT_REQUIRED`（`auth.py:180`）—— T-084/85/86 刻意讓 M2M 對 user-owned resource 唯讀。所以 headless M2M create-flow 在現行碼本是不可能的。使用者 2026-06-08 拍板用「最標準的業界作法」= M2M service-principal owns resources → T-092 補上「sanctioned M2M token 解析到 service-account User」。正確順序 **T-092（auth identity）→ T-091（smoke，是 T-092 的端到端證明）**。**3.5c 不依賴 T-089**（那條是真人 delegated discovery，另 hard-depend S3.5-6）。
 
