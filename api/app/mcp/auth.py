@@ -16,8 +16,12 @@ declared in their `MCPTool` registry entry (registry itself lands in T-081).
 
 The contextvar carries a discriminated union of three states:
 
-  • `None`         — no Authorization header sent. `require_mcp_scopes`
-                     raises AUTH_MISSING_TOKEN.
+  • `None`         — no Authorization header sent. In the live HTTP path
+                     the middleware intercepts this earlier with a `401 +
+                     WWW-Authenticate` discovery challenge (T-089), so the
+                     tool layer rarely sees it; when it does (a direct unit
+                     test, or a non-HTTP path), `require_mcp_scopes` raises
+                     AUTH_MISSING_TOKEN.
   • `MCPAuthFailure(error=...)` — header present but verifier rejected
                      it. `require_mcp_scopes` re-raises the verifier's
                      `AgentErrorException`, preserving the original
@@ -32,14 +36,21 @@ The contextvar carries a discriminated union of three states:
   • `MCPAuthContext` — token verified. `require_mcp_scopes` checks
                        per-tool scope and returns the context on pass.
 
-Per the ticket Note on "MCP error vs HTTP status": auth failures do NOT
-return HTTP 401/403. The streamable HTTP response stays 200 and the
-JSON-RPC envelope carries the error so MCP clients see a structured
-`CallToolResult` with `isError=True` — same surface as any other tool
-failure. To achieve that, the middleware NEVER blocks unauthenticated
-requests at the ASGI layer; it just installs the resolved state on the
-contextvar and lets `require_mcp_scopes` raise a `ToolError` inside the
-tool handler.
+Per the T-080 Note on "MCP error vs HTTP status", auth failures for a
+request that CARRIES a token (invalid / expired / wrong-client /
+insufficient-scope) do NOT return HTTP 401/403: the streamable HTTP
+response stays 200 and the JSON-RPC envelope carries the error so MCP
+clients see a structured `CallToolResult` with `isError=True` — same
+surface as any other tool failure. The middleware installs the resolved
+state on the contextvar and lets `require_mcp_scopes` raise a `ToolError`
+inside the tool handler.
+
+EXCEPTION (T-089): a request with NO `Authorization` header at all is the
+OAuth-discovery trigger. The middleware short-circuits it with `401 +
+WWW-Authenticate: Bearer resource_metadata="<PRM URL>"` so an OAuth-capable
+client kicks off auto-login — it never reaches the tool layer. Manual-token
+and M2M clients always send a token, so they take the 200 + tool-error path
+above and are unaffected.
 """
 
 from __future__ import annotations
@@ -71,6 +82,7 @@ from app.core.errors import (
     auth_user_context_required,
 )
 from app.db.session import async_session_factory
+from app.mcp.discovery import PRM_WELL_KNOWN_PATH, public_base_url
 from app.models.user import User
 
 _logger = logging.getLogger(__name__)
@@ -390,6 +402,52 @@ def _extract_authorization_header(scope: Scope) -> bytes | None:
     return None
 
 
+def _scope_header_str(scope: Scope, name: bytes) -> str | None:
+    """Return a request header value decoded as latin-1, or None if absent.
+
+    Used to read `Host` / `X-Forwarded-Proto` off the raw ASGI scope when
+    building the discovery challenge's metadata URL (the middleware runs
+    before any Starlette `Request` exists). latin-1 because HTTP header bytes
+    are latin-1 by spec; a non-decodable value yields None rather than raising.
+    """
+    for key, value in scope.get("headers", []):
+        if key == name:
+            try:
+                return bytes(value).decode("latin-1")
+            except UnicodeDecodeError:
+                return None
+    return None
+
+
+async def _send_discovery_challenge(scope: Scope, send: Send) -> None:
+    """Emit `401 + WWW-Authenticate` pointing at the PRM document (RFC 9728, T-089).
+
+    The OAuth-capable MCP client reads `resource_metadata` from the
+    `WWW-Authenticate` header, fetches the PRM (served by `app.mcp.discovery`),
+    discovers the Authentik authorization server, and runs Auth Code + PKCE —
+    the auto-login chain this ticket enables. The body carries the standard
+    `AUTH_MISSING_TOKEN` AgentError JSON so a non-OAuth client / human debugger
+    still sees a structured reason rather than a bare 401.
+
+    `public_base_url` derives the same origin the PRM endpoint uses, so the
+    advertised metadata URL is byte-identical to where the document is served.
+    """
+    base = public_base_url(
+        host=_scope_header_str(scope, b"host"),
+        forwarded_proto=_scope_header_str(scope, b"x-forwarded-proto"),
+        scheme=str(scope.get("scheme", "http")),
+    )
+    prm_url = f"{base}{PRM_WELL_KNOWN_PATH}"
+    body = _agent_error_payload(auth_missing_token()).encode("utf-8")
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"www-authenticate", f'Bearer resource_metadata="{prm_url}"'.encode("latin-1")),
+        (b"content-length", str(len(body)).encode("latin-1")),
+    ]
+    await send({"type": "http.response.start", "status": 401, "headers": headers})
+    await send({"type": "http.response.body", "body": body, "more_body": False})
+
+
 def _parse_bearer(raw: bytes) -> str | None:
     """Decode a known-present `Authorization` value into the bearer token.
 
@@ -412,10 +470,14 @@ class MCPAuthContextMiddleware:
     """ASGI middleware: parse bearer, resolve dual-stack, set contextvar.
 
     Wraps the FastMCP streamable HTTP ASGI app from `app/mcp/app.py`.
-    Deliberately does NOT block requests on missing/invalid auth — see
-    module docstring. The contextvar is set before delegating downstream
-    and reset on the way out so cross-request leakage is impossible even
-    when the underlying event loop multiplexes coroutines.
+    A request that CARRIES a token is never blocked at the ASGI layer — the
+    resolved state rides the contextvar and the tool layer surfaces any
+    failure as a 200 tool-error. The one exception is a request with NO
+    `Authorization` header: that's the OAuth-discovery trigger, answered with
+    `401 + WWW-Authenticate` here (T-089). See module docstring. The contextvar
+    is set before delegating downstream and reset on the way out so
+    cross-request leakage is impossible even when the underlying event loop
+    multiplexes coroutines.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -428,25 +490,31 @@ class MCPAuthContextMiddleware:
             await self.app(scope, receive, send)
             return
 
-        state: MCPAuthContext | MCPAuthFailure | None
         raw_header = _extract_authorization_header(scope)
         if raw_header is None:
-            # No Authorization header sent at all.
-            state = None
+            # No Authorization header at all → emit the RFC 9728 discovery
+            # challenge (401 + WWW-Authenticate) so an OAuth-capable MCP client
+            # kicks off auto-login (T-089 Decision 2). Do NOT delegate
+            # downstream. A header that is PRESENT but bad falls through to the
+            # 200 + tool-error path below — so manual-token / M2M clients, which
+            # always send a token, are unaffected.
+            await _send_discovery_challenge(scope, send)
+            return
+
+        state: MCPAuthContext | MCPAuthFailure
+        token = _parse_bearer(raw_header)
+        if token is None:
+            # Header present but not a well-formed Bearer (e.g. `Basic ...`,
+            # `Bearer ` with empty token, non-latin-1 bytes). Surface as
+            # AUTH_INVALID_TOKEN — same code `/v1/*` returns for the equivalent
+            # shape (Codex round-2 P2). Without this, the failure would
+            # masquerade as AUTH_MISSING_TOKEN and clients / auth telemetry
+            # couldn't distinguish "client forgot to send a token" from
+            # "client sent garbage". (This is a PRESENT header, so it stays on
+            # the 200 + tool-error path, NOT the 401 discovery trigger.)
+            state = MCPAuthFailure(error=auth_invalid_token())
         else:
-            token = _parse_bearer(raw_header)
-            if token is None:
-                # Header present but not a well-formed Bearer (e.g.
-                # `Basic ...`, `Bearer ` with empty token, non-latin-1
-                # bytes). Surface as AUTH_INVALID_TOKEN — same code
-                # `/v1/*` returns for the equivalent shape (Codex
-                # round-2 P2). Without this, the failure would
-                # masquerade as AUTH_MISSING_TOKEN and clients /
-                # auth telemetry couldn't distinguish "client forgot
-                # to send a token" from "client sent garbage".
-                state = MCPAuthFailure(error=auth_invalid_token())
-            else:
-                state = await resolve_mcp_token(token)
+            state = await resolve_mcp_token(token)
 
         var_token = mcp_auth_state_var.set(state)
         try:

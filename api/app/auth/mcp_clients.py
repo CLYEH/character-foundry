@@ -63,9 +63,21 @@ ALLOWED_CLIENTS: Final[dict[str, ClientPolicy]] = {
     # AUTH_CLIENT_NOT_ALLOWED — the docstring originally over-narrowed the
     # allowlist to `/mcp/*`.
     "character-foundry-spa": {"scopes": None},
+    # Dedicated MCP OAuth client (T-089). The single Authentik application all
+    # human-driven MCP clients (Claude Desktop / claude.ai connector / MCP
+    # Inspector) authenticate through — they all present `client_id=
+    # character-foundry-mcp` and run Auth Code + PKCE after discovering the
+    # server via RFC 9728 Protected Resource Metadata (`app/mcp/discovery.py`).
+    # `scopes=None` (delegated): the human's consent decides the scope set; the
+    # allowlist only recognizes the client_id. Its issuer is the one advertised
+    # in the PRM's `authorization_servers`, so the discovered issuer matches the
+    # token's `iss`.
+    "character-foundry-mcp": {"scopes": None},
     # Delegated clients (Auth Code + PKCE). `scopes=None` means the access
     # token's scope set is decided at consent time by the human user — the
-    # allowlist's job is only to recognize the `client_id`.
+    # allowlist's job is only to recognize the `client_id`. Pre-registered but
+    # NOT advertised in the PRM (T-089 advertises only `character-foundry-mcp`);
+    # they remain accepted if a client is manually configured with one.
     "claude-code": {"scopes": None},
     "vs-code": {"scopes": None},
     "cursor": {"scopes": None},

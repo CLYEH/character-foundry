@@ -365,3 +365,96 @@ entries:
         !Find [authentik_providers_oauth2.oauth2provider, [name, cf-test-agent]]
       policy_engine_mode: any
       open_in_new_tab: false
+
+  # ── character-foundry-mcp delegated provider (T-089, MCP OAuth discovery) ──
+  # The ONE dedicated Authentik application all human-driven MCP clients
+  # (Claude Desktop / claude.ai connector / MCP Inspector) authenticate through.
+  # They discover it via RFC 9728 Protected Resource Metadata (api
+  # `/.well-known/oauth-protected-resource`, app/mcp/discovery.py), which
+  # advertises THIS provider's per-provider issuer as the sole authorization
+  # server — so the token's `iss` matches what the client discovered. All such
+  # clients present `client_id=character-foundry-mcp`; their individual
+  # redirect_uris are registered here (one app, many clients — T-089 Decision 1).
+  #
+  # Same shape + silent-failure gotchas as the SPA provider above
+  # (invalidation_flow required on 2024.12; redirect_uris must be the
+  # {matching_mode,url} list form; per_provider issuer + Self-signed signing key
+  # drive the JWT `iss`/`kid` the backend verifier checks). Differences:
+  #   • authorization_flow = EXPLICIT consent: a delegated agent acting as a
+  #     human must see + approve the scope grant (authentik-stack.md §5.4). No
+  #     automated e2e drives this app, so the consent click costs nothing here;
+  #     the real auto-login is a Manual E2E (T-089 AC #3).
+  #   • NO offline_access in property_mappings → Authentik issues no refresh
+  #     token (delegated = 1h, no refresh, per agent-interface Q5 sub-5b).
+  #   • redirect_uris: a loopback regex (RFC 8252 native-app pattern — covers
+  #     MCP Inspector on localhost:6274 and desktop clients on ephemeral ports;
+  #     PKCE protects the public client) + the claude.ai remote-connector https
+  #     callback. Refine the exact set during the Manual E2E.
+  #
+  # Dev / prod create this same app via the admin-UI runbook (authentik-stack.md
+  # §5.4) — only e2e/CI gets it from this blueprint, mirroring the SPA +
+  # cf-test-agent split.
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: character-foundry-mcp
+    attrs:
+      client_type: public
+      client_id: character-foundry-mcp
+      client_secret: ""
+      access_code_validity: minutes=1
+      access_token_validity: hours=1
+      include_claims_in_id_token: true
+      sub_mode: hashed_user_id
+      issuer_mode: per_provider
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, authentik Self-signed Certificate],
+        ]
+      authentication_flow:
+        !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-explicit-consent],
+        ]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      redirect_uris:
+        - matching_mode: regex
+          url: ^http://(127\.0\.0\.1|localhost):[0-9]{1,5}(/.*)?$
+        - matching_mode: strict
+          url: https://claude.ai/api/mcp/auth_callback
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:read]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:write]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, task:read]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, task:cancel]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, usage:read]]
+
+  - model: authentik_core.application
+    identifiers:
+      slug: character-foundry-mcp
+    attrs:
+      name: Character Foundry MCP
+      provider:
+        !Find [authentik_providers_oauth2.oauth2provider, [name, character-foundry-mcp]]
+      policy_engine_mode: any
+      open_in_new_tab: false
+
+  # Bind cf-agent-default → the MCP app so enrolled human users can authorize
+  # (same gate as the SPA app; an enrolled user not in the group hits Authentik's
+  # "Permission denied" on /authorize, see authentik-stack.md §5.7.3).
+  - model: authentik_policies.policybinding
+    identifiers:
+      target:
+        !Find [authentik_core.application, [slug, character-foundry-mcp]]
+      order: 0
+    attrs:
+      group:
+        !Find [authentik_core.group, [name, cf-agent-default]]
+      enabled: true
+      negate: false
