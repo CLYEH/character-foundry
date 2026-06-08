@@ -211,7 +211,9 @@ ZIP 匯出、Copy Character、Usage dashboard。
 | # | Ticket | Status |
 |---|--------|--------|
 | T-092 | MCP M2M service-account identity —— sanctioned M2M token 解析到 provisioned service-account User，agent 擁有它建的 resource（security-sensitive auth 改動）| DONE（PR #123）|
-| T-091 | Agent E2E smoke —— 真 Authentik client_credentials token 經 nginx 打 `/mcp/` 跑完 character→base→alias→motion + cf-test-agent provider blueprint + CI step（M3.5 ship gate）| IN_PROGRESS |
+| T-091 | Agent E2E smoke —— 真 Authentik client_credentials token 經 nginx 打 `/mcp/` 跑完 character→base→alias→motion + cf-test-agent provider blueprint + CI step（M3.5 ship gate）| DONE（PR #124）|
+
+**✅ M3.5 COMPLETE（2026-06-08）：** T-091 agent E2E smoke 在 CI e2e job 端到端綠 —— `api/scripts/agent_e2e_smoke.py`（外部 M2M agent，只 import mcp client SDK + httpx）經 client_credentials 取 token → streamable-HTTP MCP session（nginx → `/mcp/`）→ `tools/list` → `character.create` → `alias.add` → `motion.generate`（poll task.get）全部成功，達成 `scope.md` §1「外部 agent 不看 REST 文件跑全流程」。Integration gate 過程抓到並修掉兩個只有 live stack 能照出的問題（Authentik 2024.12 `redirect_uris` required；S3.5-6 M2M scope emission → cap-fallback）。M3.5 milestone 勾起。
 
 **⚠ 開工 reveal（2026-06-08）—— 為什麼多了 T-092：** plan 假設「3.5c 走 headless M2M」，但 shipped code 的 M2M token `user_id=None`（`app/mcp/auth.py:266`）、create-flow 每個 tool 都呼 `require_user_context()` 對 `None` 回 `AUTH_USER_CONTEXT_REQUIRED`（`auth.py:180`）—— T-084/85/86 刻意讓 M2M 對 user-owned resource 唯讀。所以 headless M2M create-flow 在現行碼本是不可能的。使用者 2026-06-08 拍板用「最標準的業界作法」= M2M service-principal owns resources → T-092 補上「sanctioned M2M token 解析到 service-account User」。正確順序 **T-092（auth identity）→ T-091（smoke，是 T-092 的端到端證明）**。**3.5c 不依賴 T-089**（那條是真人 delegated discovery，另 hard-depend S3.5-6）。
 
@@ -231,7 +233,7 @@ ZIP 匯出、Copy Character、Usage dashboard。
 - [x] **M1** — Login works end-to-end【Sprint 1 完成】
 - [x] **M2** — Create Character (template mode) end-to-end【Sprint 2 完成】
 - [x] **M3** — Aliases + Motions working【Sprint 3 完成】
-- [ ] **M3.5** — Agent-native baseline：OAuth 2.1 + MCP server，外部 agent 能不看 REST 文件跑全流程【2026-04-30 從 Phase 2 拉回 Phase 1；詳見 `planning/agent-interface/`、`planning/auth/`】
+- [x] **M3.5** — Agent-native baseline：OAuth 2.1 + MCP server，外部 agent 能不看 REST 文件跑全流程【Sprint 3.5a/b/c 全完成；2026-06-08 T-091 agent E2E smoke 端到端綠（外部 M2M agent 經 client_credentials → `/mcp/` 跑完 login → character → base → alias → motion），達成 `scope.md` §1 完成條件。詳見 `planning/agent-interface/`、`planning/auth/`】
 - [ ] **M4** — Download ZIP works【Sprint 4 完成】
 - [ ] **M5** — First internal user feedback【Sprint 5 完成】
 
