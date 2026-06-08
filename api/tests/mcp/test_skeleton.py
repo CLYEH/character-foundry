@@ -189,30 +189,54 @@ async def test_oauth_token_hello_world_success(
 
 
 @pytest.mark.asyncio
-async def test_missing_token_surfaces_mcp_error() -> None:
-    """No `Authorization` header → AUTH_MISSING_TOKEN as a TOOL error.
+async def test_missing_token_triggers_oauth_discovery() -> None:
+    """No `Authorization` header → 401 + WWW-Authenticate discovery trigger (T-089).
 
-    Critical ticket guarantee (Note "MCP error vs HTTP status"): the
-    transport response stays 200 and the failure is reported inside the
-    JSON-RPC envelope as `CallToolResult.isError=True`. If the streamable
-    HTTP layer ever 401'd here, `streamablehttp_client` would raise
-    before `call_tool` returned and this assertion path would never run.
+    T-080 originally returned a 200 tool-error here. T-089 changed ONLY the
+    no-header case: it now short-circuits with `401 + WWW-Authenticate: Bearer
+    resource_metadata="..."` so an OAuth-capable MCP client begins auto-login
+    instead of bouncing off a 200 error it can't act on. The structured
+    `AUTH_MISSING_TOKEN` AgentError is preserved in the 401 body for non-OAuth
+    clients / human debuggers.
+
+    Tokens that are PRESENT but bad still take the 200 tool-error path — see
+    `test_malformed_authorization_header_surfaces_invalid_token`,
+    `test_oauth_token_unknown_client_id_preserves_verifier_code`, and
+    `test_oauth_token_missing_scope_surfaces_mcp_error` below, which are
+    unchanged. Full PRM-document coverage lives in `test_discovery.py`.
+
+    Raw httpx (not `streamablehttp_client`) because the SDK's
+    `ClientSession.initialize()` raises on a 401 before returning — we need to
+    observe the status + header at the wire level.
     """
-    async with mcp_runtime() as factory:
-        result, _progress = await _call_hello(
-            factory,
-            token=None,
-            arguments={"echo": "anon"},
-        )
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "missing-token-smoke", "version": "0.1"},
+        },
+    }
 
-    assert result.isError is True, "Missing token should surface as tool error, not silent success"
-    assert result.content, "isError=True should carry at least one content block"
-    text_blocks = [block for block in result.content if block.type == "text"]
-    assert text_blocks, f"Expected text content, got {result.content!r}"
-    _assert_agent_error_payload(
-        text_blocks[0].text,
-        expected_code="AUTH_MISSING_TOKEN",
+    async with mcp_runtime() as factory:
+        async with factory() as client:
+            resp = await client.post("/mcp/", json=body, headers=headers)
+
+    assert resp.status_code == 401, (
+        f"No-token /mcp/ request should trigger OAuth discovery with 401; got "
+        f"{resp.status_code}: {resp.text[:200]!r}"
     )
+    www = resp.headers.get("www-authenticate")
+    assert www is not None and www.startswith("Bearer ") and "resource_metadata=" in www, (
+        f"401 must carry a Bearer WWW-Authenticate with resource_metadata; got {www!r}"
+    )
+    _assert_agent_error_payload(resp.text, expected_code="AUTH_MISSING_TOKEN")
 
 
 # ---------------------------------------------------------------------------

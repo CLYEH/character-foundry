@@ -1,6 +1,6 @@
 # T-089: MCP delegated-client OAuth discovery (PRM / RFC 9728 + auto-login)
 
-**Status:** TODO
+**Status:** DONE（2026-06-08 — 實作 + CI-verifiable ACs 綠；AC #3 真 client end-to-end 為 Manual，待 operator 跑 MCP Inspector）
 **Sprint:** post-M3.5（使用者 2026-05-21 拍板「要支援真人用 MCP client 連進來 + 自動登入」；不擋 3.5b 收尾 / 3.5c headless-agent E2E）
 **Est:** M（含 plan phase；需 agent-interface + auth 兩視角）
 **Depends on:** ✅ S3.5-6 **RESOLVED by T-093**（2026-06-08 — Authentik 的 5 條 scope-mapping expression 改成 `return {"scope": " ".join(token.scope)}`，delegated + M2M token 現在都把 5 條 app scope 發進 JWT `scope` claim；root cause 是 expression 原本是 `return {}`，不是 consent / attachment 問題）。本單的 hard-dep 已清；剩下 `/mcp/` discovery（PRM / `WWW-Authenticate`）本身。
@@ -43,12 +43,12 @@
 
 ## Acceptance criteria
 
-- [ ] `GET /.well-known/oauth-protected-resource` 回合法 RFC 9728 metadata（authorization_servers 指向 Authentik、scopes_supported 含 5 條 canonical、resource 是 `/mcp/` 的 URL）
-- [ ] 無 token 打 `/mcp/` 會讓支援 OAuth 的 MCP client 觸發 discovery（401 + `WWW-Authenticate` 或等效機制），且**不破壞** T-080 既有「auth 失敗回 200 + tool error」對非 OAuth-discovery client 的行為（需 plan 拍板相容策略）
-- [ ] 一個真 MCP client（MCP Inspector OAuth 模式起步）連 `/mcp/` → 自動導去 Authentik/Google 登入 → 登入完取得 delegated token → 成功 `tools/list` + `character.list`（**前提：S3.5-6 已修，token 帶 character:read**）
-- [ ] pre-registered client（`claude-code` 等）的 client_id / redirect_uri 約定有文件化
-- [ ] 既有 dual-stack bearer（手動帶 token）+ M2M client_credentials 路徑不回歸
-- [ ] 測試綠（PRM endpoint 單元測試 + discovery 觸發的 transport 測試；端到端真 client 那條標 Manual）
+- [x] `GET /.well-known/oauth-protected-resource` 回合法 RFC 9728 metadata（authorization_servers 指向 Authentik `character-foundry-mcp` issuer、scopes_supported 含 5 條 canonical、resource 是 `/mcp` 的 URL）—— `app/mcp/discovery.py` + `tests/mcp/test_discovery.py`
+- [x] 無 token 打 `/mcp/` 觸發 discovery（401 + `WWW-Authenticate: Bearer resource_metadata="..."`），且**不破壞** T-080 對「帶了 token 但驗失敗」的 200 + tool-error 行為（plan Decision 2：只有完全沒帶 header 才 401）—— `app/mcp/auth.py` + `test_discovery.py` + `test_skeleton.py`（present-but-bad regressions 仍綠）
+- [ ] **（Manual，待 operator）** 一個真 MCP client（MCP Inspector OAuth 模式起步）連 `/mcp/` → 自動導去 Authentik/Google 登入 → 取得 delegated token → 成功 `tools/list` + `character.list`。code + blueprint（`character-foundry-mcp` app）+ docs 已就緒；需起 docker stack + 真瀏覽器跑（沿用 CDP/manual OAuth pattern，同先前 OAuth ticket）
+- [x] pre-registered client 的 client_id / redirect_uri 約定有文件化 —— `planning/agent-interface/mcp-oauth-discovery.md` §3 + `planning/devops/authentik-stack.md` §5.4
+- [x] 既有 dual-stack bearer（手動帶 token）+ M2M client_credentials 路徑不回歸 —— 都帶 token，走 200 路徑不受 401-trigger 影響；skeleton happy paths + T-091 agent smoke（送 Bearer）皆未動
+- [x] 測試綠（PRM endpoint 單元測試 + discovery 觸發的 transport 測試）；端到端真 client 那條標 Manual（見上）
 
 ---
 

@@ -25,6 +25,7 @@ from app.mcp.app import (
     get_mcp_dispatcher,
     mcp_lifespan,
 )
+from app.mcp.discovery import router as mcp_discovery_router
 from app.middleware.error_handling import RequestIdMiddleware
 from app.prompt.errors import validation_mask_required
 
@@ -79,6 +80,9 @@ async def _request_validation_handler(
 
 app.add_exception_handler(RequestValidationError, _request_validation_handler)
 app.include_router(storage_router)
+# RFC 9728 Protected Resource Metadata for MCP OAuth discovery (T-089). Public,
+# top-level `/.well-known/oauth-protected-resource` — not under `/v1` or `/mcp`.
+app.include_router(mcp_discovery_router)
 app.include_router(auth_router)
 app.include_router(health_router)
 app.include_router(meta_router)

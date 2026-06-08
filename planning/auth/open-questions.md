@@ -160,3 +160,19 @@ per agent-interface 設計，MCP server 接 streamable HTTP transport，agent cl
 
 **修改流程**：要動這 5 條（改名 / 加減 / 拆細）→ 不在 T-053 / T-054 範圍，要開新 ticket 並同步 Authentik UI + `mcp_clients.py` + `scopes.py`（T-054 之後）+ 本表。
 
+---
+
+## 決策紀錄（續）
+
+### 2026-06-08（T-089 — MCP OAuth discovery，agent-interface + auth 視角，user confirmed）
+
+Q8（MCP-OAuth integration）的延伸：把 Q8 的「MCP server 自己驗 token + scope」補上**真人 delegated client 的 auto-login discovery**。完整設計見 `../agent-interface/mcp-oauth-discovery.md`。
+
+| 決策 | 內容 |
+|---|---|
+| **PRM / RFC 9728** | MCP server 發 Protected Resource Metadata 於 `/.well-known/oauth-protected-resource`（`resource=<host>/mcp`、`authorization_servers=[Authentik issuer]`、`scopes_supported=5 canonical`）。Authentik 選型當初就為了能 host PRM（Q1）——此處兌現。 |
+| **Dedicated app `character-foundry-mcp`** | 所有真人 MCP client 共用這一個 Authentik app（public + PKCE），PRM 只宣告這一條 authorization server，token `iss` 與 discovered issuer 對齊（Authentik per-provider issuer mode 下多 app = 多 issuer = discovery 對不上）。`ALLOWED_CLIENTS` 加一條；既有 `claude-code`/`vs-code`/`cursor` 保留但不在 PRM 宣告。 |
+| **401 trigger line** | 只有「**完全沒帶 `Authorization` header**」才回 `401 + WWW-Authenticate`（discovery 觸發）；**帶了 token 但驗失敗**仍回 T-080 的 `200 + tool-error`。後果：`meta.get` 不再能匿名走 MCP（仍是 no-scope gate + REST `/v1/meta` 仍公開）——這是「要 discovery 就得先有 token」的必然。 |
+| **Audience binding** | Phase 1 維持 `aud = client_id`（Authentik 2024.12 預設）+ allowlist + `iss` 驗證；strict RFC 8707 resource-indicator audience-binding 列 Phase 2 follow-up，不擋本單。 |
+| **Refresh** | delegated MCP token 1h、無 refresh（Q5 sub-5b）——provider scope 不含 `offline_access`。 |
+

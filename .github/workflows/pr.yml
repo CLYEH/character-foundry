@@ -289,10 +289,16 @@ jobs:
           # `AUTHENTIK_AUDIENCE` are comma-separated (app/auth/oauth.py
           # `_parse_csv_env`). cf-test-agent is `issuer_mode: per_provider` so
           # its `iss` is `.../o/cf-test-agent/` and `aud` is `cf-test-agent`.
-          # JWKS stays the SPA endpoint: both providers sign with the same
-          # `authentik Self-signed Certificate`, so one JWKS serves both.
-          AUTHENTIK_ISSUER_URL=http://localhost/oauth/application/o/character-foundry-spa/,http://localhost/oauth/application/o/cf-test-agent/
-          AUTHENTIK_AUDIENCE=character-foundry-spa,cf-test-agent
+          # JWKS stays the SPA endpoint: all providers sign with the same
+          # `authentik Self-signed Certificate`, so one JWKS serves them.
+          # T-089: also accept the dedicated MCP OAuth app
+          # `character-foundry-mcp` (delegated discovery client). CI's
+          # discovery tests don't mint a real delegated token, but listing it
+          # keeps the env consistent with cf-e2e-bootstrap.yaml (which now
+          # creates the provider) — a future delegated-token e2e verifies
+          # without re-touching this.
+          AUTHENTIK_ISSUER_URL=http://localhost/oauth/application/o/character-foundry-spa/,http://localhost/oauth/application/o/cf-test-agent/,http://localhost/oauth/application/o/character-foundry-mcp/
+          AUTHENTIK_AUDIENCE=character-foundry-spa,cf-test-agent,character-foundry-mcp
           AUTHENTIK_JWKS_URL=http://authentik-server:9000/oauth/application/o/character-foundry-spa/jwks/
           OPENAI_API_KEY=
           SEEDANCE_API_KEY=
