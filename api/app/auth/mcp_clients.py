@@ -36,8 +36,10 @@ __all__ = [
     "CANONICAL_SCOPES",
     "ClientPolicy",
     "M2M_DEFAULT_SCOPES",
+    "M2M_SERVICE_ACCOUNT_CLIENTS",
     "get_allowed_scopes",
     "is_allowed_client",
+    "is_m2m_service_account_client",
 ]
 
 
@@ -76,6 +78,30 @@ ALLOWED_CLIENTS: Final[dict[str, ClientPolicy]] = {
 }
 
 
+# M2M clients sanctioned to act as service-account principals (T-092). A
+# client_credentials token from one of these resolves to a provisioned backend
+# service-account `User` on `/mcp/*`, so the headless agent OWNS the characters
+# / aliases / motions it creates — the industry-standard machine-principal model
+# (Auth0 `<client_id>@clients`, GitHub App bot user, Authentik's auto service
+# account). M2M clients NOT listed here keep `user_id=None` and stay read-only on
+# user-owned resources (the T-084/85/86 default) — fail-closed, so registering a
+# new M2M client can't silently grant it resource ownership.
+#
+# `is_m2m` stays True for these tokens, so `/v1/*` still rejects them via
+# `auth_m2m_wrong_surface`; the service identity is confined to `/mcp/*`. Every
+# entry MUST also be an M2M (scope-capped) client in ALLOWED_CLIENTS — a guard
+# test (`tests/auth/test_m2m_service_account.py`) pins that invariant.
+#
+# ⚠ BLAST RADIUS before adding a client here: the service account is provisioned
+# into the `default` team (Phase-1 single team, DECISIONS §6 B5) — the SAME team
+# as every human user. Team character visibility is team-scoped, not owner-scoped
+# (`character_service.list_characters` with `owner_id=None`), so a sanctioned
+# agent holding `character:read` can list / read EVERY human user's characters in
+# that team, not only the ones it created. Adding a client grants team-wide read,
+# not just self-owned write. Per-agent team isolation is a Phase-2 concern.
+M2M_SERVICE_ACCOUNT_CLIENTS: Final[frozenset[str]] = frozenset({"cf-test-agent"})
+
+
 def is_allowed_client(client_id: str) -> bool:
     """Return True iff `client_id` is pre-registered for MCP access.
 
@@ -110,3 +136,15 @@ def get_allowed_scopes(client_id: str) -> frozenset[str] | None:
     if scopes is None:
         return None
     return frozenset(scopes)
+
+
+def is_m2m_service_account_client(client_id: str) -> bool:
+    """Return True iff an M2M token from `client_id` should own its resources.
+
+    When True, `app.mcp.auth.resolve_mcp_token` resolves the token to a
+    provisioned backend service-account `User` (T-092) so the headless agent can
+    run user-scoped tools (character.create, ...) and own what it creates. When
+    False (the default for any M2M client not in the allowlist), the token keeps
+    `user_id=None` and stays read-only on user-owned resources.
+    """
+    return client_id in M2M_SERVICE_ACCOUNT_CLIENTS

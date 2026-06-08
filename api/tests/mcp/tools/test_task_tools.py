@@ -52,11 +52,13 @@ async def test_task_cancel_scope_reject() -> None:
 
 
 async def test_task_get_m2m_no_user_context() -> None:
-    """An M2M token (no user) calling a user-scoped tool fails closed."""
+    """A non-service-account M2M token (no user) calling a user-scoped tool fails
+    closed. (`agent-x` rather than `cf-test-agent` — T-092 makes the latter a
+    service-account client that resolves a user_id.)"""
     with auth_as(
         user_id=None,
         scopes=CANONICAL_SCOPES,
-        client_id="cf-test-agent",
+        client_id="agent-x",
         is_m2m=True,
     ):
         with pytest.raises(ToolError) as ei:

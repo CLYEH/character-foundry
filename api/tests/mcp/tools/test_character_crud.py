@@ -175,8 +175,11 @@ async def test_write_tool_rejects_read_only_scope() -> None:
 
 
 async def test_m2m_token_without_user_context_fails_closed() -> None:
-    """M2M tokens (no human behind them) can't drive user-scoped character tools."""
-    with auth_as(user_id=None, is_m2m=True, client_id="cf-test-agent"):
+    """A non-service-account M2M token (no human, no service identity) can't
+    drive user-scoped character tools. (`cf-test-agent` is no longer an example
+    here — T-092 makes it a service-account client that DOES resolve a user_id;
+    `agent-x` stands in for an ordinary read-only M2M client.)"""
+    with auth_as(user_id=None, is_m2m=True, client_id="agent-x"):
         with pytest.raises(ToolError) as excinfo:
             await character_list()
     assert tool_error_code(excinfo.value) == "AUTH_USER_CONTEXT_REQUIRED"

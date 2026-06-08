@@ -38,6 +38,12 @@ _ALLOWED_DOMAINS_ENV: Final[str] = "OAUTH_AUTO_PROVISION_ALLOWED_DOMAINS"
 # default Phase-1 team (DECISIONS §6 B5 — single team).
 _DEFAULT_TEAM_NAME: Final[str] = "default"
 
+# Synthetic email domain for M2M service-account users (T-092). `example.com`
+# (RFC 2606 reserved) rather than `.local` — the latter is rejected by
+# pydantic's `EmailStr`, which would 422 any owner DTO that serialises a
+# service account's email (see the same note in api/app/cli.py E2E_USERS).
+_M2M_SERVICE_EMAIL_DOMAIN: Final[str] = "example.com"
+
 
 def _allowed_domains() -> frozenset[str]:
     raw = os.environ.get(_ALLOWED_DOMAINS_ENV, "")
@@ -111,4 +117,65 @@ async def auto_provision_oauth_user(*, email: str, name: str | None) -> User:
             )
             return existing
         await db.refresh(user)
+        return user
+
+
+def m2m_service_account_email(client_id: str) -> str:
+    """Stable synthetic email keying an M2M client to its service-account User.
+
+    `agent+{client_id}@example.com` — the `+client_id` segment makes the row
+    deterministic per client (Auth0 uses `<client_id>@clients` for the same
+    purpose). Lowercased so the `LOWER(email)` lookup in
+    `resolve_m2m_service_user_id` is a stable hit.
+    """
+    return f"agent+{client_id.lower()}@{_M2M_SERVICE_EMAIL_DOMAIN}"
+
+
+async def auto_provision_m2m_service_user(*, client_id: str) -> User:
+    """Insert (or re-fetch) the backend service-account `User` for an M2M client.
+
+    Called by `resolve_m2m_service_user_id` the first time a sanctioned M2M
+    client_credentials token reaches `/mcp/*`. Mirrors `auto_provision_oauth_user`:
+      • team = `default` (Phase 1 single-team, DECISIONS §6 B5).
+      • password_hash = hash of a never-recorded random token — there is no
+        human and no password login for a service account; this just satisfies
+        the NOT NULL column and guarantees `/v1/auth/login` can never match.
+      • email = `m2m_service_account_email(client_id)` (the stable key).
+      • name = `Service Agent ({client_id})`, trimmed to the VARCHAR(100) column.
+
+    The caller is gated on `is_m2m_service_account_client(client_id)` BEFORE
+    reaching here, so this never provisions an unsanctioned client. Concurrent
+    first-calls race on the `users.email` unique constraint; the IntegrityError
+    branch re-selects the winning row instead of 500-ing one of the callers.
+    """
+    email = m2m_service_account_email(client_id)
+    factory = async_session_factory()
+    async with factory() as db:
+        team = (
+            await db.execute(select(Team).where(Team.name == _DEFAULT_TEAM_NAME))
+        ).scalar_one_or_none()
+        if team is None:
+            raise RuntimeError(f"team {_DEFAULT_TEAM_NAME!r} not found — run alembic migrations")
+        user = User(
+            team_id=team.id,
+            name=f"Service Agent ({client_id})"[:100],
+            email=email,
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+        )
+        db.add(user)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            existing = (await db.execute(select(User).where(User.email == email))).scalar_one()
+            _logger.info(
+                "m2m_service_account_provision_race_resolved",
+                extra={"user_id": str(existing.id), "client_id": client_id},
+            )
+            return existing
+        await db.refresh(user)
+        _logger.info(
+            "m2m_service_account_provisioned",
+            extra={"user_id": str(user.id), "client_id": client_id},
+        )
         return user
