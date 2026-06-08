@@ -147,23 +147,29 @@ async def test_sanctioned_m2m_client_resolves_service_user_id(
     assert result.scopes == frozenset({"character:write", "task:read"})
 
 
-async def test_m2m_empty_scope_claim_falls_back_to_allowlist_cap(
+async def test_m2m_scopes_come_from_token_claim_no_cap_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An empty `scope` claim (the real Authentik client_credentials token —
-    S3.5-6: custom app scopes are not emitted into the JWT) resolves to the
-    client's allowlist CAP, not an empty grant. Without this, every
-    require_mcp_scopes call would AUTH_INSUFFICIENT_SCOPE and a headless agent
-    could do nothing. A non-empty claim is honored verbatim instead (covered by
-    test_sanctioned_m2m_client_resolves_service_user_id), so strict per-scope
-    enforcement still applies to any token that carries a real scope set.
+    """M2M scopes are read straight from the token's `scope` claim — there is NO
+    fallback to the client's allowlist cap.
+
+    T-093 made Authentik emit the granted app scopes into the access-token JWT
+    (via the ScopeMapping expressions), so the empty-claim case the old
+    cap-fallback existed for no longer happens for a correctly-configured client.
+    The fallback was REMOVED because it would silently widen a future narrow-cap
+    client's empty-claim misconfig up to its full cap (S3.5-6 security 🟡). The
+    cap still bounds the token as a ceiling in `verify_oauth_token`
+    (`token_scopes <= cap`), so a real claim can never exceed the client's
+    authorization; this pins that an empty claim now yields an EMPTY grant, not
+    the cap. (A real, populated claim is honored verbatim — covered by
+    test_sanctioned_m2m_client_resolves_service_user_id.)
     """
     from app.mcp.auth import MCPAuthContext, resolve_mcp_token
 
     empty_scope_claims = OAuthClaims(
         sub="ak-cf-test-agent-client_credentials",
         client_id="cf-test-agent",
-        scopes=frozenset(),  # Authentik emitted no scope claim
+        scopes=frozenset(),  # an empty / misconfigured scope claim
         email=None,
         name=None,
         is_m2m=True,
@@ -183,11 +189,8 @@ async def test_m2m_empty_scope_claim_falls_back_to_allowlist_cap(
     result = await resolve_mcp_token(_unsigned_token())
 
     assert isinstance(result, MCPAuthContext), result
-    # cf-test-agent is capped to the full canonical set → that becomes the grant.
-    assert result.scopes == get_allowed_scopes("cf-test-agent")
-    assert result.scopes, (
-        "an empty scope claim must NOT yield an empty grant for a capped M2M client"
-    )
+    # No cap-fallback: an empty scope claim resolves to an empty grant.
+    assert result.scopes == frozenset()
     assert result.is_m2m is True
 
 
