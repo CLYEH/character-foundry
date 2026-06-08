@@ -250,10 +250,12 @@ def test_delegated_oauth_grandfathered_through_require_scope(
     passes a `require_scope("character:write")` gate on `/v1/*` — delegated
     (human) sessions are grandfathered to the full canonical set, exactly like
     legacy JWTs (T-084 grandfather decision; see `_resolve_oauth`). This pins
-    the behaviour so it can't silently regress back to `claims.scopes`-based
-    403s, which would lock out real human OAuth callers whose Authentik token
-    doesn't carry the 5 app scopes. Strict per-scope enforcement now lives on
-    `/mcp/*` (`require_mcp_scopes`), not here.
+    the behaviour so it can't silently regress to `claims.scopes`-based 403s on
+    the human REST surface. Authentik now emits the 5 app scopes into delegated
+    tokens (T-093), so a real SPA token already carries them; the grandfather is
+    kept deliberately so a human REST caller is never 403'd even if a token's
+    scope set narrows. Strict per-scope enforcement lives on `/mcp/*`
+    (`require_mcp_scopes`), not here.
     """
     token = make_oauth_token(
         scopes=["character:read"],  # write missing from the token claim

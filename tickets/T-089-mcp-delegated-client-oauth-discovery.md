@@ -3,7 +3,7 @@
 **Status:** TODO
 **Sprint:** post-M3.5（使用者 2026-05-21 拍板「要支援真人用 MCP client 連進來 + 自動登入」；不擋 3.5b 收尾 / 3.5c headless-agent E2E）
 **Est:** M（含 plan phase；需 agent-interface + auth 兩視角）
-**Depends on:** S3.5-6（Authentik 必須真的把 5 個 app scope 發進 delegated token —— 否則真人登入後拿到的 token 在 `/mcp/` 仍會 `AUTH_INSUFFICIENT_SCOPE`，因為 `/mcp/` 走 strict `require_mcp_scopes`，**不** grandfather）
+**Depends on:** ✅ S3.5-6 **RESOLVED by T-093**（2026-06-08 — Authentik 的 5 條 scope-mapping expression 改成 `return {"scope": " ".join(token.scope)}`，delegated + M2M token 現在都把 5 條 app scope 發進 JWT `scope` claim；root cause 是 expression 原本是 `return {}`，不是 consent / attachment 問題）。本單的 hard-dep 已清；剩下 `/mcp/` discovery（PRM / `WWW-Authenticate`）本身。
 **Related:** T-080（MCP server skeleton + dual-stack bearer）、T-053（Authentik client 註冊）、T-056（SPA OAuth login UI）
 
 ---

@@ -58,7 +58,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.auth.jwt import JWTExpired, JWTInvalid, verify_access_token
-from app.auth.mcp_clients import get_allowed_scopes, is_m2m_service_account_client
+from app.auth.mcp_clients import is_m2m_service_account_client
 from app.auth.oauth import is_authentik_token, verify_oauth_token
 from app.auth.scopes import CANONICAL_SCOPES
 from app.auth.user_resolution import resolve_m2m_service_user_id, resolve_oauth_user_id
@@ -285,23 +285,19 @@ async def resolve_mcp_token(token: str) -> MCPAuthContext | MCPAuthFailure:
                 factory = async_session_factory()
                 async with factory() as db:
                     m2m_user_id = await resolve_m2m_service_user_id(claims.client_id, db)
-            # M2M (client_credentials) scopes come from the client's registered
-            # allowlist cap, not a consent step. Authentik does NOT put the custom
-            # app scopes into the CC token's `scope` claim (S3.5-6 — the same gap
-            # `/v1/*` works around by grandfathering), so when the claim is empty
-            # fall back to the cap (`get_allowed_scopes` returns this M2M client's
-            # frozenset; client_id already passed the allowlist in
-            # `verify_oauth_token`, so this never KeyErrors). The cap is
-            # server-controlled (mcp_clients.py) and is the authorization for a
-            # machine principal, so granting it is correct + safe. A non-empty
-            # claim is still honored verbatim — forward-compatible if S3.5-6 is
-            # fixed, and it keeps strict per-scope enforcement for any token that
-            # DOES carry a real scope set (e.g. synthetic test tokens).
-            m2m_scopes = claims.scopes or get_allowed_scopes(claims.client_id) or frozenset()
+            # M2M (client_credentials) scopes come straight from the token's
+            # `scope` claim. Authentik now emits the granted app scopes into the
+            # access-token JWT (T-093 fixed the ScopeMapping expressions to emit a
+            # `scope` claim — before that the claim was empty and this fell back to
+            # the client's allowlist cap). The cap-fallback was REMOVED: it would
+            # silently widen a future narrow-cap client's empty-claim misconfig up
+            # to its full cap (S3.5-6 security 🟡). The cap is still enforced as a
+            # ceiling in `verify_oauth_token` (`token_scopes <= cap`), so the claim
+            # can never exceed the client's authorization.
             return MCPAuthContext(
                 user_id=m2m_user_id,
                 client_id=claims.client_id,
-                scopes=m2m_scopes,
+                scopes=claims.scopes,
                 is_m2m=True,
             )
         # Delegated token (Auth Code + PKCE) — a human is acting through

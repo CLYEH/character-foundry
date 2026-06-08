@@ -98,18 +98,20 @@ async def _resolve_oauth(
         # downstream deps that would read it.
         raise auth_m2m_wrong_surface()
 
-    # Delegated (human) OAuth sessions are grandfathered to the full canonical
-    # scope set on `/v1/*`, exactly like legacy JWTs in `_resolve_jwt` — `/v1/*`
-    # is the human-user surface (M2M is rejected just above), so an Authentik
-    # SPA session is the OAuth analog of a legacy JWT session and gets the same
-    # "full access" treatment through any `require_scope` gate. This is what
-    # keeps the require_scope rollout (S3.5-1) from 403-ing real human OAuth
-    # callers whose Authentik token doesn't carry the 5 app scopes (the
-    # consent-time scope emission was never wired end-to-end — tracked in
-    # STATUS backlog S3.5-6). Per-scope enforcement that actually matters lives
-    # on `/mcp/*`, where `require_mcp_scopes` reads the token's REAL
-    # `claims.scopes` (via `MCPAuthContext`), NOT this grandfathered set — so
-    # agents stay constrained while humans get uniform `/v1/*` access. If a
+    # Delegated (human) OAuth sessions get the full canonical scope set on
+    # `/v1/*`, exactly like legacy JWTs in `_resolve_jwt` — `/v1/*` is the
+    # human-user surface (M2M is rejected just above), so an Authentik SPA
+    # session is the OAuth analog of a legacy JWT session and gets uniform
+    # "full access" through any `require_scope` gate. This is a DELIBERATE
+    # design choice for the human REST surface, not a scope-emission workaround:
+    # Authentik now DOES emit the 5 app scopes into delegated tokens (T-093) and
+    # the SPA requests all 5, so the token's real `claims.scopes` already equals
+    # CANONICAL here — we keep the grandfather so a human REST caller is never
+    # 403'd on a per-scope gate (and so a future SPA scope-set change can't
+    # silently lock humans out of `/v1/*`). Per-scope enforcement that actually
+    # matters lives on `/mcp/*`, where `require_mcp_scopes` reads the token's
+    # REAL `claims.scopes` (via `MCPAuthContext`), NOT this grandfathered set —
+    # so agents stay constrained while humans get uniform `/v1/*` access. If a
     # delegated *agent* client ever needs per-scope limits on `/v1/*`, revisit
     # this with the token's `oauth_client_id` (preserved below).
     request.state.token_scopes = CANONICAL_SCOPES
