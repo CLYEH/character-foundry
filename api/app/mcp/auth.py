@@ -58,9 +58,10 @@ from mcp.server.fastmcp.exceptions import ToolError
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.auth.jwt import JWTExpired, JWTInvalid, verify_access_token
+from app.auth.mcp_clients import is_m2m_service_account_client
 from app.auth.oauth import is_authentik_token, verify_oauth_token
 from app.auth.scopes import CANONICAL_SCOPES
-from app.auth.user_resolution import resolve_oauth_user_id
+from app.auth.user_resolution import resolve_m2m_service_user_id, resolve_oauth_user_id
 from app.core.errors import (
     AgentErrorException,
     auth_expired,
@@ -79,10 +80,14 @@ _logger = logging.getLogger(__name__)
 class MCPAuthContext:
     """Resolved auth state for one MCP request.
 
-    `user_id` is `None` for M2M client_credentials tokens — they have no
-    human behind them and the MCP surface tolerates that by design (per
-    agent-interface Q5 Round 2 — headless agents are first-class on /mcp/*,
-    they just can't reach /v1/* per T-054 `auth_m2m_wrong_surface`).
+    `user_id` is `None` for M2M client_credentials tokens by default — they
+    have no human behind them and the MCP surface tolerates that by design
+    (per agent-interface Q5 Round 2 — headless agents are first-class on
+    /mcp/*, they just can't reach /v1/* per T-054 `auth_m2m_wrong_surface`).
+    EXCEPTION (T-092): an M2M client in `M2M_SERVICE_ACCOUNT_CLIENTS` resolves
+    to a provisioned backend service-account `User.id`, so the headless agent
+    can run user-scoped tools and own what it creates — `is_m2m` stays True
+    (still rejected on /v1/*), but `user_id` is populated.
     Legacy JWT-path requests always have a `user_id`, no `client_id`, and
     `is_m2m=False` — mirroring `_resolve_jwt` in `app/api/deps.py`.
     """
@@ -260,12 +265,28 @@ async def resolve_mcp_token(token: str) -> MCPAuthContext | MCPAuthFailure:
             )
             return MCPAuthFailure(error=exc)
         # M2M tokens are SANCTIONED on /mcp/* — `auth_m2m_wrong_surface`
-        # only fires on `/v1/*` (T-054 `_resolve_oauth`). Headless agents
-        # use the OAuth client_credentials grant against this surface and
-        # legitimately have no human user behind them, so `user_id=None`.
+        # only fires on `/v1/*` (T-054 `_resolve_oauth`). Headless agents use
+        # the OAuth client_credentials grant against this surface.
+        #
+        # A client in `M2M_SERVICE_ACCOUNT_CLIENTS` (T-092) resolves to a
+        # provisioned backend service-account User, so it can run user-scoped
+        # tools (character.create, ...) and OWN what it creates — the
+        # industry-standard machine-principal model. Any other M2M client stays
+        # `user_id=None` and is read-only on user-owned resources
+        # (require_user_context fails closed). `is_m2m` stays True either way,
+        # so /v1/* still rejects. The short-lived session mirrors the delegated
+        # branch below — the MCP middleware runs before any FastAPI Depends, so
+        # there's no injected `db` to share. A missing `default` team raises
+        # RuntimeError (deploy misconfig) and propagates loud, same as the
+        # delegated path's `auto_provision_oauth_user`.
         if claims.is_m2m:
+            m2m_user_id: uuid.UUID | None = None
+            if is_m2m_service_account_client(claims.client_id):
+                factory = async_session_factory()
+                async with factory() as db:
+                    m2m_user_id = await resolve_m2m_service_user_id(claims.client_id, db)
             return MCPAuthContext(
-                user_id=None,
+                user_id=m2m_user_id,
                 client_id=claims.client_id,
                 scopes=claims.scopes,
                 is_m2m=True,

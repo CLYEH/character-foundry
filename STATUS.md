@@ -204,9 +204,16 @@ ZIP 匯出、Copy Character、Usage dashboard。
 - Client 註冊：pre-registered allowlist（Figma 模式），DCR 不開
 - Migration：簡化 dual-stack，1 sprint 完成
 
-#### Sprint 3.5c — Agent E2E smoke（未開單；3.5b ship 完再開）
+#### Sprint 3.5c — Agent E2E smoke（已開單 2026-06-08）
 
-對照 `planning/agent-interface/scope.md` §5.3「Sprint 3.5c = 用一個外部 agent 跑完 §1 完成條件（登入 → 建 character → 確立 base → 加 alias → 生 motion）」。0.5 週估時。**3.5c 的 agent 走 M2M client_credentials（headless，不需人登入）**，已由 T-080 dual-stack 支援；不依賴下方 T-089。
+對照 `planning/agent-interface/scope.md` §5.3「Sprint 3.5c = 用一個外部 agent 跑完 §1 完成條件（登入 → 建 character → 確立 base → 加 alias → 生 motion）」。**3.5c 的 agent 走 M2M client_credentials（headless，不需人登入）**。
+
+| # | Ticket | Status |
+|---|--------|--------|
+| T-092 | MCP M2M service-account identity —— sanctioned M2M token 解析到 provisioned service-account User，agent 擁有它建的 resource（security-sensitive auth 改動）| IN_PROGRESS |
+| T-091 | Agent E2E smoke —— 真 Authentik client_credentials token 經 nginx 打 `/mcp/` 跑完 character→base→alias→motion + cf-test-agent provider blueprint + CI step（M3.5 ship gate）| TODO（blocked on T-092）|
+
+**⚠ 開工 reveal（2026-06-08）—— 為什麼多了 T-092：** plan 假設「3.5c 走 headless M2M」，但 shipped code 的 M2M token `user_id=None`（`app/mcp/auth.py:266`）、create-flow 每個 tool 都呼 `require_user_context()` 對 `None` 回 `AUTH_USER_CONTEXT_REQUIRED`（`auth.py:180`）—— T-084/85/86 刻意讓 M2M 對 user-owned resource 唯讀。所以 headless M2M create-flow 在現行碼本是不可能的。使用者 2026-06-08 拍板用「最標準的業界作法」= M2M service-principal owns resources → T-092 補上「sanctioned M2M token 解析到 service-account User」。正確順序 **T-092（auth identity）→ T-091（smoke，是 T-092 的端到端證明）**。**3.5c 不依賴 T-089**（那條是真人 delegated discovery，另 hard-depend S3.5-6）。
 
 #### Post-M3.5 — MCP delegated-client 自動登入（已開單 2026-05-21）
 

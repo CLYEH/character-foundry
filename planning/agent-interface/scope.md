@@ -19,6 +19,7 @@
 ### 2.1 OAuth 2.1 auth flow
 - **Authorization Code + PKCE** 給 human user（替換現有 JWT login）
 - **Client Credentials** 給 agent / M2M（headless agent 取 token 不需要人）
+  - **M2M agent 是 first-class resource owner（T-092）**：sanctioned 的 M2M client（`M2M_SERVICE_ACCOUNT_CLIENTS`）在 `/mcp/*` 解析到一個 provisioned backend **service-account `User`**，agent 因此能跑 create-flow 並擁有它建的 character / alias / motion —— 業界標準的 machine-principal 模式（client_credentials 的 `sub` 即 service identity，service 擁有它建立的資源）。`is_m2m` 仍為 `True`（`/v1/*` 仍 reject，service identity 只在 `/mcp/*` 生效）；未列入 set 的 M2M client 維持 `user_id=None`、對 user-owned resource 唯讀（fail-closed）。落地見 `tickets/DONE/T-092-*.md`。
 - Scope 模型：人的 scope vs agent 的 scope 可能不同（見 `open-questions.md` Q5）
 - Refresh token 整合既有 `refresh_token` model
 

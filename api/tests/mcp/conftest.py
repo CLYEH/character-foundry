@@ -89,6 +89,19 @@ def _mcp_db_session_stub(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("app.mcp.auth.async_session_factory", _factory)
 
+    # T-092: a sanctioned M2M client (cf-test-agent) now resolves to a
+    # provisioned service-account User via `resolve_m2m_service_user_id`, which
+    # issues a real `db.execute(...)` the no-DB stub session above can't serve.
+    # The MCP smoke suite deliberately avoids a real DB, so stub the resolver to
+    # a fixed synthetic id — the suite's OAuth tests only assert the auth
+    # resolution succeeds (hello.world ignores user_id); the real DB-backed
+    # service-identity behaviour is covered by
+    # tests/auth/test_m2m_service_account.py.
+    async def _fake_m2m_resolve(_client_id: str, _db: Any) -> uuid.UUID:
+        return uuid.UUID("00000000-0000-0000-0000-0000000000aa")
+
+    monkeypatch.setattr("app.mcp.auth.resolve_m2m_service_user_id", _fake_m2m_resolve)
+
 
 @pytest.fixture(autouse=True)
 def _mcp_env(monkeypatch: pytest.MonkeyPatch) -> None:

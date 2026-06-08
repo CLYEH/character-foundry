@@ -98,8 +98,10 @@ async def test_write_tool_rejects_read_only_scope() -> None:
 
 
 async def test_m2m_token_without_user_context_fails_closed() -> None:
-    """M2M tokens (no human behind them) can't drive user-scoped alias tools."""
-    with auth_as(user_id=None, is_m2m=True, client_id="cf-test-agent"):
+    """A non-service-account M2M token (no human, no service identity) can't
+    drive user-scoped alias tools. (`agent-x` rather than `cf-test-agent` —
+    T-092 makes the latter resolve a service-account user_id.)"""
+    with auth_as(user_id=None, is_m2m=True, client_id="agent-x"):
         with pytest.raises(ToolError) as excinfo:
             await alias_list(uuid.uuid4())
     assert tool_error_code(excinfo.value) == "AUTH_USER_CONTEXT_REQUIRED"
