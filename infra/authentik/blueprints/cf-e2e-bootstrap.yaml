@@ -286,7 +286,12 @@ entries:
   # verifier checks). Differences from the SPA:
   #   • client_type: confidential + a non-empty client_secret (PKCE-public
   #     can't carry a client_secret, and CC needs one).
-  #   • redirect_uris omitted — client_credentials never redirects.
+  #   • redirect_uris: client_credentials never redirects, BUT Authentik
+  #     2024.12's OAuth2Provider serializer marks `redirect_uris` REQUIRED —
+  #     omitting it errors the ENTIRE blueprint apply ("redirect_uris: This
+  #     field is required"), which also blocks the SPA entry and 404s its
+  #     OpenID config (T-091 CI run #1). A single unused placeholder satisfies
+  #     the serializer; it is never exercised by the CC grant.
   #   • property_mappings = the 5 canonical app scopes ONLY (no openid /
   #     profile / email): the smoke requests exactly those 5, and the
   #     backend caps cf-test-agent to CANONICAL_SCOPES — an extra `openid`
@@ -322,6 +327,11 @@ entries:
         ]
       invalidation_flow:
         !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      # Required-but-unused (see header note). The CC grant issues tokens
+      # directly from the token endpoint and never redirects here.
+      redirect_uris:
+        - matching_mode: strict
+          url: http://localhost/cf-test-agent/unused
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:read]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:write]]
