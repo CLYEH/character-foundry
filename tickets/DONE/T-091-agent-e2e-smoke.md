@@ -1,6 +1,6 @@
 # T-091: Agent E2E smoke — 外部 M2M agent 經 OAuth + MCP 跑完 M3 全流程
 
-**Status:** IN_PROGRESS
+**Status:** DONE（PR #124，2026-06-08；M3.5 ship gate 達成）
 **Sprint:** 3.5c（Agent E2E smoke）
 **Est:** M（原 scope.md §5.3 估 0.5 週，但 milestone-true 版本要 seed 真的 Authentik M2M provider —— e2e bootstrap 當初刻意 defer 了 cf-test-agent，補上是本單主要工作量，實際 > 0.5 週）
 **Depends on:** T-092（M2M service-account identity；**hard blocker** —— 沒有它 M2M token `user_id=None`，create-flow 全部撞 `AUTH_USER_CONTEXT_REQUIRED`）、T-080 / T-081 / T-082 / T-084 / T-085 / T-086 / T-088（全 DONE）
@@ -39,12 +39,14 @@
 
 ## Acceptance criteria
 
-- [ ] 新 blueprint apply 後 `BlueprintInstance.status == successful`（不是 SUCCESS task 但 status=error 的 silent-fail）；`cf-test-agent` provider + application + service account + token + `cf-test-agent-full` group + policy binding 都實際存在（API / `ak shell` 驗）。
-- [ ] `POST http://localhost/oauth/application/o/token/`（grant_type=client_credentials, client_id=cf-test-agent, client_secret=<seeded token>, scope=5 條）回 200 + JWT access token，`scope` claim 含 5 條、`aud`/`azp` 對齊 cf-test-agent。
-- [ ] smoke harness 連 `http://localhost/mcp/` `tools/list` 看得到 `character.create` / `alias.add` / `motion.generate` / `task.get`；逐一跑完 character→base→alias→motion 全綠（stub AI）。
-- [ ] CI e2e job 新增的 smoke step 在 PR 上跑綠（gate 證據）。
-- [ ] 既有 e2e（Playwright specs）+ backend / mcp 測試不回歸。
-- [ ] harness 不 import `app.*`（grep 驗：只有 `mcp` / `httpx` / stdlib）。
+> **驗收結果（PR #124 CI 綠；含 integration gate 抓到的 2 個修正）。** 落地用 Authentik **Option-3 M2M**（provider client_secret → 自動 service account），故**未** seed 手動 SA / token / `cf-test-agent-full` group / policy binding——原 AC 假設的「手動 SA + group + binding」改成 Option-3，下面已對齊。
+
+- [x] 新 blueprint apply 後 `BlueprintInstance.status == successful`（CI run #1 因漏 `redirect_uris` → status=error；補 placeholder 後綠）；`cf-test-agent` provider + application 實際存在（Option-3：無手動 SA / token / group / binding——auto-SA 由 client_credentials grant 自建）。
+- [~] `POST .../o/token/` client_credentials 回 200 + JWT，**`aud`/`azp` == `cf-test-agent` ✅、簽章/`iss` ✅**；**但 `scope` claim 是空的 ❌**（Authentik 2024.12 不把 5 條 custom app scope 發進 CC token——即 S3.5-6，本單端到端確認也打到 M2M）。**workaround**：`resolve_mcp_token` 對 M2M 空 scope claim fallback 到 allowlist cap（security-reviewed，PR #124 `4a41796`）。所以「agent 能以 5 scope 呼叫 tool」的**意圖達成**，但「token scope claim 含 5 條」的**字面未達成**（記入 STATUS S3.5-6，待真修 emission 時連 fallback 一起退場）。
+- [x] smoke harness 連 `http://localhost/mcp/` `tools/list` 看得到 4 個 tool；逐一跑完 character→base→alias→motion 全綠（stub AI）——CI e2e smoke step 證實。
+- [x] CI e2e job 新增的 smoke step 在 PR #124 跑綠（gate 證據）。
+- [x] 既有 e2e（Playwright specs）+ backend / mcp 測試不回歸（PR #124 4 個 check 全 SUCCESS）。
+- [x] harness 不 import `app.*`（CI + 本機 AST grep 驗：只有 `mcp` / `httpx` / stdlib）。
 
 ---
 
