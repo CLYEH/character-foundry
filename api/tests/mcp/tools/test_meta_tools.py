@@ -49,7 +49,9 @@ async def _call_meta(
 
 async def _list_tools(factory: Callable[..., httpx.AsyncClient], *, token: str) -> Any:
     headers = {"Authorization": f"Bearer {token}"}
-    async with streamablehttp_client(url=MCP_URL, headers=headers, httpx_client_factory=factory) as (
+    async with streamablehttp_client(
+        url=MCP_URL, headers=headers, httpx_client_factory=factory
+    ) as (
         read_stream,
         write_stream,
         _sid,
