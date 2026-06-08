@@ -147,6 +147,50 @@ async def test_sanctioned_m2m_client_resolves_service_user_id(
     assert result.scopes == frozenset({"character:write", "task:read"})
 
 
+async def test_m2m_empty_scope_claim_falls_back_to_allowlist_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty `scope` claim (the real Authentik client_credentials token —
+    S3.5-6: custom app scopes are not emitted into the JWT) resolves to the
+    client's allowlist CAP, not an empty grant. Without this, every
+    require_mcp_scopes call would AUTH_INSUFFICIENT_SCOPE and a headless agent
+    could do nothing. A non-empty claim is honored verbatim instead (covered by
+    test_sanctioned_m2m_client_resolves_service_user_id), so strict per-scope
+    enforcement still applies to any token that carries a real scope set.
+    """
+    from app.mcp.auth import MCPAuthContext, resolve_mcp_token
+
+    empty_scope_claims = OAuthClaims(
+        sub="ak-cf-test-agent-client_credentials",
+        client_id="cf-test-agent",
+        scopes=frozenset(),  # Authentik emitted no scope claim
+        email=None,
+        name=None,
+        is_m2m=True,
+    )
+
+    async def _fake_verify(_token: str) -> OAuthClaims:
+        return empty_scope_claims
+
+    async def _fake_resolve(_client_id: str, _db: Any) -> uuid.UUID:
+        return uuid.uuid4()
+
+    monkeypatch.setattr("app.mcp.auth.is_authentik_token", lambda _: True)
+    monkeypatch.setattr("app.mcp.auth.verify_oauth_token", _fake_verify)
+    monkeypatch.setattr("app.mcp.auth.resolve_m2m_service_user_id", _fake_resolve)
+    monkeypatch.setattr("app.mcp.auth.async_session_factory", _fake_session_factory())
+
+    result = await resolve_mcp_token(_unsigned_token())
+
+    assert isinstance(result, MCPAuthContext), result
+    # cf-test-agent is capped to the full canonical set → that becomes the grant.
+    assert result.scopes == get_allowed_scopes("cf-test-agent")
+    assert result.scopes, (
+        "an empty scope claim must NOT yield an empty grant for a capped M2M client"
+    )
+    assert result.is_m2m is True
+
+
 async def test_unsanctioned_m2m_client_stays_userless(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

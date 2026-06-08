@@ -19,13 +19,27 @@
 #   5. OAuth2 provider + application `character-foundry-spa` configured as
 #      PUBLIC PKCE with implicit consent (the explicit-consent flow used in
 #      prod would require an extra Playwright click per spec).
+#   6. OAuth2 provider + application `cf-test-agent` (T-091) — a CONFIDENTIAL
+#      client used for the Sprint 3.5c agent E2E smoke. It exists so a real
+#      external M2M agent can mint a client_credentials token here and drive
+#      the `/mcp/` packaged tools end-to-end. Uses Authentik's "Option 3"
+#      machine-to-machine flow: POST grant_type=client_credentials with the
+#      provider's own client_secret auto-creates a service account
+#      (`ak-cf-test-agent-client_credentials`), so NO manual service-account
+#      user / token / group is seeded. The client_secret below is a CI-only
+#      throwaway (same disposition as AUTHENTIK_BOOTSTRAP_TOKEN) — prod codifies
+#      cf-test-agent via the admin-UI runbook + a 1Password secret (T-053 §5.4).
 #
 # What this deliberately does NOT seed:
 #   • Google OAuth Source (test env skips upstream IdP; Authentik's default
 #     identification + password stages do the auth).
-#   • cf-test-agent / claude-code / vs-code / cursor providers (not exercised
-#     by these two specs — followups in 3.5b for MCP).
-#   • cf-test-agent-full group (same reason).
+#   • claude-code / vs-code / cursor delegated providers (no headless smoke
+#     drives them; their auto-login discovery is T-089).
+#   • A restrictive `cf-test-agent-full` group / application policy binding —
+#     M2M (client_credentials) does not require group membership to issue a
+#     token (the auto service account is granted by the provider), and the
+#     smoke only needs the happy path. Per-client scope policy hardening stays
+#     in the prod runbook (authentik-stack.md §5.5).
 #
 # Bootstrap admin credentials come from AUTHENTIK_BOOTSTRAP_* env vars set
 # in docker-compose.test.yml — separate from .env so dev / prod operators
@@ -257,3 +271,85 @@ entries:
         !Find [authentik_core.group, [name, cf-agent-default]]
       enabled: true
       negate: false
+
+  # ── cf-test-agent M2M provider (T-091, Sprint 3.5c agent E2E smoke) ──
+  # CONFIDENTIAL OAuth2 provider whose client_credentials grant the agent
+  # smoke (`api/scripts/agent_e2e_smoke.py`) uses to mint an access token,
+  # then drives the `/mcp/` packaged tools end-to-end. Authentik's M2M
+  # "Option 3": POST grant_type=client_credentials with `client_secret` =
+  # THIS provider's client_secret auto-creates a service account, so no
+  # manual SA user / app-password token is seeded.
+  #
+  # Field choices mirror the SPA provider above (same silent-failure
+  # gotchas — `invalidation_flow` is required on 2024.12 create, the
+  # signing_key + per_provider issuer drive the JWT `iss`/`kid` the backend
+  # verifier checks). Differences from the SPA:
+  #   • client_type: confidential + a non-empty client_secret (PKCE-public
+  #     can't carry a client_secret, and CC needs one).
+  #   • redirect_uris: client_credentials never redirects, BUT Authentik
+  #     2024.12's OAuth2Provider serializer marks `redirect_uris` REQUIRED —
+  #     omitting it errors the ENTIRE blueprint apply ("redirect_uris: This
+  #     field is required"), which also blocks the SPA entry and 404s its
+  #     OpenID config (T-091 CI run #1). A single unused placeholder satisfies
+  #     the serializer; it is never exercised by the CC grant.
+  #   • property_mappings = the 5 canonical app scopes ONLY (no openid /
+  #     profile / email): the smoke requests exactly those 5, and the
+  #     backend caps cf-test-agent to CANONICAL_SCOPES — an extra `openid`
+  #     in the token's `scope` claim would trip AUTH_SCOPE_EXCEEDS_ALLOWLIST.
+  #
+  # ⚠ client_secret is a CI-only throwaway (low-entropy phrase so gitleaks
+  # entropy rules don't flag it; same disposition as AUTHENTIK_BOOTSTRAP_TOKEN
+  # in docker-compose.test.yml). The smoke step in pr.yml uses the identical
+  # literal. NEVER reuse for prod — prod codifies cf-test-agent via the
+  # admin-UI runbook + a 1Password secret (authentik-stack.md §5.4).
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: cf-test-agent
+    attrs:
+      client_type: confidential
+      client_id: cf-test-agent
+      client_secret: cf-e2e-test-agent-secret-not-for-prod
+      access_token_validity: hours=1
+      include_claims_in_id_token: true
+      sub_mode: hashed_user_id
+      issuer_mode: per_provider
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, authentik Self-signed Certificate],
+        ]
+      authentication_flow:
+        !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-implicit-consent],
+        ]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      # Required-but-unused (see header note). The CC grant issues tokens
+      # directly from the token endpoint and never redirects here.
+      redirect_uris:
+        - matching_mode: strict
+          url: http://localhost/cf-test-agent/unused
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:read]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:write]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, task:read]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, task:cancel]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, usage:read]]
+
+  # cf-test-agent application. No group / policy binding (policy_engine_mode
+  # `any` + zero bindings = open): the client_credentials auto service account
+  # isn't a group member, and M2M doesn't gate on application policy. The
+  # provider's client_secret is the only thing standing between a caller and a
+  # token, which is sufficient for the test agent.
+  - model: authentik_core.application
+    identifiers:
+      slug: cf-test-agent
+    attrs:
+      name: CF Test Agent (M2M smoke)
+      provider:
+        !Find [authentik_providers_oauth2.oauth2provider, [name, cf-test-agent]]
+      policy_engine_mode: any
+      open_in_new_tab: false
