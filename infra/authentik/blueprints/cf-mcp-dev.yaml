@@ -46,18 +46,28 @@ entries:
   # no `scope` claim and every per-scope check on `/mcp/*` fails.
   # `return {"scope": " ".join(token.scope)}` emits the granted scope set as the
   # space-separated string `scope` claim the backend parses.
-  # ⚠ Identify by `name` (stable + unique on PropertyMapping), NOT by `managed`:
-  # an operator who followed §5.3 created these 5 via the admin UI, so the rows
-  # exist with `managed=null`. A `managed:` identifier wouldn't match them, so
-  # the blueprint would try to INSERT a second row with the same unique `name`
-  # → IntegrityError → the auto-mounted apply fails on that dev stack. Matching
-  # by `name` adopts the existing row (and updates its expression to the T-093
-  # fix) or creates it fresh. cf-e2e-bootstrap.yaml can use `managed` only
-  # because CI DBs are always fresh (no pre-existing admin-UI rows). Codex #129 P2.
+  # ⚠ identifier + `managed` strategy (two co-existing constraints):
+  #  (a) Identify by `name` (unique on PropertyMapping), NOT `managed`: an
+  #      operator who followed §5.3 created these 5 via the admin UI, so the rows
+  #      exist with `managed=null`. A `managed:` identifier wouldn't match them →
+  #      the blueprint would INSERT a duplicate with the same unique `name` →
+  #      IntegrityError → apply fails on that dev stack (Codex #129 P2). Matching
+  #      by `name` adopts the existing row (updating its expression to the T-093
+  #      fix) or creates it fresh.
+  #  (b) STILL set `managed` in attrs (= the name): docker-compose.test.yml mounts
+  #      the WHOLE blueprints dir, so in e2e/CI this file applies ALONGSIDE
+  #      cf-e2e-bootstrap.yaml, which identifies the same 5 rows by `managed`.
+  #      Whichever applies first creates the row with `managed` set; the other
+  #      then matches (bootstrap by managed, this file by name) and UPDATEs
+  #      instead of inserting → no name collision in either apply order. Omitting
+  #      `managed` here regressed e2e (cf-mcp-dev created managed=null rows →
+  #      bootstrap's managed-identifier missed them → duplicate-name insert →
+  #      bootstrap apply errored → SPA never came up).
   - model: authentik_providers_oauth2.scopemapping
     identifiers:
       name: cf-scope-character-read
     attrs:
+      managed: cf-scope-character-read
       scope_name: character:read
       description: Read characters, bases, aliases, motions, checkpoints
       expression: |
@@ -66,6 +76,7 @@ entries:
     identifiers:
       name: cf-scope-character-write
     attrs:
+      managed: cf-scope-character-write
       scope_name: character:write
       description: Create / mutate characters, bases, aliases, motions
       expression: |
@@ -74,6 +85,7 @@ entries:
     identifiers:
       name: cf-scope-task-read
     attrs:
+      managed: cf-scope-task-read
       scope_name: task:read
       description: Read async task status
       expression: |
@@ -82,6 +94,7 @@ entries:
     identifiers:
       name: cf-scope-task-cancel
     attrs:
+      managed: cf-scope-task-cancel
       scope_name: task:cancel
       description: Cancel a running async task
       expression: |
@@ -90,6 +103,7 @@ entries:
     identifiers:
       name: cf-scope-usage-read
     attrs:
+      managed: cf-scope-usage-read
       scope_name: usage:read
       description: Read team usage / quota stats
       expression: |
