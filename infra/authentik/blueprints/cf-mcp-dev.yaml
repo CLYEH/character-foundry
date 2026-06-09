@@ -46,47 +46,50 @@ entries:
   # no `scope` claim and every per-scope check on `/mcp/*` fails.
   # `return {"scope": " ".join(token.scope)}` emits the granted scope set as the
   # space-separated string `scope` claim the backend parses.
+  # ⚠ Identify by `name` (stable + unique on PropertyMapping), NOT by `managed`:
+  # an operator who followed §5.3 created these 5 via the admin UI, so the rows
+  # exist with `managed=null`. A `managed:` identifier wouldn't match them, so
+  # the blueprint would try to INSERT a second row with the same unique `name`
+  # → IntegrityError → the auto-mounted apply fails on that dev stack. Matching
+  # by `name` adopts the existing row (and updates its expression to the T-093
+  # fix) or creates it fresh. cf-e2e-bootstrap.yaml can use `managed` only
+  # because CI DBs are always fresh (no pre-existing admin-UI rows). Codex #129 P2.
   - model: authentik_providers_oauth2.scopemapping
     identifiers:
-      managed: cf-scope-character-read
-    attrs:
       name: cf-scope-character-read
+    attrs:
       scope_name: character:read
       description: Read characters, bases, aliases, motions, checkpoints
       expression: |
         return {"scope": " ".join(token.scope)}
   - model: authentik_providers_oauth2.scopemapping
     identifiers:
-      managed: cf-scope-character-write
-    attrs:
       name: cf-scope-character-write
+    attrs:
       scope_name: character:write
       description: Create / mutate characters, bases, aliases, motions
       expression: |
         return {"scope": " ".join(token.scope)}
   - model: authentik_providers_oauth2.scopemapping
     identifiers:
-      managed: cf-scope-task-read
-    attrs:
       name: cf-scope-task-read
+    attrs:
       scope_name: task:read
       description: Read async task status
       expression: |
         return {"scope": " ".join(token.scope)}
   - model: authentik_providers_oauth2.scopemapping
     identifiers:
-      managed: cf-scope-task-cancel
-    attrs:
       name: cf-scope-task-cancel
+    attrs:
       scope_name: task:cancel
       description: Cancel a running async task
       expression: |
         return {"scope": " ".join(token.scope)}
   - model: authentik_providers_oauth2.scopemapping
     identifiers:
-      managed: cf-scope-usage-read
-    attrs:
       name: cf-scope-usage-read
+    attrs:
       scope_name: usage:read
       description: Read team usage / quota stats
       expression: |
