@@ -1,6 +1,6 @@
 # T-094: MCP delegated-client dev provisioning + delegated-token email scope
 
-**Status:** IN PROGRESS
+**Status:** DONE（#129，2026-06-09）
 **Sprint:** Post-M3.5
 **Est:** S
 **Depends on:** T-089（done）, T-093（done）
