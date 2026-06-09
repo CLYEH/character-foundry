@@ -1,0 +1,166 @@
+# cf-mcp-dev — dev/prod provisioning for the human-driven MCP OAuth app (T-094)
+#
+# WHY THIS EXISTS
+#   M3.5 (T-089) shipped the MCP OAuth discovery + delegated-login surface but
+#   only ever provisioned the `character-foundry-mcp` Authentik application in
+#   the e2e/CI blueprint (cf-e2e-bootstrap.yaml, mounted only by
+#   docker-compose.test.yml). The dev / prod stacks were supposed to create it
+#   via the admin-UI runbook (authentik-stack.md §5.4) — that step was never
+#   done, so a real human pointing an MCP client (Claude Code / Claude Desktop /
+#   MCP Inspector / claude.ai connector) at `/mcp/` on dev/prod gets an OAuth
+#   app that doesn't exist. This blueprint closes that gap reproducibly, the
+#   same way cf-google-init.yaml provisions the Google login surface for dev.
+#
+# SCOPE — deliberately MINIMAL, no overlap with cf-google-init.yaml:
+#   • the 5 canonical app scope mappings (with the S3.5-6 / T-093 load-bearing
+#     expression that actually emits the `scope` claim into the JWT), and
+#   • the `character-foundry-mcp` provider + application + group binding.
+#   It does NOT define the SPA app, the Google source, flows, or the
+#   cf-agent-default group — those already exist in dev (cf-google-init.yaml +
+#   the admin-UI operator setup). The group is referenced with `!Find` so this
+#   blueprint never touches its membership.
+#
+# Mirrors cf-e2e-bootstrap.yaml's character-foundry-mcp objects verbatim
+# (public PKCE, explicit-consent authorization_flow, no offline_access, the
+# {matching_mode,url} redirect_uris list, per_provider issuer, Self-signed
+# signing key — every one a 2024.12 silent-failure gotcha). Keep them in sync.
+#
+# After apply, the backend must already trust this app's issuer + audience:
+# .env `AUTHENTIK_ISSUER_URL` must contain
+# `http://localhost/oauth/application/o/character-foundry-mcp/` and
+# `AUTHENTIK_AUDIENCE` must contain `character-foundry-mcp` (authentik-stack.md
+# §5.4) — else `/mcp/` rejects its delegated tokens with AUTH_CLIENT_NOT_ALLOWED.
+
+version: 1
+metadata:
+  name: cf-mcp-dev
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  # ── Canonical scope mappings (5) ───────────────────────────────────
+  # `scope_name` must stay aligned with api/app/auth/scopes.py::CANONICAL_SCOPES.
+  # ⚠ The `expression` is LOAD-BEARING (S3.5-6 / T-093): Authentik's access-token
+  # JWT carries only OIDC claims plus whatever each granted scope's expression
+  # returns (id_token.py::get_claims merges them). With `return {}` the JWT has
+  # no `scope` claim and every per-scope check on `/mcp/*` fails.
+  # `return {"scope": " ".join(token.scope)}` emits the granted scope set as the
+  # space-separated string `scope` claim the backend parses.
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-character-read
+    attrs:
+      name: cf-scope-character-read
+      scope_name: character:read
+      description: Read characters, bases, aliases, motions, checkpoints
+      expression: |
+        return {"scope": " ".join(token.scope)}
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-character-write
+    attrs:
+      name: cf-scope-character-write
+      scope_name: character:write
+      description: Create / mutate characters, bases, aliases, motions
+      expression: |
+        return {"scope": " ".join(token.scope)}
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-task-read
+    attrs:
+      name: cf-scope-task-read
+      scope_name: task:read
+      description: Read async task status
+      expression: |
+        return {"scope": " ".join(token.scope)}
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-task-cancel
+    attrs:
+      name: cf-scope-task-cancel
+      scope_name: task:cancel
+      description: Cancel a running async task
+      expression: |
+        return {"scope": " ".join(token.scope)}
+  - model: authentik_providers_oauth2.scopemapping
+    identifiers:
+      managed: cf-scope-usage-read
+    attrs:
+      name: cf-scope-usage-read
+      scope_name: usage:read
+      description: Read team usage / quota stats
+      expression: |
+        return {"scope": " ".join(token.scope)}
+
+  # ── character-foundry-mcp delegated provider (T-089) ───────────────
+  # The ONE dedicated app all human-driven MCP clients authenticate through;
+  # the MCP server's PRM (/.well-known/oauth-protected-resource) advertises its
+  # per_provider issuer as the sole authorization server. All such clients
+  # present client_id=character-foundry-mcp; their redirect_uris are registered
+  # here (one app, many clients — T-089 Decision 1).
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: character-foundry-mcp
+    attrs:
+      client_type: public
+      client_id: character-foundry-mcp
+      client_secret: ""
+      access_code_validity: minutes=1
+      access_token_validity: hours=1
+      include_claims_in_id_token: true
+      sub_mode: hashed_user_id
+      issuer_mode: per_provider
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, authentik Self-signed Certificate],
+        ]
+      authentication_flow:
+        !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-explicit-consent],
+        ]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      redirect_uris:
+        - matching_mode: regex
+          url: ^http://(127\.0\.0\.1|localhost):[0-9]{1,5}(/.*)?$
+        - matching_mode: strict
+          url: https://claude.ai/api/mcp/auth_callback
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:read]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, character:write]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, task:read]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, task:cancel]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, usage:read]]
+
+  - model: authentik_core.application
+    identifiers:
+      slug: character-foundry-mcp
+    attrs:
+      name: Character Foundry MCP
+      provider:
+        !Find [authentik_providers_oauth2.oauth2provider, [name, character-foundry-mcp]]
+      policy_engine_mode: any
+      open_in_new_tab: false
+
+  # Bind the EXISTING cf-agent-default group → the MCP app so enrolled human
+  # users can authorize (same gate as the SPA app; an enrolled user not in the
+  # group hits "Permission denied" on /authorize — authentik-stack.md §5.7.3).
+  # `!Find` references the group created in dev's admin-UI setup; this blueprint
+  # never defines or mutates the group's membership.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target:
+        !Find [authentik_core.application, [slug, character-foundry-mcp]]
+      order: 0
+    attrs:
+      group:
+        !Find [authentik_core.group, [name, cf-agent-default]]
+      enabled: true
+      negate: false

@@ -55,8 +55,9 @@ async def test_prm_document_shape_and_scope_source() -> None:
     Asserts the four fields the discovering client reads, that `resource` is the
     `/mcp` server URI, that `authorization_servers` is the dedicated MCP app's
     per-provider issuer (so the token `iss` will match), and that
-    `scopes_supported` is exactly `sorted(CANONICAL_SCOPES)` (the centralised
-    source, not re-typed literals).
+    `scopes_supported` is the centralised `CANONICAL_SCOPES` PLUS the OIDC
+    identity scopes (`openid`/`email`/`profile`) a delegated client must request
+    so the resource server can map the token to a backend user (T-094).
     """
     async with _new_client() as client:
         resp = await client.get(PRM_PATH)
@@ -67,7 +68,14 @@ async def test_prm_document_shape_and_scope_source() -> None:
     assert body["authorization_servers"] == [
         f"{_TEST_BASE}/oauth/application/o/{MCP_OAUTH_APP_SLUG}/"
     ]
-    assert body["scopes_supported"] == sorted(CANONICAL_SCOPES)
+    # App scopes PLUS the OIDC identity scopes: a delegated client must request
+    # `email` so resolve_oauth_user_id can map the token to a backend user.
+    # Without these advertised, the client never requests them and delegated
+    # auth fails closed with AUTH_INVALID_TOKEN (T-094 — the bug the T-089
+    # Manual E2E never caught because CI only runs the M2M path).
+    assert body["scopes_supported"] == sorted(
+        set(CANONICAL_SCOPES) | {"openid", "email", "profile"}
+    )
     assert body["bearer_methods_supported"] == ["header"]
     # Public discovery doc — browser-context clients (MCP Inspector) read it
     # cross-origin.
