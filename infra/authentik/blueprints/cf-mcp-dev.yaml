@@ -149,11 +149,24 @@ entries:
       policy_engine_mode: any
       open_in_new_tab: false
 
-  # Bind the EXISTING cf-agent-default group → the MCP app so enrolled human
-  # users can authorize (same gate as the SPA app; an enrolled user not in the
-  # group hits "Permission denied" on /authorize — authentik-stack.md §5.7.3).
-  # `!Find` references the group created in dev's admin-UI setup; this blueprint
-  # never defines or mutates the group's membership.
+  # Define cf-agent-default if absent — identifiers-only, NO `users` attr, so it
+  # creates an empty group on a clean Authentik DB but NEVER mutates the
+  # membership the operator-provisioning step manages (§5.7.3 adds the human;
+  # e2e's cf-e2e-bootstrap.yaml seeds alice/bob). On an existing stack it matches
+  # by name and is a no-op. Without this entry the binding's `!Find` below runs
+  # before the runbook (§5.5) creates the group → blueprint apply errors and the
+  # dev provisioning path isn't reproducible from a fresh DB (Codex PR #129 P2).
+  # ⚠ Never target `users_obj` (read-only SerializerMethodField — silently errors
+  # the whole apply); `users` is the writable FK list, omitted here on purpose.
+  - model: authentik_core.group
+    identifiers:
+      name: cf-agent-default
+
+  # Bind cf-agent-default → the MCP app so enrolled human users can authorize
+  # (same gate as the SPA app; an enrolled user not in the group hits "Permission
+  # denied" on /authorize — authentik-stack.md §5.7.3). Membership stays the
+  # operator-provisioning step's job; this blueprint only ensures the group
+  # exists (above) and binds it.
   - model: authentik_policies.policybinding
     identifiers:
       target:
