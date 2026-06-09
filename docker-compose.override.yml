@@ -88,6 +88,9 @@ services:
     volumes:
       - ./infra/authentik/blueprints/cf-google-init.yaml:/blueprints/cf/cf-google-init.yaml:ro
       - ./infra/authentik/blueprints/cf-builtin-flow-hardening.yaml:/blueprints/cf/cf-builtin-flow-hardening.yaml:ro
+      # T-094: provision the human-driven MCP OAuth app (character-foundry-mcp)
+      # for dev — see infra/authentik/blueprints/cf-mcp-dev.yaml header.
+      - ./infra/authentik/blueprints/cf-mcp-dev.yaml:/blueprints/cf/cf-mcp-dev.yaml:ro
 
   # T-073: the worker is what actually applies blueprints — it must see
   # the same mounts as the server (mirrors docker-compose.test.yml).
@@ -95,3 +98,4 @@ services:
     volumes:
       - ./infra/authentik/blueprints/cf-google-init.yaml:/blueprints/cf/cf-google-init.yaml:ro
       - ./infra/authentik/blueprints/cf-builtin-flow-hardening.yaml:/blueprints/cf/cf-builtin-flow-hardening.yaml:ro
+      - ./infra/authentik/blueprints/cf-mcp-dev.yaml:/blueprints/cf/cf-mcp-dev.yaml:ro

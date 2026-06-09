@@ -93,10 +93,23 @@ def build_protected_resource_metadata(base_url: str) -> dict[str, object]:
     literals anywhere outside `app.auth.scopes`.
     """
     base = base_url.rstrip("/")
+    # Delegated (human) MCP clients run Auth Code + PKCE; the resource server
+    # maps the token to a backend user by its `email` claim
+    # (app.auth.user_resolution.resolve_oauth_user_id), which Authentik only
+    # emits when the OIDC identity scopes are granted. Advertise them alongside
+    # the app scopes so a delegated client requests them — without this the
+    # delegated token carries no email and user resolution fails closed with
+    # AUTH_INVALID_TOKEN. (T-094: the T-089 delegated flow was never run E2E; CI
+    # exercises only the M2M path, which resolves via a synthetic service-account
+    # email and so never needed an `email` claim.) M2M clients ignore this list
+    # and request only their capped app scopes; `character-foundry-mcp` is an
+    # uncapped delegated client (mcp_clients.ALLOWED_CLIENTS) so the identity
+    # scopes never trip the scope-cap check in verify_oauth_token.
+    oidc_identity_scopes = {"openid", "email", "profile"}
     return {
         "resource": f"{base}{_MCP_RESOURCE_PATH}",
         "authorization_servers": [f"{base}/oauth/application/o/{_MCP_OAUTH_APP_SLUG}/"],
-        "scopes_supported": sorted(CANONICAL_SCOPES),
+        "scopes_supported": sorted(set(CANONICAL_SCOPES) | oidc_identity_scopes),
         "bearer_methods_supported": ["header"],
     }
 
